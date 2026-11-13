@@ -104,7 +104,8 @@ func TestSearchCapKeepsNewestWithTrueTotal(t *testing.T) {
 
 // Text the client never draws as text is not searched: a prompt's
 // attached-files trailer (drawn as tiles) and the prompt of a turn the server
-// started to recover (drawn as a fixed label). The same tag mid-prompt is the
+// started to recover or to continue past a usage limit (drawn as a fixed
+// label). The same tag mid-prompt is the
 // person's own words.
 func TestSearchSkipsTextTheClientHides(t *testing.T) {
 	s := New("s")
@@ -115,11 +116,20 @@ func TestSearchSkipsTextTheClientHides(t *testing.T) {
 	resumed.TurnID = "t2"
 	asked := msg("asked", "user", "text", "write the report")
 	asked.TurnID = "t1"
-	s.Turns = []Turn{{ID: "t1"}, {ID: "t2", Recovery: &proto.TurnRecovery{}}}
-	s.Items = []Item{attached, quoted, asked, resumed}
+	continued := msg("continued", "user", "text", "finish the report")
+	continued.TurnID = "t3"
+	scheduled := msg("scheduled", "user", "text", "the weekly report")
+	scheduled.TurnID = "t4"
+	s.Turns = []Turn{{ID: "t1"}, {ID: "t2", Recovery: &proto.TurnRecovery{}}, {ID: "t3"}, {ID: "t4"}}
+	s.Scheduled = []proto.ScheduledPrompt{
+		{ID: "q1", Kind: proto.ScheduleLimit, Status: "sent", TurnID: "t3"},
+		// One a person scheduled is their own words.
+		{ID: "q2", Status: "sent", TurnID: "t4"},
+	}
+	s.Items = []Item{attached, quoted, asked, resumed, continued, scheduled}
 
 	got, _ := s.Search("report", 0)
-	if ids := matchIDs(got); !slices.Equal(ids, []string{"quoted", "asked"}) {
+	if ids := matchIDs(got); !slices.Equal(ids, []string{"quoted", "asked", "scheduled"}) {
 		t.Fatalf("report matched %v", ids)
 	}
 	got, _ = s.Search("look at", 0)

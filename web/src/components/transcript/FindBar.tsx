@@ -27,15 +27,19 @@ function counter(f: ThreadFind, jumpFailed: boolean): string {
  * throws the query away.
  *
  * `onJump` hears every (re)selection of a match, with the query to paint in
- * it, and resolves false when the match could not be loaded; `onClear` hears that whatever was painted is stale (the query changed,
- * or the bar closed).
+ * it, and resolves false when the match could not be loaded; `onClear` hears
+ * that whatever was painted is stale (the query changed, or the bar closed).
+ * `cuts` moves when a rewind cuts the timeline back, which takes matches with
+ * it, so the query runs again.
  */
 export function ThreadFindBar({
   controls,
+  cuts,
   onJump,
   onClear,
 }: {
   controls: ThreadFindControls;
+  cuts: number;
   onJump: (match: ThreadMatch, query: string) => Promise<boolean>;
   onClear: () => void;
 }) {
@@ -70,6 +74,18 @@ export function ThreadFindBar({
     f.setQuery(q);
   };
   useEffect(() => () => onClearRef.current(), [onClearRef]);
+
+  // The snapshot holds matches the rewind took; stepping onto one would go
+  // nowhere. Only a cut since the bar opened counts.
+  const rerun = useLatest(f.rerun);
+  const openedAt = useRef(cuts);
+  useEffect(() => {
+    if (cuts === openedAt.current) return;
+    openedAt.current = cuts;
+    onClearRef.current();
+    setJumpFailed(false);
+    rerun.current();
+  }, [cuts, rerun, onClearRef]);
 
   // `step` moves on every selection, including a re-selection of the same
   // match, which is a jump all the same.

@@ -6,6 +6,8 @@ package projection
 import (
 	"strings"
 	"unicode/utf8"
+
+	"github.com/asiraky/omniplex/internal/proto"
 )
 
 // SearchMatchCap is how many matches a search returns. The newest are kept,
@@ -25,7 +27,7 @@ type Match struct {
 // item — the client never shows one as a row, so there is nothing to jump to.
 // Nor is text the client hides: a prompt's attached-files trailer, which it
 // draws as file tiles, and the prompt the server wrote to resume a recovered
-// turn, which it draws as a fixed label.
+// turn or continue past a usage limit, which it draws as a fixed label.
 //
 // When more than limit items match, the newest limit are returned; limit <= 0
 // returns every match. Matches come oldest first; total is the true count.
@@ -38,6 +40,13 @@ func (s *State) Search(q string, limit int) (matches []Match, total int) {
 	for _, t := range s.Turns {
 		if t.Recovery != nil {
 			recovered[t.ID] = true
+		}
+	}
+	// The continuation armed at a usage limit is the server's prompt too; the
+	// schedule that sent it names its turn.
+	for _, p := range s.Scheduled {
+		if p.Kind == proto.ScheduleLimit && p.Status == "sent" && p.TurnID != "" {
+			recovered[p.TurnID] = true
 		}
 	}
 	var hits []int

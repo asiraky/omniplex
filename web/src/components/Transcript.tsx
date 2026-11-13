@@ -286,6 +286,19 @@ function useFindJump(
   return { reveal, onJump, onClear };
 }
 
+// Counts the times the timeline lost turns: a rewind cutting it back. Live
+// events and older pages only ever add turns, and the list is the whole
+// thread's, not the window's.
+function useTimelineCuts(turnCount: number): number {
+  const [seen, setSeen] = useState(turnCount);
+  const [cuts, setCuts] = useState(0);
+  if (turnCount !== seen) {
+    setSeen(turnCount);
+    if (turnCount < seen) setCuts((c) => c + 1);
+  }
+  return cuts;
+}
+
 // Brings `range` to the middle of the scroller's view when it is outside it,
 // allowing for the room the composer covers at the bottom.
 function centreIfHidden(scroller: HTMLElement, range: Range) {
@@ -358,6 +371,7 @@ function TranscriptBody({
   const hasOlder = (state.itemsBefore ?? 0) > 0;
   const sentinelRef = useOlderPages(scrollerRef, contentRef, state, hasOlder, onLoadOlder);
   const { reveal, onJump, onClear } = useFindJump(scrollerRef, state, find, release);
+  const cuts = useTimelineCuts(state.turns.length);
 
   const {
     activity,
@@ -381,7 +395,7 @@ function TranscriptBody({
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      {find && <FindBarSlot controls={find} onJump={onJump} onClear={onClear} />}
+      {find && <FindBarSlot controls={find} cuts={cuts} onJump={onJump} onClear={onClear} />}
       <FindRevealProvider value={reveal}>
         <div
           ref={scrollerRef}

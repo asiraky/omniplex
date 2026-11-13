@@ -628,6 +628,17 @@ describe("loading down to a match", () => {
     expect(next?.items.map((i) => i.id)).toEqual(["p0", "p1"]);
   });
 
+  it("fetches nothing for a thread switched to while it waited", async () => {
+    const { client } = attached({ itemsBefore: 50 });
+    const { fetch, answer } = deferredFetch();
+    void client.loadOlder();
+    const request = client.loadTo(10);
+    client.prime({ ...emptyState("b"), itemsBefore: 50 });
+    answer(0, { items: [{ id: "p1", kind: "agent" }], itemsBefore: 30 });
+    expect(await request).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("needs no request when the scroll page it waited on already covered the match", async () => {
     const { client } = attached({ itemsBefore: 50 });
     const { fetch, answer } = deferredFetch();

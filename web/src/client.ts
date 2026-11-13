@@ -423,10 +423,12 @@ export class Client {
     // A scroll page landing first may already cover the index, and splicing
     // ours in under it would break the window's contiguity: wait it out, then
     // read the cursor afresh. Looped, as another may have claimed the slot
-    // before this resumed.
+    // before this resumed. `index` is this thread's: one switched to while
+    // waiting gets no fetch.
+    const thread = this.state?.threadId;
     while (this.olderInFlight) await this.olderInFlight;
     const s = this.state;
-    if (!s) return null;
+    if (!s || s.threadId !== thread) return null;
     const before = s.itemsBefore ?? 0;
     if (index >= before) return s;
     return this.occupyOlder(this.fetchPage(s, `before=${before}&from=${Math.max(0, index)}`));

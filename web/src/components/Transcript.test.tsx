@@ -1267,6 +1267,22 @@ describe("find in thread", () => {
     expect(scrolledTo()).not.toContain("old");
   });
 
+  it("runs the query again when a rewind cuts the timeline back", async () => {
+    const search = vi.fn(async () => ({ matches: [{ id: "mid", index: 1 }], total: 1 }));
+    const later = {
+      ...finished(),
+      turns: [...finished().turns, { id: "t2", prompt: "again", done: true, stopReason: "end_turn" }],
+    };
+    const { frame } = attach(later, <Transcript {...view().props} find={controls({ search })} />);
+    fireEvent.change(await screen.findByLabelText("Find in thread"), { target: { value: "needle" } });
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+
+    // A turn that only arrives is no reason to search again.
+    frame({ ...later, turns: [...later.turns, { id: "t3", prompt: "more", done: true, stopReason: "end_turn" }] });
+    frame(finished());
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
+  });
+
   it("closes on Escape from the step buttons too", async () => {
     const close = vi.fn();
     attach(finished(), <Transcript {...view().props} find={controls({ close })} />);
