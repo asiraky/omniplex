@@ -36,7 +36,7 @@ import type {
 } from "~/protocol";
 
 import type { AuthWires } from "./AuthFlowDialog";
-import { Composer, type ComposerAttachments } from "./Composer";
+import { Composer } from "./Composer";
 import { ConnectionStrip } from "./ConnectionStrip";
 import { useComposerItems } from "./composer/useComposerItems";
 import { JobsStrip } from "./JobsStrip";
@@ -441,7 +441,7 @@ function ComposerDock({
           store.setDraft(activeId, text);
           recents.composerRef.current?.focusEnd(text.length);
         }}
-        onSend={(text) => commands.send(text, NO_ATTACHMENTS)}
+        onSend={(text) => recents.composerRef.current?.send(text)}
       />
       <ThreadComposer
         key={activeId}
@@ -586,7 +586,6 @@ function ThreadComposer({
   );
 }
 
-const NO_ATTACHMENTS: ComposerAttachments = { imageIds: [], files: [] };
 const titleOf = (state: ThreadState | null) => state?.title;
 const NO_HISTORY: string[] = [];
 const historyOf = (state: ThreadState | null) => (state ? promptHistory(state.items, state.turns) : NO_HISTORY);

@@ -66,6 +66,8 @@ export function useComposerSend({
   // `then` runs once the message is handed off (a prompt to the outbox, an
   // action once it returns), and never for one held back:
   // send-and-start-a-new-thread must not leave a draft behind unsent.
+  // `text` stands in for the draft when something other than typing supplies
+  // the message, such as a suggested next prompt, so it goes the same way.
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
@@ -74,8 +76,8 @@ export function useComposerSend({
     };
   }, []);
 
-  const send = async (delivery?: Delivery, then?: () => void) => {
-    const t = draft.trim();
+  const send = async (delivery?: Delivery, then?: () => void, text = draft) => {
+    const t = text.trim();
     // A message may be nothing but attachments: "what is this?" is often the
     // whole question, and the picture or the file is the rest of it.
     if ((!t && sendableAttachments === 0) || disabled || sendDisabled || waiting) return;

@@ -80,13 +80,11 @@ func TestSuggestionFollowsOnlyANormalEnd(t *testing.T) {
 			var p struct {
 				ThreadID       string `json:"threadId"`
 				ExpectedTurnID string `json:"expectedTurnId"`
-				Prompt         string `json:"prompt"`
-				Effort         string `json:"effort"`
 			}
 			if err := json.Unmarshal(rec.sent("thread/sample"), &p); err != nil {
 				t.Fatal(err)
 			}
-			if p.ThreadID != "thread-1" || p.ExpectedTurnID != "codex-turn-1" || p.Prompt == "" || p.Effort != "low" {
+			if p.ThreadID != "thread-1" || p.ExpectedTurnID != "codex-turn-1" {
 				t.Fatalf("thread/sample params = %+v", p)
 			}
 		})
@@ -102,6 +100,8 @@ func TestSuggestionDropsFailuresAndEmptyText(t *testing.T) {
 		{"refused", map[string]any{"thread/sample": errors.New("sample source turn must be the latest finished turn")}},
 		{"null text", sampleReply(nil)},
 		{"blank text", sampleReply(" \n\t ")},
+		{"declined", sampleReply("NONE")},
+		{"declined, dressed up", sampleReply(" none.\n")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, rec := stopSession(t, tc.reply)
@@ -161,40 +161,46 @@ func TestSuggestionStopsWithTheSession(t *testing.T) {
 	}
 }
 
-// thread/sample is experimental, so the session opts into the experimental
-// API when it initializes.
-func TestInitializeOptsIntoTheExperimentalAPI(t *testing.T) {
+// The session opts into the experimental API, which thread/sample needs, only
+// when it will suggest: otherwise it stays on the stable one.
+func TestExperimentalAPIOnlyWhenSuggesting(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("stand-in codex is a shell script")
 	}
-	dir := t.TempDir()
-	s, err := New(fakeAppServer(t, dir)).CreateSession(context.Background(), &elicitHost{}, adapter.CreateOptions{Cwd: dir})
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	_ = s.Close()
-	raw, err := os.ReadFile(filepath.Join(dir, "lines"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-		var m struct {
-			Method string `json:"method"`
-			Params struct {
-				Capabilities struct {
-					ExperimentalAPI bool `json:"experimentalApi"`
-				} `json:"capabilities"`
-			} `json:"params"`
+	for _, suggest := range []bool{true, false} {
+		dir := t.TempDir()
+		s, err := New(fakeAppServer(t, dir)).CreateSession(context.Background(), &elicitHost{},
+			adapter.CreateOptions{Cwd: dir, SuggestPrompts: suggest})
+		if err != nil {
+			t.Fatalf("CreateSession: %v", err)
 		}
-		if err := json.Unmarshal([]byte(line), &m); err != nil {
-			t.Fatalf("line %q: %v", line, err)
+		_ = s.Close()
+		raw, err := os.ReadFile(filepath.Join(dir, "lines"))
+		if err != nil {
+			t.Fatal(err)
 		}
-		if m.Method == "initialize" {
-			if !m.Params.Capabilities.ExperimentalAPI {
-				t.Fatalf("initialize did not opt into the experimental API: %s", line)
+		sent := false
+		for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+			var m struct {
+				Method string `json:"method"`
+				Params struct {
+					Capabilities struct {
+						ExperimentalAPI bool `json:"experimentalApi"`
+					} `json:"capabilities"`
+				} `json:"params"`
 			}
-			return
+			if err := json.Unmarshal([]byte(line), &m); err != nil {
+				t.Fatalf("line %q: %v", line, err)
+			}
+			if m.Method == "initialize" {
+				sent = true
+				if m.Params.Capabilities.ExperimentalAPI != suggest {
+					t.Fatalf("suggest=%v: initialize sent experimentalApi=%v", suggest, m.Params.Capabilities.ExperimentalAPI)
+				}
+			}
+		}
+		if !sent {
+			t.Fatal("no initialize sent")
 		}
 	}
-	t.Fatal("no initialize sent")
 }

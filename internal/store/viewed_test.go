@@ -78,6 +78,52 @@ func TestMarkThreadViewed(t *testing.T) {
 	}
 }
 
+// A suggestion landing after the turn it follows leaves a read thread read,
+// and an unread one unread.
+func TestSuggestionIsNotNews(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	mustCreateThread(t, s, "s1")
+	suggest := proto.Emit(proto.TurnSuggested, proto.TurnSuggestedPayload{TurnID: "t1", Text: "run the tests"})
+	for range 2 {
+		if _, err := s.Append(ctx, "s1", proto.Emit("message.chunk", map[string]any{"delta": "hi"})); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.MarkThreadViewed(ctx, "s1", 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(ctx, "s1", suggest); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Thread(ctx, "s1"); got.HeadSeq != 3 || got.LastViewedSeq != 3 {
+		t.Fatalf("read thread after a suggestion: head %d, viewed %d; want both 3", got.HeadSeq, got.LastViewedSeq)
+	}
+
+	// Not read up to the turn: the suggestion does not mark it read.
+	if _, err := s.Append(ctx, "s1", proto.Emit("message.chunk", map[string]any{"delta": "hi"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(ctx, "s1", suggest); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Thread(ctx, "s1"); got.LastViewedSeq != 3 {
+		t.Fatalf("unread thread after a suggestion: viewed %d, want 3", got.LastViewedSeq)
+	}
+
+	// Anything else moves only the head.
+	if err := s.MarkThreadViewed(ctx, "s1", 5); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(ctx, "s1", proto.Emit("message.chunk", map[string]any{"delta": "hi"})); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Thread(ctx, "s1"); got.LastViewedSeq != 5 {
+		t.Fatalf("ordinary event moved the viewed cursor to %d", got.LastViewedSeq)
+	}
+}
+
 func TestListThreadsOrdersByCreation(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

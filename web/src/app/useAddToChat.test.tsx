@@ -19,6 +19,7 @@ function setup({ expanded = false } = {}) {
     openModelPicker: vi.fn(),
     typeAtEnd: vi.fn(),
     sendAndNewThread: vi.fn(),
+    send: vi.fn(),
   };
   const { result } = renderHook(() =>
     useAddToChat({ activeId: "s1", store, panel, composerRef: { current: composer } }),

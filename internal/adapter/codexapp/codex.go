@@ -362,8 +362,10 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if err := s.conn.Call(ctx, "initialize", map[string]any{
 		"clientInfo": map[string]any{"name": "omniplex", "version": "0.1.0"},
 		// thread/sample, which suggests the next prompt, is experimental, and
-		// the server refuses it without this.
-		"capabilities": map[string]any{"experimentalApi": true},
+		// the server refuses it without this. Opting in also widens what the
+		// server may send, so a session that will never sample stays on the
+		// stable API.
+		"capabilities": map[string]any{"experimentalApi": o.SuggestPrompts},
 	}, &initRes); err != nil {
 		err = s.died(err)
 		_ = s.Close()
