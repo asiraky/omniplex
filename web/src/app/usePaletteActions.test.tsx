@@ -14,6 +14,7 @@ function actions(over: Partial<Args>) {
   const args = {
     meta: { id: "a", title: "One", headSeq: 1 } as ThreadMeta,
     threadOpen: true,
+    transcriptShown: true,
     turnRunning: false,
     composerOpen: false,
     composerRef: { current: null },
@@ -49,5 +50,26 @@ describe("usePaletteActions: copy thread link", () => {
   it("offers no link with no thread open", () => {
     const { list } = actions({ threadOpen: false, meta: undefined });
     expect(list.some((a) => a.id === "copy-link")).toBe(false);
+  });
+});
+
+describe("usePaletteActions: find in thread", () => {
+  it("opens the find bar a frame after the palette lets go", () => {
+    vi.useFakeTimers();
+    try {
+      const { args, list } = actions({});
+      list.find((a) => a.id === "find")!.run();
+      expect(args.onFindInThread).not.toHaveBeenCalled();
+      vi.runAllTimers();
+      expect(args.onFindInThread).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("is not offered while a full-page screen covers the transcript", () => {
+    const { list } = actions({ transcriptShown: false });
+    expect(list.some((a) => a.id === "find")).toBe(false);
+    expect(list.some((a) => a.id === "copy")).toBe(true);
   });
 });

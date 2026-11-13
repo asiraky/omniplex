@@ -193,13 +193,14 @@ export function App() {
   // The open thread's find bar: the header's phone menu, the palette and
   // Ctrl/⌘+F all open it, and a thread switch closes it.
   const find = useFindBar(activeId);
+  const transcriptShown = attached && !screens.fullPage;
 
   useAppKeybindings({
     app: {
       paletteOpen: palette.open,
       helpOpen: palette.helpOpen,
       threadOpen: attached,
-      transcriptShown: attached && !screens.fullPage,
+      transcriptShown,
       turnRunning,
       panelOpen: panel.open,
     },
@@ -228,6 +229,7 @@ export function App() {
   const actions = usePaletteActions({
     meta,
     threadOpen: attached,
+    transcriptShown,
     turnRunning,
     // The full-page screens unmount the composer; Settings is a dialog over it.
     composerOpen: (attached || !!nav.creating) && !screens.fullPage,

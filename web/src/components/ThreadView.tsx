@@ -229,16 +229,16 @@ export function ThreadView({
   const onFinishThread = useCallback(() => {
     if (metaRef.current) onFinish(metaRef.current);
   }, [metaRef, onFinish]);
-  // Where this thread was scrolled when it was opened, which is all the
-  // transcript reads of it, on mount. Asked again only for a new thread (the
-  // transcript is keyed on it), so a scroll recorded since does not hand the
-  // memoised transcript a new object on every render.
   const { searchThread, loadItemsTo } = commands;
   const { open: findOpen, nonce: findNonce, close: closeFind } = find;
   const findControls = useMemo<ThreadFindControls>(
     () => ({ open: findOpen, nonce: findNonce, close: closeFind, search: searchThread, loadTo: loadItemsTo }),
     [findOpen, findNonce, closeFind, searchThread, loadItemsTo],
   );
+  // Where this thread was scrolled when it was opened, which is all the
+  // transcript reads of it, on mount. Asked again only for a new thread (the
+  // transcript is keyed on it), so a scroll recorded since does not hand the
+  // memoised transcript a new object on every render.
   const { positionOf } = scroll;
   const initialScroll = useMemo(
     () => (activeId ? positionOf(activeId) : undefined),

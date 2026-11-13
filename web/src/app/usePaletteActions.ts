@@ -20,6 +20,7 @@ const THEMES: { value: Theme; label: string }[] = [
 export function usePaletteActions({
   meta,
   threadOpen,
+  transcriptShown,
   turnRunning,
   composerOpen,
   composerRef,
@@ -43,6 +44,8 @@ export function usePaletteActions({
   /** The open thread, once the list has it. */
   meta: ThreadMeta | undefined;
   threadOpen: boolean;
+  /** The open thread's transcript is on screen, not behind a full-page screen. */
+  transcriptShown: boolean;
   turnRunning: boolean;
   /** A composer is on screen: the open thread's or a draft's. */
   composerOpen: boolean;
@@ -89,7 +92,7 @@ export function usePaletteActions({
       });
     }
   }
-  if (threadOpen) {
+  if (transcriptShown) {
     thread({
       id: "find",
       label: "Find in thread",
@@ -99,6 +102,8 @@ export function usePaletteActions({
       // opened from, and the find field can take it.
       run: () => window.requestAnimationFrame(onFindInThread),
     });
+  }
+  if (threadOpen) {
     thread({
       id: "copy",
       label: "Copy transcript",
