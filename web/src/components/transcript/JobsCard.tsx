@@ -152,7 +152,7 @@ const AgentRow = memo(function AgentRow({
             <Elapsed
               since={job && (live || job.finishedAt) ? job.startedAt : undefined}
               finishedAt={job?.finishedAt}
-              className="text-muted-foreground shrink-0 font-mono text-[11px] tabular-nums"
+              className="text-muted-foreground min-w-[4ch] shrink-0 text-right font-mono text-[11px] tabular-nums"
             />
           </span>
           {!compact && (activity || tokens) ? (
