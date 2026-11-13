@@ -150,11 +150,19 @@ export interface ThreadChanges {
   additions: number;
   deletions: number;
   truncated?: boolean;
+  /** The turn a `turn` comparison measured, between its two snapshots. */
+  turnId?: string;
   /** Why the list is empty, when the reason is not "nothing changed". */
   warning?: string;
 }
 
-export type DiffComparison = "uncommitted" | "branch" | "pull_request";
+export type DiffComparison = "uncommitted" | "branch" | "pull_request" | "turn";
+
+/** The turn a `turn` comparison is of: its id, and its 1-based place in the thread. */
+export interface DiffTurn {
+  id: string;
+  number: number;
+}
 
 /** Every path under a thread's checkout, relative to its root. */
 export interface FileTree {

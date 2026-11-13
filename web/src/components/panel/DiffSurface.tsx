@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~
 import { Spinner } from "~/components/ui/spinner";
 import { useDiffWrap } from "~/lib/diffWrap";
 import { cn } from "~/lib/utils";
-import type { ChangedFile, DiffComparison, FileDiff, PullRequest, ThreadChanges } from "~/protocol";
+import type { ChangedFile, DiffComparison, DiffTurn, FileDiff, PullRequest, ThreadChanges } from "~/protocol";
 import { useLatest } from "~/useLatest";
 
 type DiffEntry = { diff?: FileDiff; loading: boolean; error?: string };
@@ -142,6 +142,7 @@ export function DiffSurface({
   loadDiff,
   reveal,
   comparison,
+  turn,
   onComparisonChange,
   pr,
 }: {
@@ -152,6 +153,8 @@ export function DiffSurface({
   loadDiff: (path: string, changes: ThreadChanges) => Promise<FileDiff>;
   reveal?: { path: string; nonce: number } | null;
   comparison: DiffComparison;
+  /** The turn a card last opened, offered in the select so it can be gone back to. */
+  turn?: DiffTurn | null;
   onComparisonChange: (comparison: DiffComparison) => void;
   pr?: PullRequest | null;
 }) {
@@ -219,12 +222,14 @@ export function DiffSurface({
               )}
               {comparison === "branch" && "Branch changes"}
               {comparison === "pull_request" && (pr ? `PR #${pr.number}` : "Attached PR")}
+              {comparison === "turn" && (turn ? `Turn ${turn.number}` : "Turn")}
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="uncommitted">Uncommitted changes</SelectItem>
             <SelectItem value="branch">Branch changes</SelectItem>
             {(pr || comparison === "pull_request") && <SelectItem value="pull_request">{pr ? `PR #${pr.number} vs ${pr.baseRefName || "base"}` : "Attached PR"}</SelectItem>}
+            {turn && <SelectItem value="turn">Turn {turn.number}</SelectItem>}
           </SelectContent>
         </Select>
         <span className="text-muted-foreground shrink-0 text-[11px] whitespace-nowrap">
@@ -253,7 +258,11 @@ export function DiffSurface({
         )}
         {!error && !changes?.warning && files.length === 0 && (
           <p className="text-muted-foreground px-3 py-10 text-center text-[12px]">
-            {loading && !changes ? "Reading the worktree…" : "Nothing changed yet."}
+            {loading && !changes
+              ? "Reading the worktree…"
+              : comparison === "turn"
+                ? "This turn changed nothing."
+                : "Nothing changed yet."}
           </p>
         )}
         {files.map((f) => (
@@ -274,7 +283,8 @@ export function DiffSurface({
         ))}
         {changes?.truncated && (
           <p className="text-muted-foreground px-3 py-2 text-[11px] italic">
-            Only the first files are listed; this thread changed more than the panel will show.
+            Only the first files are listed; this {comparison === "turn" ? "turn" : "thread"} changed more than the
+            panel will show.
           </p>
         )}
       </div>

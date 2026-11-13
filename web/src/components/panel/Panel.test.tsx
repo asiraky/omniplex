@@ -142,6 +142,49 @@ describe("Panel requests", () => {
   });
 });
 
+describe("Panel turn diff", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  const KEY = "omniplex.diffComparison:s1";
+  const trigger = () => screen.getByRole("combobox", { name: "Diff comparison" });
+
+  it("shows a card's turn, and switching away neither forgets it nor stores it", async () => {
+    const loadChanges = vi.fn((_c: string, _t?: string) => Promise.resolve(changesWith("src/a.ts")));
+    const loadDiff = vi.fn(() => new Promise<never>(() => {}));
+    const request: PanelRequest = { kind: "diff", path: "src/a.ts", turn: { id: "t2", number: 2 }, nonce: 1 };
+    render(<Panel {...props({ loadChanges, loadDiff, request })} />);
+
+    await waitFor(() => expect(loadDiff).toHaveBeenCalledWith("src/a.ts", expect.anything()));
+    expect(loadChanges.mock.calls).toEqual([["turn", "t2"]]);
+    expect(trigger().textContent).toBe("Turn 2");
+    expect(localStorage.getItem(KEY)).toBeNull();
+
+    fireEvent.click(trigger());
+    fireEvent.click(await screen.findByRole("option", { name: "Uncommitted changes" }));
+    await waitFor(() => expect(loadChanges).toHaveBeenLastCalledWith("uncommitted", undefined));
+    expect(localStorage.getItem(KEY)).toBe("uncommitted");
+
+    // The way back is still on offer, and takes the same turn.
+    fireEvent.click(trigger());
+    fireEvent.click(await screen.findByRole("option", { name: "Turn 2" }));
+    await waitFor(() => expect(loadChanges).toHaveBeenLastCalledWith("turn", "t2"));
+    expect(localStorage.getItem(KEY)).toBe("uncommitted");
+  });
+
+  it("leaves the comparison alone for a diff request that names no turn", async () => {
+    localStorage.setItem(KEY, "branch");
+    const loadChanges = vi.fn((_c: string, _t?: string) => Promise.resolve(changesWith()));
+    render(<Panel {...props({ loadChanges, request: { kind: "diff", nonce: 1 } })} />);
+
+    await waitFor(() => expect(loadChanges).toHaveBeenCalled());
+    expect(loadChanges.mock.calls).toEqual([["branch", undefined]]);
+    expect(trigger().textContent).toBe("Branch changes");
+  });
+});
+
 describe("Panel width", () => {
   beforeEach(() => localStorage.clear());
 

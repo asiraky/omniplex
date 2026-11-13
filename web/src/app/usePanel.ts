@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { PanelRequest } from "~/components/panel/Panel";
+import type { DiffTurn } from "~/protocol";
 
 import type { ThreadStore } from "./threadStore";
 
@@ -28,10 +29,11 @@ export function usePanel(threadStore: ThreadStore) {
   const [request, setRequest] = useState<PanelRequest | null>(null);
 
   // Opening the diff from a turn's card: show the panel, and put it on the file
-  // that was clicked.
-  const openDiff = useCallback((path?: string) => {
+  // that was clicked. A card names its turn, so the panel shows what that turn
+  // changed; the keybinding and palette name none and leave the comparison be.
+  const openDiff = useCallback((path?: string, turn?: DiffTurn) => {
     setOpen(true);
-    setRequest((current) => ({ kind: "diff", path, nonce: (current?.nonce ?? 0) + 1 }));
+    setRequest((current) => ({ kind: "diff", path, turn, nonce: (current?.nonce ?? 0) + 1 }));
   }, []);
 
   // Opening the jobs surface from the strip or a spawn card in the transcript.

@@ -46,7 +46,16 @@ import {
 import { endTerminal } from "~/lib/termSocket";
 import { fileName } from "~/lib/tree";
 import { cn } from "~/lib/utils";
-import type { DiffComparison, FileContent, FileDiff, FileTree, PullRequest, ThreadChanges, ThreadState } from "~/protocol";
+import type {
+  DiffComparison,
+  DiffTurn,
+  FileContent,
+  FileDiff,
+  FileTree,
+  PullRequest,
+  ThreadChanges,
+  ThreadState,
+} from "~/protocol";
 import { useLatest } from "~/useLatest";
 import { useDocksPanel } from "~/useMediaQuery";
 
@@ -62,6 +71,8 @@ export interface PanelRequest {
   path?: string;
   line?: number;
   artefactId?: string;
+  /** For a diff request: the turn whose changes to show. */
+  turn?: DiffTurn;
   nonce: number;
 }
 
@@ -78,7 +89,8 @@ export interface PanelProps {
   onToggleExpanded?: () => void;
   /** Data is re-read when this changes — when a turn ends, in practice. */
   revision: string;
-  loadChanges: (comparison: DiffComparison) => Promise<ThreadChanges>;
+  /** The turn id is set only for a `turn` comparison. */
+  loadChanges: (comparison: DiffComparison, turnId?: string) => Promise<ThreadChanges>;
   loadDiff: (path: string, changes: ThreadChanges) => Promise<FileDiff>;
   loadTree: (includeIgnored: boolean) => Promise<FileTree>;
   loadFile: (path: string) => Promise<FileContent>;
@@ -110,6 +122,8 @@ interface Route {
   update?: (p: PanelState) => PanelState;
   /** A changed file to open in the diff surface. */
   reveal?: { path: string; nonce: number };
+  /** The turn whose changes the diff surface should switch to. */
+  turn?: DiffTurn;
   /** Set only when a file tab opens: the line to scroll to, if any. */
   file?: { line?: number };
 }
@@ -131,6 +145,7 @@ function routeRequest(
       return {
         update: (p) => openSurface(p, { id: "diff", kind: "diff" }),
         reveal: path ? { path, nonce } : undefined,
+        turn: request.turn,
       };
     case "jobs":
     case "artefacts": {
@@ -204,6 +219,10 @@ function PanelBody({
     const stored = localStorage.getItem(`omniplex.diffComparison:${threadId}`);
     return stored === "branch" || stored === "pull_request" ? stored : "uncommitted";
   });
+  // The turn a card last asked for. It outlives a switch to another comparison,
+  // so the select can still offer the way back to it.
+  const [turn, setTurn] = useState<DiffTurn | null>(null);
+  const turnId = comparison === "turn" ? turn?.id : undefined;
   const [changesLoading, setChangesLoading] = useState(false);
   const [changesError, setChangesError] = useState("");
   // A refresh that started earlier must not overwrite a later one's answer.
@@ -217,7 +236,7 @@ function PanelBody({
     setChangesLoading(true);
     setChangesError("");
     try {
-      const next = await loadChangesRef.current(comparison);
+      const next = await loadChangesRef.current(comparison, turnId);
       if (generation !== changesGeneration.current) return;
       setChanges(next);
     } catch (e) {
@@ -226,10 +245,12 @@ function PanelBody({
     } finally {
       if (generation === changesGeneration.current) setChangesLoading(false);
     }
-  }, [comparison, loadChangesRef]);
+  }, [comparison, turnId, loadChangesRef]);
 
   const changeComparison = useCallback((next: DiffComparison) => {
-    localStorage.setItem(`omniplex.diffComparison:${threadId}`, next);
+    // A turn is a look back at one moment, not a way of working: the next
+    // mount opens on the last comparison the user chose for themselves.
+    if (next !== "turn") localStorage.setItem(`omniplex.diffComparison:${threadId}`, next);
     setChanges(null);
     setChangesError("");
     setComparison(next);
@@ -304,6 +325,14 @@ function PanelBody({
       if (route.update) setPanel(route.update);
       if (route.reveal) setReveal(route.reveal);
       if (route.file) setFileLine(route.file.line);
+      // In this same pass, so the reveal waits for the turn's list rather
+      // than firing on whatever list was on screen before.
+      if (route.turn && (comparison !== "turn" || turn?.id !== route.turn.id)) {
+        setTurn(route.turn);
+        setChanges(null);
+        setChangesError("");
+        setComparison("turn");
+      }
     }
   }
 
@@ -458,6 +487,7 @@ function PanelBody({
             loadDiff={loadDiff}
             reveal={reveal}
             comparison={comparison}
+            turn={turn}
             onComparisonChange={changeComparison}
             pr={pr}
           />

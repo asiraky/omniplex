@@ -248,12 +248,15 @@ type skillArgs struct {
 type threadArgs struct {
 	ThreadID   string `json:"threadId"`
 	Comparison string `json:"comparison,omitempty"`
+	// TurnID picks the turn a "turn" comparison is taken over.
+	TurnID string `json:"turnId,omitempty"`
 }
 
 type fileDiffArgs struct {
 	ThreadID   string `json:"threadId"`
 	Path       string `json:"path"`
 	Comparison string `json:"comparison,omitempty"`
+	TurnID     string `json:"turnId,omitempty"`
 	Base       string `json:"base,omitempty"`
 	Head       string `json:"head,omitempty"`
 }

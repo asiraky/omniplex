@@ -49,6 +49,7 @@ type ThreadChanges struct {
 	// the comparison is against the working tree's own HEAD.
 	Base      string        `json:"base,omitempty"`
 	Head      string        `json:"head,omitempty"`
+	TurnID    string        `json:"turnId,omitempty"`
 	Files     []ChangedFile `json:"files"`
 	Additions int           `json:"additions"`
 	Deletions int           `json:"deletions"`
@@ -62,6 +63,9 @@ const (
 	DiffUncommitted = "uncommitted"
 	DiffBranch      = "branch"
 	DiffPullRequest = "pull_request"
+	// DiffTurn is one turn's own changes: the diff between the snapshots
+	// taken as it started and as it ended.
+	DiffTurn = "turn"
 )
 
 // FileDiff is one file's unified diff, for the panel that opens beside the list.
@@ -76,8 +80,8 @@ type FileDiff struct {
 
 // ThreadChanges lists every file the thread's checkout differs by, measured
 // against the base branch it was cut from.
-func (m *Manager) ThreadChanges(ctx context.Context, threadID, mode string) (ThreadChanges, error) {
-	scope, err := m.diffScope(ctx, threadID, mode)
+func (m *Manager) ThreadChanges(ctx context.Context, threadID, mode, turnID string) (ThreadChanges, error) {
+	scope, err := m.diffScope(ctx, threadID, mode, turnID)
 	if err != nil {
 		return ThreadChanges{}, err
 	}
@@ -85,7 +89,7 @@ func (m *Manager) ThreadChanges(ctx context.Context, threadID, mode string) (Thr
 }
 
 func changesForScope(ctx context.Context, scope diffScope) (ThreadChanges, error) {
-	out := ThreadChanges{Root: scope.root, Branch: scope.branch, Mode: scope.mode, BaseRef: scope.baseRef, Base: scope.base, Head: scope.head, Files: []ChangedFile{}}
+	out := ThreadChanges{Root: scope.root, Branch: scope.branch, Mode: scope.mode, BaseRef: scope.baseRef, Base: scope.base, Head: scope.head, TurnID: scope.turnID, Files: []ChangedFile{}}
 	if scope.warning != "" {
 		out.Warning = scope.warning
 		return out, nil
@@ -95,7 +99,10 @@ func changesForScope(ctx context.Context, scope diffScope) (ThreadChanges, error
 	if err != nil {
 		return ThreadChanges{}, err
 	}
-	if scope.mode != DiffPullRequest {
+	// A fixed head is a range between two commits, and what sits untracked in
+	// the worktree now is no part of it: a pull request's commits, or a turn's
+	// snapshots, which already hold whatever was untracked when they were taken.
+	if scope.head == "" {
 		untracked, err := untrackedChanges(ctx, scope.root)
 		if err != nil {
 			return ThreadChanges{}, err
@@ -119,14 +126,14 @@ func changesForScope(ctx context.Context, scope diffScope) (ThreadChanges, error
 
 // ThreadFileDiff renders one file's unified diff. The path must be one the
 // change list reported: a thread's checkout is not a file server.
-func (m *Manager) ThreadFileDiff(ctx context.Context, threadID, path, mode, base, head string) (FileDiff, error) {
+func (m *Manager) ThreadFileDiff(ctx context.Context, threadID, path, mode, turnID, base, head string) (FileDiff, error) {
 	var changes ThreadChanges
 	var err error
 	if mode == DiffPullRequest && base != "" && head != "" {
 		// The list response already resolved the attached PR. Reuse that immutable
 		// commit range for its file reads instead of paying for another network
 		// lookup per expanded row.
-		scope, scopeErr := m.diffScope(ctx, threadID, DiffUncommitted)
+		scope, scopeErr := m.diffScope(ctx, threadID, DiffUncommitted, "")
 		if scopeErr != nil {
 			return FileDiff{}, scopeErr
 		}
@@ -145,7 +152,7 @@ func (m *Manager) ThreadFileDiff(ctx context.Context, threadID, path, mode, base
 		scope.mode, scope.base, scope.head = mode, base, head
 		changes, err = changesForScope(ctx, scope)
 	} else {
-		changes, err = m.ThreadChanges(ctx, threadID, mode)
+		changes, err = m.ThreadChanges(ctx, threadID, mode, turnID)
 	}
 	if err != nil {
 		return FileDiff{}, err
@@ -203,13 +210,21 @@ type diffScope struct {
 	// base branch, or HEAD when there is no usable base branch.
 	base    string
 	head    string
+	turnID  string
 	warning string
 }
 
 // diffScope works out where to run Git and what to compare against. Failure to
 // find a base branch is not an error: comparing against HEAD still shows
 // everything uncommitted, which is most of what a live thread has.
-func (m *Manager) diffScope(ctx context.Context, threadID, mode string) (diffScope, error) {
+func (m *Manager) diffScope(ctx context.Context, threadID, mode, turnID string) (diffScope, error) {
+	// The turn id becomes part of a ref name, so it is checked before anything
+	// reaches git: a stray `..` or `:` would name some other ref, or none.
+	if mode == DiffTurn {
+		if err := validTurnID(turnID); err != nil {
+			return diffScope{}, err
+		}
+	}
 	meta, err := m.store.Thread(ctx, threadID)
 	if err != nil {
 		return diffScope{}, err
@@ -225,13 +240,17 @@ func (m *Manager) diffScope(ctx context.Context, threadID, mode string) (diffSco
 	if mode == "" {
 		mode = DiffUncommitted
 	}
-	if mode != DiffUncommitted && mode != DiffBranch && mode != DiffPullRequest {
+	if mode != DiffUncommitted && mode != DiffBranch && mode != DiffPullRequest && mode != DiffTurn {
 		return diffScope{}, fmt.Errorf("unknown diff mode %q", mode)
 	}
 	scope := diffScope{root: strings.TrimSpace(string(top)), mode: mode}
 
 	if b, err := runGit(ctx, scope.root, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 		scope.branch = strings.TrimSpace(string(b))
+	}
+
+	if mode == DiffTurn {
+		return turnScope(ctx, scope, threadID, turnID), nil
 	}
 
 	// A repository with no commits can still hold work; everything in it is
@@ -281,6 +300,39 @@ func (m *Manager) diffScope(ctx context.Context, threadID, mode string) (diffSco
 		break
 	}
 	return scope, nil
+}
+
+// turnScope compares the snapshot taken as a turn started with the one taken
+// as it ended. A missing snapshot is an ordinary answer, not a failure: a turn
+// that ran before checkpoints existed, or that was cut short before its end
+// was taken, has none, and dropping a thread's checkpoints removes them all.
+func turnScope(ctx context.Context, scope diffScope, threadID, turnID string) diffScope {
+	scope.turnID = turnID
+	oids := make([]string, 0, 2)
+	for _, edge := range []string{"base", "end"} {
+		raw, err := runGit(ctx, scope.root, "rev-parse", "--verify", "--quiet", checkpointRef(threadID, turnID, edge)+"^{commit}")
+		if err != nil {
+			scope.warning = "this turn's snapshots are gone, or were never taken, so its changes cannot be shown"
+			return scope
+		}
+		oids = append(oids, strings.TrimSpace(string(raw)))
+	}
+	scope.base, scope.head = oids[0], oids[1]
+	return scope
+}
+
+// validTurnID admits only what a turn id is made of. Turn ids are UUIDs, so
+// anything else did not come from a turn.
+func validTurnID(turnID string) error {
+	if turnID == "" {
+		return errors.New("a turn comparison needs a turn id")
+	}
+	for _, r := range turnID {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return fmt.Errorf("%q is not a turn id", turnID)
+		}
+	}
+	return nil
 }
 
 // baseCandidates is what a branch might have been cut from, best guess first:
