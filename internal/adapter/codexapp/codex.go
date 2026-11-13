@@ -350,6 +350,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		effort:      o.Effort,
 		serviceTier: o.ServiceTier,
 		extraDirs:   o.ExtraDirs,
+		suggest:     o.SuggestPrompts,
 	}
 	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification, host.Logf)
 
@@ -359,8 +360,10 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		CodexHome string `json:"codexHome"`
 	}
 	if err := s.conn.Call(ctx, "initialize", map[string]any{
-		"clientInfo":   map[string]any{"name": "omniplex", "version": "0.1.0"},
-		"capabilities": map[string]any{},
+		"clientInfo": map[string]any{"name": "omniplex", "version": "0.1.0"},
+		// thread/sample, which suggests the next prompt, is experimental, and
+		// the server refuses it without this.
+		"capabilities": map[string]any{"experimentalApi": true},
 	}, &initRes); err != nil {
 		err = s.died(err)
 		_ = s.Close()
@@ -469,6 +472,9 @@ type session struct {
 	threadID string
 	effort   string
 	model    string
+	// suggest is whether a turn that ends normally is followed by a
+	// thread/sample for the human's likely next prompt.
+	suggest bool
 	// serviceTier is sent per turn as serviceTierForTurn, never as the
 	// thread's own serviceTier: that one persists on the codex thread, so
 	// clearing it here would leave codex still running fast.
@@ -1556,10 +1562,12 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		// lastTurn and lastServerTurn name one turn or lastTurn is empty: a
 		// completion naming no codex id leaves lastServerTurn the turn before.
 		s.lastTurn = done
-		if finished := p.Turn.ID; finished != "" {
+		finished := p.Turn.ID
+		if finished == "" {
+			finished = known
+		}
+		if finished != "" {
 			s.lastServerTurn = finished
-		} else if known != "" {
-			s.lastServerTurn = known
 		} else {
 			s.lastTurn = ""
 		}
@@ -1608,6 +1616,13 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		}
 
 		s.emit(proto.Emit(proto.TurnFinished, fin))
+
+		// Off the read loop, which delivers the answer, and never in the way
+		// of the next turn/start: codex refuses the sample once a turn is
+		// active, and that turn simply gets no suggestion.
+		if stop == proto.StopEndTurn && s.suggest && finished != "" {
+			go s.suggestNext(done, finished)
+		}
 
 		// A finished turn is when the allowance moved, so the quota cache
 		// re-reads now — the notification the CLI pushes on its own covers the

@@ -1,0 +1,62 @@
+package codexapp
+
+import (
+	"context"
+	"time"
+
+	"github.com/asiraky/omniplex/internal/proto"
+)
+
+// suggestPrompt is what thread/sample asks of the finished turn's context.
+const suggestPrompt = "Predict the user's most likely next message to you in this conversation. " +
+	"Reply with only that message, as the user would type it: one line, under 200 characters, " +
+	"no preamble, no quotes. If there is no clear next step, reply with nothing."
+
+// suggestTimeout bounds a sample. It runs after the turn has finished, so it
+// holds nothing up, but a hung one should not linger.
+const suggestTimeout = time.Minute
+
+// suggestNext asks codex for the human's likely next prompt after turn, ours,
+// which codex knows as serverTurn, and emits it as turn.suggested. thread/sample
+// is a side completion on the thread's context that adds no turn. Codex
+// refuses it when serverTurn is no longer the latest finished turn, or a turn
+// is running; that, any other failure, and an empty answer all mean no
+// suggestion.
+func (s *session) suggestNext(turn, serverTurn string) {
+	ctx, cancel := context.WithTimeout(context.Background(), suggestTimeout)
+	defer cancel()
+	go func() {
+		select {
+		case <-s.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	var res struct {
+		Text *string `json:"text"`
+	}
+	if err := s.conn.Call(ctx, "thread/sample", map[string]any{
+		"threadId":       s.threadID,
+		"expectedTurnId": serverTurn,
+		"prompt":         suggestPrompt,
+		"effort":         "low",
+	}, &res); err != nil {
+		s.host.Logf("codex suggestion dropped: %v", err)
+		return
+	}
+	if res.Text == nil {
+		return
+	}
+	p, ok := proto.Suggested(turn, *res.Text)
+	if !ok {
+		return
+	}
+	// A turn that started while the sample ran owns the composer now.
+	s.mu.Lock()
+	stale := s.turnID != "" || s.lastTurn != turn
+	s.mu.Unlock()
+	if stale {
+		return
+	}
+	s.emit(proto.Emit(proto.TurnSuggested, p))
+}
