@@ -317,7 +317,7 @@ func isCompatibilityHook(path, kind string) bool {
 // baseRefFor is the base a thread asked for: its own choice where it made
 // one, and the folder default otherwise. It is a request, not a ref Git is
 // guaranteed to know — resolveBaseRef turns it into one, and reads empty as
-// HEAD.
+// the repository's default branch.
 func baseRefFor(meta store.ThreadMeta, f project.Folder) string {
 	if base := strings.TrimSpace(meta.BaseRef); base != "" {
 		return base

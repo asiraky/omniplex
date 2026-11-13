@@ -321,14 +321,164 @@ func TestResolveBaseRefFallsBackFromAFlagLikeRef(t *testing.T) {
 	}
 }
 
-func TestResolveBaseRefWithNoBaseIsHEAD(t *testing.T) {
+// onAFeatureBranch moves the main checkout onto a branch of its own with a
+// commit main does not have, the way a user's checkout usually is. A base that
+// came from HEAD would then land on this commit, not on any version of main.
+func onAFeatureBranch(t *testing.T, root string) (head string) {
+	t.Helper()
+	git(t, root, "checkout", "-b", "feature/mine")
+	if err := os.WriteFile(filepath.Join(root, "MINE"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "add", "MINE")
+	git(t, root, "commit", "-m", "mine")
+	return git(t, root, "rev-parse", "HEAD")
+}
+
+// withOrigin gives the repository an origin that is a copy of it and fetches
+// it, so origin/main is here and level with main. withHead also records
+// origin's default branch, as a clone does; without it the default branch is
+// found by name.
+func withOrigin(t *testing.T, root string, withHead bool) (remote string) {
+	t.Helper()
+	remote = filepath.Join(t.TempDir(), "origin.git")
+	git(t, root, "clone", "--bare", root, remote)
+	git(t, root, "remote", "add", "origin", remote)
+	git(t, root, "fetch", "origin")
+	if withHead {
+		git(t, root, "remote", "set-head", "origin", "main")
+	}
+	return remote
+}
+
+// defaultBehindRemote is the issue's shape for an empty base: someone pushed
+// to origin's main since this clone last fetched, and local main was never
+// pulled. Pushing updates the clone's origin/main too, so it is put back where
+// a clone that never fetched would have it: neither it nor local main has seen
+// the new commit.
+func defaultBehindRemote(t *testing.T, root string, withHead bool) (remoteTip, local string) {
+	t.Helper()
+	withOrigin(t, root, withHead)
+	local = git(t, root, "rev-parse", "main")
+	remoteTip = git(t, root, "commit-tree", "-p", local, "-m", "pushed by someone else", local+"^{tree}")
+	git(t, root, "push", "origin", remoteTip+":refs/heads/main")
+	git(t, root, "update-ref", "refs/remotes/origin/main", local)
+	return remoteTip, local
+}
+
+// No base means the default branch, freshened like a named one: a thread does
+// not start from whatever the checkout is on, nor from a main that is behind
+// origin. Local main is not moved. With origin/HEAD absent, main is still found
+// by name and still compared with origin/main.
+func TestResolveBaseRefWithNoBaseBranchesFromARemoteDefaultThatIsAhead(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		base     string
+		withHead bool
+		feature  bool
+	}{
+		{"origin HEAD", "", true, false},
+		{"origin HEAD, checkout on a feature branch", "  ", true, true},
+		{"no origin HEAD, checkout on a feature branch", "", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _, _ := gitRepo(t)
+			remoteTip, local := defaultBehindRemote(t, root, tc.withHead)
+			head := git(t, root, "rev-parse", "HEAD")
+			if tc.feature {
+				head = onAFeatureBranch(t, root)
+			}
+
+			res, err := resolveBaseRef(context.Background(), root, tc.base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.FellBack || res.Note == "" || !strings.Contains(res.Note, "main") {
+				t.Fatalf("resolution = %+v, want the remote's main with a note naming it", res)
+			}
+			if got := git(t, root, "rev-parse", res.Ref); got != remoteTip {
+				t.Fatalf("%s resolves to %s, want origin's new commit %s", res.Ref, got, remoteTip)
+			}
+			if got := git(t, root, "rev-parse", "refs/heads/main"); got != local {
+				t.Fatalf("local main moved: %s, want %s", got, local)
+			}
+			if got := git(t, root, "rev-parse", "HEAD"); got != head {
+				t.Fatalf("the checkout moved: %s, want %s", got, head)
+			}
+		})
+	}
+}
+
+// A local main level with origin, or ahead of it, is the one to use, and
+// quietly — even while the checkout is on another branch.
+func TestResolveBaseRefWithNoBaseUsesALocalMainThatIsNotBehind(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ahead bool
+	}{
+		{"level", false},
+		{"ahead", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _, _ := gitRepo(t)
+			withOrigin(t, root, true)
+			if tc.ahead {
+				parent := git(t, root, "rev-parse", "main")
+				git(t, root, "update-ref", "refs/heads/main", git(t, root, "commit-tree", "-p", parent, "-m", "local work", parent+"^{tree}"))
+			}
+			want := git(t, root, "rev-parse", "main")
+			remoteMain := git(t, root, "rev-parse", "origin/main")
+			onAFeatureBranch(t, root)
+
+			res, err := resolveBaseRef(context.Background(), root, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Ref != "main" || res.FellBack || res.Note != "" {
+				t.Fatalf("resolution = %+v, want local main, quietly", res)
+			}
+			if got := git(t, root, "rev-parse", "main"); got != want {
+				t.Fatalf("local main moved: %s, want %s", got, want)
+			}
+			if got := git(t, root, "rev-parse", "origin/main"); got != remoteMain {
+				t.Fatalf("origin/main is %s, want %s: the remote did not move", got, remoteMain)
+			}
+		})
+	}
+}
+
+// A repository with no remote and no main or master has no default branch to
+// name, so an empty base is the checkout's HEAD, as it always was, and quiet.
+func TestResolveBaseRefWithNoBaseAndNoDefaultBranchIsHEAD(t *testing.T) {
 	root, _, _ := gitRepo(t)
-	res, err := resolveBaseRef(context.Background(), root, "  ")
+	git(t, root, "branch", "-m", "main", "trunk")
+
+	res, err := resolveBaseRef(context.Background(), root, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Ref != "HEAD" || res.Note != "" {
+	if res.Ref != "HEAD" || res.Note != "" || res.FellBack {
 		t.Fatalf("resolution = %+v, want a quiet HEAD", res)
+	}
+}
+
+// Offline, an empty base is local main: the refresh is best-effort, and an
+// unreachable remote is neither an error nor a wait.
+func TestResolveBaseRefWithNoBaseUsesLocalMainWhenTheRemoteIsUnreachable(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	git(t, root, "remote", "add", "origin", filepath.Join(t.TempDir(), "definitely-not-here.git"))
+	onAFeatureBranch(t, root)
+
+	start := time.Now()
+	res, err := resolveBaseRef(context.Background(), root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Ref != "main" || res.FellBack {
+		t.Fatalf("resolution = %+v, want local main", res)
+	}
+	if took := time.Since(start); took >= baseRefreshTimeout {
+		t.Fatalf("resolving took %s, want a fast failure, not a wait on the timeout", took)
 	}
 }
 
@@ -383,6 +533,42 @@ func TestManagedWorktreeBranchesFromARemoteThatIsAhead(t *testing.T) {
 	}
 	if got := git(t, root, "rev-parse", "refs/heads/staging"); got != local {
 		t.Fatalf("the local branch moved: %s, want %s", got, local)
+	}
+}
+
+// End to end, the issue itself: a thread on "Default" in a folder with no base
+// branch starts at origin's main, not at the checkout's feature branch and not
+// at a stale local main, and the workspace card says so.
+func TestManagedWorktreeWithNoBaseBranchesFromARemoteDefaultThatIsAhead(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	remoteTip, local := defaultBehindRemote(t, root, true)
+	onAFeatureBranch(t, root)
+	st, p := testProject(t, root)
+	if p.Folders[0].BaseBranch != "" {
+		t.Fatalf("folder base branch is %q, want none", p.Folders[0].BaseBranch)
+	}
+	mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
+		ProjectID: p.ID, Workspace: "managed", Branch: "issue/9-on-default",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := ready(t, st, a.ID)
+	if got := git(t, meta.Cwd, "rev-parse", "HEAD"); got != remoteTip {
+		t.Fatalf("worktree HEAD %s, want origin's newer main %s", got, remoteTip)
+	}
+	if got := git(t, root, "rev-parse", "refs/heads/main"); got != local {
+		t.Fatalf("local main moved: %s, want %s", got, local)
+	}
+	state, err := a.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(state.Workspace.Output, "note: ") || !strings.Contains(state.Workspace.Output, "main") {
+		t.Fatalf("branching from origin's main was not reported on the workspace card: %q", state.Workspace.Output)
 	}
 }
 
