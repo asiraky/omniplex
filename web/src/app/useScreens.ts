@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { SettingsSection } from "~/components/SettingsScreen";
+import { onMove, useBackDismiss } from "~/lib/history";
 import type { ToolsTab } from "~/lib/toolsTab";
 
 export const SETUP_PATH = "/setup";
@@ -21,6 +22,10 @@ export function useScreens() {
   // open because these are the user's and the project's first. Open, and on
   // which tab when the caller cares; else the last one used.
   const [tools, setTools] = useState<{ tab?: ToolsTab } | null>(null);
+  // Neither is a dialog, but on a phone each covers the thread like one, so
+  // Back closes it rather than changing thread.
+  useBackDismiss(showUsage, () => setShowUsage(false));
+  useBackDismiss(!!tools, () => setTools(null));
   // The theme sample page: a static mock of the dashboard behind a palette
   // switcher, reachable at #themes so it needs no router.
   const [themePreview, setThemePreview] = useState(() => window.location.hash === "#themes");
@@ -31,7 +36,7 @@ export function useScreens() {
   }, []);
   // Drops the hash without a history entry, which fires no hashchange.
   const leaveThemePreview = useCallback(() => {
-    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
     setThemePreview(false);
   }, []);
 
@@ -40,14 +45,12 @@ export function useScreens() {
   // desktop app opens it by URL.
   const [setup, setSetup] = useState(() => window.location.pathname === SETUP_PATH);
   useEffect(() => {
-    const onPop = () => setSetup(window.location.pathname === SETUP_PATH);
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
+    return onMove(() => setSetup(window.location.pathname === SETUP_PATH));
   }, []);
   // Replaces rather than pushes: leaving setup is moving on, and Back landing
   // on it again would be a step backwards.
   const leaveSetup = useCallback(() => {
-    window.history.replaceState(null, "", "/");
+    window.history.replaceState(window.history.state, "", "/");
     setSetup(false);
   }, []);
 

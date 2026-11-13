@@ -125,6 +125,8 @@ func (a *Actor) evict(commit func() (time.Duration, bool)) bool {
 	// With no actor, the thread list derives attention from the stored phase.
 	// Anything the projection knows beyond it — a permission still pending in
 	// the log, a subagent still working — would vanish from the list.
+	// TurnFailed vanishes too, on purpose: it only classifies a working →
+	// idle edge the client sees live, and that edge is long past by now.
 	ctx := context.Background()
 	meta, err := a.store.Thread(ctx, a.ID)
 	if err != nil || a.state.Attention() != projection.AttentionForPhase(meta.Phase) {

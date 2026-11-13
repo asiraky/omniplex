@@ -11,7 +11,9 @@ import {
   detectComposerTrigger,
   rankComposerItems,
   replaceComposerTrigger,
+  type ComposerTrigger,
 } from "~/lib/composerItems";
+import { typeInto } from "~/lib/typeInto";
 import type { ComposerItem } from "~/protocol";
 import { useLatest } from "~/useLatest";
 
@@ -71,6 +73,10 @@ export function useComposerMenu({
 
   const focusAt = useCallback(
     (nextCursor: number) => {
+      // Focus now, inside the tap that asked for it: iOS raises the keyboard
+      // only for a focus made in the gesture. The caret waits a frame for a
+      // draft that was just changed to render.
+      textareaRef.current?.focus();
       window.requestAnimationFrame(() => {
         const el = textareaRef.current;
         if (!el) return;
@@ -123,12 +129,29 @@ export function useComposerMenu({
 
   const dismiss = useCallback(() => setDismissedTrigger(triggerKey), [triggerKey]);
 
+  // Typed in where the browser will take it, so a pick can be undone like a
+  // keystroke; the draft then follows from the textarea's own change event.
+  // Without `takeFocus` it leaves alone a textarea the person has since left.
+  const typeOverTrigger = useCallback(
+    (from: string, at: ComposerTrigger, text: string, { takeFocus }: { takeFocus: boolean }) => {
+      const next = replaceComposerTrigger(from, at, text);
+      const el = textareaRef.current;
+      const typed =
+        !!el &&
+        el.value === from &&
+        (takeFocus || document.activeElement === el) &&
+        typeInto(el, at.start, at.end, text);
+      if (!typed) changeDraft(next.value);
+      return { ...next, typed };
+    },
+    [changeDraft, textareaRef],
+  );
+
   const choose = useCallback(
     (item: ComposerItem) => {
       if (!trigger) return;
       if (item.behavior === "client-action" && item.action) {
-        const next = replaceComposerTrigger(draft, trigger, "");
-        changeDraft(next.value);
+        typeOverTrigger(draft, trigger, "", { takeFocus: true });
         setDismissedTrigger(triggerKey);
         runClientAction(item.action);
         return;
@@ -137,29 +160,28 @@ export function useComposerMenu({
         // An adapter action is a turn by another name: it goes to the same
         // thread the send button is waiting on, so it waits with it.
         if (sendDisabled) return;
-        const next = replaceComposerTrigger(draft, trigger, "");
         setDismissedTrigger(triggerKey);
         // Keep the literal command in place if the provider rejects it; App
         // has already surfaced the error and the user can retry or edit it.
         const submittedDraft = draft;
         void onRunComposerAction?.(item.action, "", item.insertText)
           .then(() => {
-            if (draftRef.current === submittedDraft) changeDraft(next.value);
+            if (draftRef.current !== submittedDraft) return;
+            typeOverTrigger(submittedDraft, trigger, "", { takeFocus: false });
           })
           .catch(() => {});
         return;
       }
-      const next = replaceComposerTrigger(draft, trigger, `${item.insertText} `);
-      changeDraft(next.value);
+      const next = typeOverTrigger(draft, trigger, `${item.insertText} `, { takeFocus: true });
       setDismissedTrigger(triggerKey);
-      focusAt(next.cursor);
+      if (!next.typed) focusAt(next.cursor);
     },
     [
-      changeDraft,
       draft,
       draftRef,
       focusAt,
       onRunComposerAction,
+      typeOverTrigger,
       runClientAction,
       sendDisabled,
       trigger,

@@ -16,6 +16,7 @@ import type { CardSignIn } from "~/lib/cards";
 import { describeSettings, pickerInstances, resolveInstance } from "~/lib/models";
 import { OpenPathContext } from "~/lib/openPath";
 import { ReadAloudContext } from "~/lib/readAloud";
+import { quoteInto, ReplyContext } from "~/lib/reply";
 import { threadTitle } from "~/lib/threadTitle";
 import { toast } from "~/lib/toast";
 import { useLatest } from "~/useLatest";
@@ -122,6 +123,21 @@ export function ThreadView({
     if (!instance) return undefined;
     return (model: string, effort: string) => describeSettings(instance, model, effort);
   }, [harnesses, instanceId, harnessId]);
+  // A reply's "reply" quotes it into this thread's draft and takes the cursor
+  // there, since what comes next is typing the answer. While the composer is
+  // locked (thread closed, workspace going away or broken), replies offer nothing.
+  const writable = useThread(useThreadStore(), composerWritable);
+  const { getDraft, setDraft } = store;
+  const { composerRef } = recents;
+  const reply = useCallback(
+    (quote: string) => {
+      if (!activeId) return;
+      const next = quoteInto(getDraft(activeId), quote);
+      setDraft(activeId, next);
+      composerRef.current?.focusEnd(next.length);
+    },
+    [activeId, composerRef, getDraft, setDraft],
+  );
   // A sign-in a saved card offers from its row in the transcript.
   const [signIn, setSignIn] = useState<CardSignIn | null>(null);
   const steers = harnessSteers(harnesses, harnessId);
@@ -178,40 +194,42 @@ export function ThreadView({
 
       <OpenPathContext.Provider value={panel.openPath}>
         <ReadAloudContext.Provider value={speech}>
-          <Transcript
-            key={activeId}
-            onLoadOlder={commands.loadOlderItems}
-            initialScroll={initialScroll}
-            onScrollChange={scroll.record}
-            onContinue={onContinue}
-            onLogin={onProviderLogin}
-            providerName={provider?.displayName}
-            providerReady={provider?.availability.state === "ready"}
-            onRetryTurn={harness.retryTurn}
-            switchTargets={harness.switchTargets}
-            onSwitchAccount={onSwitchAccount}
-            onCancelContinuation={onCancelContinuation}
-            onRetryProvision={onRetryProvision}
-            onCleanup={onCleanup}
-            onForceDelete={onForceDeleteThread}
-            onOpenDiff={panel.openDiff}
-            onOpenJobs={panel.openJobs}
-            onOpenArtefact={panel.openArtefact}
-            pr={pr}
-            onFinish={onFinishThread}
-            recents={recents.items}
-            recentsSeeded={recents.seeded}
-            onPickRecent={recents.pick}
-            onDequeue={commands.dequeue}
-            onEditQueued={commands.editQueued}
-            onSendQueued={commands.sendQueued}
-            onResumeQueue={commands.resumeQueue}
-            onQueuedEditLost={commands.keepLostEdit}
-            steers={steers}
-            onCardSignIn={setSignIn}
-            describeSettings={describe}
-            turnStatus={turnStatus}
-          />
+          <ReplyContext.Provider value={writable ? reply : null}>
+            <Transcript
+              key={activeId}
+              onLoadOlder={commands.loadOlderItems}
+              initialScroll={initialScroll}
+              onScrollChange={scroll.record}
+              onContinue={onContinue}
+              onLogin={onProviderLogin}
+              providerName={provider?.displayName}
+              providerReady={provider?.availability.state === "ready"}
+              onRetryTurn={harness.retryTurn}
+              switchTargets={harness.switchTargets}
+              onSwitchAccount={onSwitchAccount}
+              onCancelContinuation={onCancelContinuation}
+              onRetryProvision={onRetryProvision}
+              onCleanup={onCleanup}
+              onForceDelete={onForceDeleteThread}
+              onOpenDiff={panel.openDiff}
+              onOpenJobs={panel.openJobs}
+              onOpenArtefact={panel.openArtefact}
+              pr={pr}
+              onFinish={onFinishThread}
+              recents={recents.items}
+              recentsSeeded={recents.seeded}
+              onPickRecent={recents.pick}
+              onDequeue={commands.dequeue}
+              onEditQueued={commands.editQueued}
+              onSendQueued={commands.sendQueued}
+              onResumeQueue={commands.resumeQueue}
+              onQueuedEditLost={commands.keepLostEdit}
+              steers={steers}
+              onCardSignIn={setSignIn}
+              describeSettings={describe}
+              turnStatus={turnStatus}
+            />
+          </ReplyContext.Provider>
         </ReadAloudContext.Provider>
       </OpenPathContext.Provider>
 
@@ -444,7 +462,7 @@ function ThreadComposer({
       ref={recents.composerRef}
       draft={draft}
       onDraftChange={(text) => activeId && store.setDraft(activeId, text)}
-      disabled={state.closed || workspace.cleaning || workspace.failed}
+      disabled={!composerWritable(state)}
       disabledPlaceholder={workspace.placeholder}
       busy={state.phase === "turn"}
       steers={harnessSteers(harnesses, state.harness)}
@@ -489,6 +507,11 @@ function ThreadComposer({
 }
 
 const titleOf = (state: ThreadState | null) => state?.title;
+const composerWritable = (state: Pick<ThreadState, "closed" | "phase"> | null) => {
+  if (!state || state.closed) return false;
+  const workspace = workspaceStatus(state.phase);
+  return !workspace.cleaning && !workspace.failed;
+};
 const harnessOf = (state: ThreadState | null) => state?.harness;
 
 // What the dock draws. Not jobs: the strip selects those itself, so a job's

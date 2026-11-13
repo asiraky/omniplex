@@ -8,6 +8,7 @@ import { Button } from "~/components/ui/button";
 import { Label } from "~/components/ui/label";
 import { Separator } from "~/components/ui/separator";
 import { Switch } from "~/components/ui/switch";
+import { playAlertSound, useAlertSound } from "~/lib/alertSound";
 import {
   deviceLabel,
   fetchPush,
@@ -57,6 +58,7 @@ export function NotificationsSettings({ onBack }: { onBack?: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [sound, setSound] = useAlertSound();
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -171,6 +173,25 @@ export function NotificationsSettings({ onBack }: { onBack?: () => void }) {
           {error}
         </p>
       )}
+
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <Label htmlFor="settings-alert-sound">Play a sound</Label>
+          <p className="text-muted-foreground text-[11px]">
+            A short chime when a thread you're not looking at finishes or needs you. This device
+            only.
+          </p>
+        </div>
+        <Switch
+          id="settings-alert-sound"
+          checked={sound}
+          onCheckedChange={(next) => {
+            setSound(next);
+            // A preview, and the tap is the gesture that lets this page play audio.
+            if (next) playAlertSound("done");
+          }}
+        />
+      </div>
 
       <Separator />
 

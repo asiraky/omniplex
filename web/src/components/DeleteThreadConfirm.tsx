@@ -25,7 +25,7 @@ export function DeleteThreadConfirm({ flow }: { flow: DeleteThread }) {
   // and the row still leaves on its own.
   const held = flow.busy && !flow.stuck;
   return (
-    <Dialog open={flow.confirming !== null} onOpenChange={(open) => !open && flow.dismiss()}>
+    <Dialog open={flow.confirming !== null} onOpenChange={(open) => !open && !held && flow.dismiss()}>
       <DialogContent
         className="sm:max-w-sm"
         showCloseButton={!held}

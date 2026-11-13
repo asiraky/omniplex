@@ -1,10 +1,22 @@
-// Getting from a tapped notification to its thread. The service worker
-// (public/sw.js) either opens the app at /thread/<id>, or, when a window is
-// already open, focuses it and posts {type: "open-thread", threadId}. This is
-// the page's half: reading both, and registering the worker. It is in the main
-// bundle, so it stays tiny; the rest of push lives in lib/push.ts.
+// A thread's address, /thread/<id>: the URL the page shows while the thread is
+// open, the one "Copy thread link" hands out, and the one a tapped
+// notification opens. The service worker (public/sw.js) either opens the app
+// there, or, when a window is already open, focuses it and posts
+// {type: "open-thread", threadId}. This is the page's half: reading both, and
+// registering the worker. It is in the main bundle, so it stays tiny; the rest
+// of push lives in lib/push.ts.
 
 const THREAD_PATH = /^\/thread\/([^/]+)\/?$/;
+
+/** The path that opens a thread. */
+export function threadPath(id: string): string {
+  return `/thread/${encodeURIComponent(id)}`;
+}
+
+/** A thread's full link, on the address this page was reached at. */
+export function threadUrl(id: string): string {
+  return window.location.origin + threadPath(id);
+}
 
 /** The thread a /thread/<id> URL names, or null for any other path. */
 export function threadIdFromPath(pathname: string): string | null {

@@ -2,6 +2,7 @@
 // the DOM rather than the markdown source so a whole message and a reader's
 // highlighted selection go through the same rules.
 
+import { listNumber, listStart } from "~/lib/listNumber";
 import { SPEAK_AS_ATTR, SPEAK_ROOT_ATTR } from "~/lib/speechAttrs";
 
 const CHROME = new Set([
@@ -107,27 +108,12 @@ function inlineCode(raw: string): string {
   return isPath(text) ? fileName(text) : raw;
 }
 
-/** The number an ordered list's first item has. */
-function listStart(list: Element): number {
-  const start = Number.parseInt(list.getAttribute("start") ?? "", 10);
-  return Number.isNaN(start) ? 1 : start;
-}
-
 function isChrome(el: Element): boolean {
   return (
     CHROME.has(el.tagName.toUpperCase()) ||
     el.getAttribute("aria-hidden") === "true" ||
     el.hasAttribute("hidden")
   );
-}
-
-function listNumber(li: Element): number | null {
-  const list = li.parentElement;
-  if (list?.tagName !== "OL") return null;
-  let n = listStart(list);
-  for (let sib = li.previousElementSibling; sib; sib = sib.previousElementSibling)
-    if (sib.tagName === "LI") n++;
-  return n;
 }
 
 class Reader {
