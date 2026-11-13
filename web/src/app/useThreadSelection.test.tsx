@@ -233,5 +233,6 @@ describe("history", () => {
     land([two[1]]);
     expect(result.current.activeId).toBeNull();
     expect(window.location.pathname).toBe("/");
+    expect(localStorage.getItem("omniplex.lastThread")).toBeNull();
   });
 });

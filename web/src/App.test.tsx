@@ -501,6 +501,8 @@ describe("landing on a phone", () => {
     expect(attach).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(sidebarShowing()).toBe(true));
     expect(window.location.pathname).toBe("/");
+    // So the next boot does not fetch it again.
+    expect(localStorage.getItem("omniplex.lastThread")).toBeNull();
   });
 
   it("says nothing while it is still deciding", async () => {

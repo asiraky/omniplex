@@ -189,6 +189,8 @@ export function useThreadSelection({
   // Letting go of the attached thread because it is gone. On a phone that
   // leaves nothing behind the sidebar, so it comes back.
   const release = useCallback(() => {
+    // Nor does the next boot go fetching it.
+    if (localStorage.getItem(LAST_THREAD) === activeRef.current) localStorage.removeItem(LAST_THREAD);
     // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: letting go detaches the socket, and only the thread list arriving can say the thread is gone
     setActiveId(null);
     threadStore.set(null);
@@ -198,7 +200,7 @@ export function useThreadSelection({
     if (!isDesktop) setSidebarOpen(true);
     // Its entry no longer names it, so Back and a reload don't go looking.
     if (threadIdFromPath(window.location.pathname)) navigate("/", { replace: true });
-  }, [clientRef, dropResume, isDesktop, threadStore]);
+  }, [activeRef, clientRef, dropResume, isDesktop, threadStore]);
 
   // Restore the last thread once the list arrives. This runs once: after it,
   // "no thread selected" is a state the user chose, not one we have yet to
@@ -245,8 +247,7 @@ export function useThreadSelection({
       onForget(activeId);
       release();
       // A dead link still leaves the last thread to fall back on. Otherwise
-      // the last thread is the one just let go, and the branch below finds
-      // nothing to open.
+      // the last thread was the one just let go, and release forgot it.
     }
     const last = localStorage.getItem(LAST_THREAD);
     if (last && openable(threads, last)) {
