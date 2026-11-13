@@ -61,7 +61,7 @@ function latestPerArtefact(items: Item[]): Item[] {
   return [...last.values()];
 }
 
-function isSpawn(item: Item) {
+export function isSpawn(item: Item) {
   return item.kind === "tool" && item.toolKind === "agent";
 }
 

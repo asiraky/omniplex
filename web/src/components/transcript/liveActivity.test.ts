@@ -58,20 +58,33 @@ describe("liveActivity", () => {
 
   it("leaves a call to its own row while that row is the newest thing", () => {
     const quick: Item = { ...tool("completed"), id: "y" };
-    expect(liveActivity([prompt(), tool("in_progress"), quick], turns, "turn", false)?.call).toBeUndefined();
+    expect(liveActivity([prompt(), tool("in_progress"), quick], turns, "turn", false)?.foldedCall).toBeUndefined();
   });
 
   it("names a running call the agent has written past", () => {
     const build = tool("in_progress");
     const a = liveActivity([prompt(), build, said("While that builds")], turns, "turn", false);
-    expect(a).toMatchObject({ state: "working", call: build });
+    expect(a).toMatchObject({ state: "working", foldedCall: build });
   });
 
   it("names a running call the agent is thinking past", () => {
     const build = tool("in_progress");
     const thought = said("The build is slow", "thought");
     const a = liveActivity([prompt(), build, { ...tool("completed"), id: "y" }, thought], turns, "turn", false);
-    expect(a).toMatchObject({ state: "thinking", thought, call: build });
+    expect(a).toMatchObject({ state: "thinking", thought, foldedCall: build });
+  });
+
+  it("names a running call that agents were spawned after", () => {
+    const build = tool("in_progress");
+    const spawn: Item = { ...tool("completed"), id: "s", toolKind: "agent" };
+    expect(liveActivity([prompt(), build, spawn], turns, "turn", false)).toMatchObject({ state: "working", foldedCall: build });
+  });
+
+  it("leaves a running spawn to its own card", () => {
+    const spawn: Item = { ...tool("in_progress"), toolKind: "agent" };
+    const a = liveActivity([prompt(), spawn, said("They are reading")], turns, "turn", false);
+    expect(a?.state).toBe("working");
+    expect(a?.foldedCall).toBeUndefined();
   });
 
   it("is thinking once the newest call has finished", () => {
@@ -108,6 +121,17 @@ describe("thoughtPreview", () => {
   it("is the paragraph streaming now, past a bold line far back up the prose", () => {
     const md = "**Plan**\n\nRead the router.\n\nThen the tests, which are slow.";
     expect(thoughtPreview(md)).toBe("Then the tests, which are slow.");
+  });
+
+  it("is the newest finished sentences of a paragraph too long for two lines", () => {
+    const md = "The router was rewritten last spring. ".repeat(6) + "Now the tests fail on the back button. And then it ret";
+    const fit = "The router was rewritten last spring. ".repeat(3) + "Now the tests fail on the back button.";
+    expect(thoughtPreview(md)).toBe(`…${fit}`);
+  });
+
+  it("is the start of a long paragraph with no sentence finished yet", () => {
+    const md = "word ".repeat(50);
+    expect(thoughtPreview(md)).toBe(md.trim());
   });
 
   it("is the heading while its section has just started", () => {

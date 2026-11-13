@@ -28,8 +28,11 @@ function Elapsed({ since }: { since: number }) {
   return <span className="shrink-0 tabular-nums">{elapsed(Math.max(0, now - since))}</span>;
 }
 
-const LABEL = { working: "Working", thinking: "Thinking", waiting: "Waiting for you" };
-const ICON = { working: TimerIcon, thinking: BrainIcon, waiting: HandIcon };
+const SHOWN: Record<LiveActivity["state"], { label: string; Icon: typeof TimerIcon; shimmer: boolean }> = {
+  working: { label: "Working", Icon: TimerIcon, shimmer: false },
+  thinking: { label: "Thinking", Icon: BrainIcon, shimmer: true },
+  waiting: { label: "Waiting for you", Icon: HandIcon, shimmer: false },
+};
 
 /**
  * The line at the tail of a running turn: what the agent is doing, and for
@@ -37,7 +40,7 @@ const ICON = { working: TimerIcon, thinking: BrainIcon, waiting: HandIcon };
  * while a call runs its row shimmers, and while text streams the caret moves,
  * so this line stays still and only keeps time. Waiting never shimmers:
  * nothing is happening until the user answers. A call still running whose row
- * has folded away is named here, and shimmers here instead.
+ * has folded to a summary is named here, and shimmers here instead.
  *
  * Reasoning streaming in is previewed under it on a phone, clamped to two
  * lines, while the transcript leaves the thought itself out. Wider up there is
@@ -48,26 +51,26 @@ const ICON = { working: TimerIcon, thinking: BrainIcon, waiting: HandIcon };
  * drown out everything else a screen reader has to say.
  */
 export function WorkingLine({ activity }: { activity: LiveActivity }) {
-  const { state, call } = activity;
+  const { foldedCall } = activity;
+  const { label, Icon, shimmer } = SHOWN[activity.state];
   const preview = activity.thought ? thoughtPreview(activity.thought.text ?? "") : "";
-  const Icon = ICON[state];
 
   return (
     <div data-working-line className="text-muted-foreground flex min-w-0 flex-col gap-1 text-[13px]">
       <div className="flex min-w-0 items-center gap-2">
         <Icon aria-hidden className="size-3.5 shrink-0" />
-        <span className={cn("shrink-0", state === "thinking" && "shimmer")}>{LABEL[state]}</span>
+        <span className={cn("shrink-0", shimmer && "shimmer")}>{label}</span>
         {activity.startedAt !== undefined && (
           <>
             <span aria-hidden>·</span>
             <Elapsed since={activity.startedAt} />
           </>
         )}
-        {call && (
+        {foldedCall && (
           <>
             <span aria-hidden>·</span>
             <span className="min-w-0 truncate font-mono text-[12px]">
-              <span className={cn(state === "working" && "shimmer")}>{call.title || "a call"}</span>
+              <span className={cn(foldedCall.status === "in_progress" && "shimmer")}>{foldedCall.title || "a call"}</span>
             </span>
           </>
         )}

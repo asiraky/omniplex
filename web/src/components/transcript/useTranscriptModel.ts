@@ -92,10 +92,10 @@ export function useTranscriptModel(
   }, [ownItems, state.turns]);
 
   // What the working line at the tail says, while a turn runs.
-  const waiting = (state.pendingPermissions?.length ?? 0) + (state.pendingElicitations?.length ?? 0) > 0;
+  const asking = (state.pendingPermissions?.length ?? 0) + (state.pendingElicitations?.length ?? 0) > 0;
   const activity = useMemo(
-    () => liveActivity(ownItems, state.turns, state.phase, waiting),
-    [ownItems, state.turns, state.phase, waiting],
+    () => liveActivity(ownItems, state.turns, state.phase, asking),
+    [ownItems, state.turns, state.phase, asking],
   );
 
   // Sending a prompt should not leave it jammed against the composer with the
