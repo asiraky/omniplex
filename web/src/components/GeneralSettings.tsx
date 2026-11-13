@@ -358,6 +358,21 @@ export function GeneralSettings({
         />
       </div>
 
+      <div data-setting="suggest-prompts" className="flex items-start gap-3">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <Label htmlFor="settings-suggest-prompts">Suggest a next prompt</Label>
+          <p className="text-muted-foreground text-[11px]">
+            After a turn, offer the agent's guess at your next message. Takes effect when a session
+            next starts.
+          </p>
+        </div>
+        <Switch
+          id="settings-suggest-prompts"
+          checked={cfg.suggestPrompts !== false}
+          onCheckedChange={(on) => patch({ suggestPrompts: on })}
+        />
+      </div>
+
       <div data-setting="auto-update-harnesses" className="flex items-start gap-3">
         <div className="min-w-0 flex-1 space-y-1.5">
           <Label htmlFor="settings-auto-update-harnesses">Keep harness CLIs up to date</Label>

@@ -42,6 +42,7 @@ import { useComposerItems } from "./composer/useComposerItems";
 import { JobsStrip } from "./JobsStrip";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { ScheduledPrompts } from "./ScheduledPrompts";
+import { SuggestionChip } from "./SuggestionChip";
 import { Transcript } from "./Transcript";
 
 // Both open on something the user or the agent does mid-thread, never on the
@@ -427,6 +428,21 @@ function ComposerDock({
           />
         </Suspense>
       )}
+      {/* Directly above the composer, one line: the keyboard opening
+          moves the whole overlay, never this alone. Tapping the text hands
+          it to the composer the way a reply's quote does. */}
+      <SuggestionChip
+        threadId={activeId}
+        draftStore={store.draftStore}
+        outbox={store.outbox}
+        staged={!!activeId && (store.attachments[activeId]?.length ?? 0) > 0}
+        onEdit={(text) => {
+          if (!activeId) return;
+          store.setDraft(activeId, text);
+          recents.composerRef.current?.focusEnd(text.length);
+        }}
+        onSend={(text) => recents.composerRef.current?.send(text)}
+      />
       <ThreadComposer
         key={activeId}
         activeId={activeId}

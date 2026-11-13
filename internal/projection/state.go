@@ -472,6 +472,10 @@ type State struct {
 	// ExtensionStatuses are the status lines harness extensions keep in the
 	// thread header, in the order their keys first appeared. Never windowed.
 	ExtensionStatuses []ExtensionStatus `json:"extensionStatuses"`
+	// Suggestion is the harness's proposed next prompt for the latest turn,
+	// nil when it has none or a newer turn has started. Replaced whole,
+	// never edited in place, so a clone may share it.
+	Suggestion *proto.TurnSuggestedPayload `json:"suggestion,omitempty"`
 
 	itemIndex map[string]int `json:"-"`
 	jobIndex  map[string]int `json:"-"`
@@ -870,6 +874,9 @@ func (s *State) Apply(ev proto.Event) {
 		var p proto.TurnStartedPayload
 		decode(ev.Payload, &p)
 		s.Phase = "turn"
+		// A suggestion answers the turn before this one. Mirrored in
+		// web/src/apply.ts.
+		s.Suggestion = nil
 		if p.QueueID != "" {
 			// A turn the harness started from a prompt it was holding names
 			// the queue entry but not what it carried: the echo it is built
@@ -1014,6 +1021,16 @@ func (s *State) Apply(ev proto.Event) {
 				diff := p
 				s.Turns[i].Diff = &diff
 			}
+		}
+
+	case proto.TurnSuggested:
+		var p proto.TurnSuggestedPayload
+		decode(ev.Payload, &p)
+		// Only a suggestion for the latest turn is offered: one for an
+		// earlier turn arrived after the human had already moved on.
+		// Mirrored in web/src/apply.ts.
+		if n := len(s.Turns); n > 0 && s.Turns[n-1].ID == p.TurnID {
+			s.Suggestion = &p
 		}
 
 	case proto.TurnFinished:

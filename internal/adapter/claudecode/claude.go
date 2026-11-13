@@ -284,6 +284,9 @@ type sidecarConfig struct {
 	// sends an empty one, not Claude Code's CLI preset, and these sit on that
 	// same minimal base.
 	Instructions string `json:"instructions,omitempty"`
+	// PromptSuggestions is the SDK option of the same name: after a turn the
+	// harness sends one prompt_suggestion, its guess at the next prompt.
+	PromptSuggestions bool `json:"promptSuggestions,omitempty"`
 }
 
 // sdkPlugin is the SDK's local plugin option: a folder holding
@@ -335,6 +338,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		ClaudePath:                      r.claudePath,
 		AdditionalDirectories:           o.ExtraDirs,
 		Instructions:                    o.Instructions,
+		PromptSuggestions:               o.SuggestPrompts,
 	}
 	servers, secrets, err := sidecarMCP(o.MCPServers)
 	if err != nil {
@@ -489,6 +493,14 @@ type session struct {
 	turnID    string
 	streams   map[string]*stream
 	sawResult bool
+
+	// suggestFor is the turn a prompt_suggestion would belong to: the last
+	// one, set by a result that ended it normally. The suggestion arrives
+	// after that result, when turnID is already clear, and carries no turn
+	// of its own. Any other result, a new turn, or the suggestion itself
+	// clears it, so a late one is dropped rather than put on the wrong turn.
+	suggestFor string
+
 	// steers are prompts handed to the harness mid-turn that it has not read
 	// yet, keyed by the uuid stamped on them; the value is whether Cancel
 	// has since discarded them. The harness echoes the uuid back when it
@@ -594,6 +606,7 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	}
 	s.turnID = in.TurnID
 	s.sawResult = false
+	s.suggestFor = ""
 	s.mu.Unlock()
 
 	return s.conn.Notify("prompt", promptParams(in.Text, in.Images, in.TurnID))
@@ -670,6 +683,7 @@ func (s *session) Cancel(ctx context.Context) error {
 	}
 	s.turnID = ""
 	s.sawResult = true
+	s.suggestFor = ""
 	s.mu.Unlock()
 	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 		TurnID: turn, StopReason: proto.StopCancelled,
@@ -866,6 +880,7 @@ func (s *session) ensureTurn() string {
 	id := uuid.NewString()
 	s.turnID = id
 	s.sawResult = false
+	s.suggestFor = ""
 	s.mu.Unlock()
 
 	s.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: id}))
@@ -1144,6 +1159,8 @@ func (s *session) handleSDKMessage(msg map[string]json.RawMessage) {
 		}
 	case "context_usage":
 		s.handleContextUsage(msg)
+	case "prompt_suggestion":
+		s.handleSuggestion(str(msg["suggestion"]))
 	case "rate_limit_event":
 		// The CLI streams this while a turn runs when a limit moves. It is a
 		// sparse account-level update, not session state: it goes to the host's
@@ -1729,6 +1746,7 @@ func (s *session) handleReplay(id, text string) {
 	turn := uuid.NewString()
 	s.turnID = turn
 	s.sawResult = false
+	s.suggestFor = ""
 	s.mu.Unlock()
 	s.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turn, Prompt: text, QueueID: id}))
 }
@@ -1840,6 +1858,12 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	s.turnID = ""
 	// The turn the CLI ran from a discarded steer has ended with this.
 	s.suppress = false
+	// Only a normal end is offered a next prompt. A result with no turn (a
+	// suppressed one) clears it too: its suggestion is not the last turn's.
+	s.suggestFor = ""
+	if stop == proto.StopEndTurn {
+		s.suggestFor = turn
+	}
 	s.mu.Unlock()
 
 	// A result for a turn that was never started — no prompt, and no output
@@ -1852,6 +1876,25 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 		TurnID: turn, StopReason: stop, Error: failure, Failure: failureKind, ResetAt: resetAt,
 	}))
+}
+
+// handleSuggestion maps the SDK's prompt_suggestion onto turn.suggested for
+// the turn that just ended. It is dropped once another turn has started, or
+// when the last turn did not end normally.
+func (s *session) handleSuggestion(text string) {
+	s.mu.Lock()
+	turn := s.suggestFor
+	if s.turnID != "" || s.suppress {
+		turn = ""
+	}
+	s.suggestFor = ""
+	s.mu.Unlock()
+	if turn == "" {
+		return
+	}
+	if p, ok := proto.Suggested(turn, text); ok {
+		s.emit(proto.Emit(proto.TurnSuggested, p))
+	}
 }
 
 // rateLimitInfo is the CLI's account of one limit window, as rate_limit_event

@@ -344,6 +344,7 @@ func turnEvents(r *rand.Rand, turn int) []proto.Emission {
 	}
 	add(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: tid, StopReason: proto.StopEndTurn})
 	add(proto.TurnDiff, proto.TurnDiffPayload{TurnID: tid, Files: []proto.ChangedFile{{Path: path, Status: "modified", Additions: 9, Deletions: 6}}, Additions: 9, Deletions: 6})
+	add(proto.TurnSuggested, proto.TurnSuggestedPayload{TurnID: tid, Text: sentence(r, 12)})
 	return ems
 }
 

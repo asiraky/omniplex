@@ -69,6 +69,11 @@ type CreateOptions struct {
 	// prompt and never in place of it: Claude takes them as its custom system
 	// prompt, Codex as developer instructions. Pi doesn't take them yet.
 	Instructions string
+
+	// SuggestPrompts asks the harness to propose the human's next prompt once
+	// a turn ends normally, emitted as proto.TurnSuggested. An adapter whose
+	// harness cannot ignores it. Read when the session starts.
+	SuggestPrompts bool
 }
 
 // PluginSkills is the skills folder of a plugin in CreateOptions.Plugins.

@@ -67,6 +67,9 @@ export interface ComposerHandle {
   /** Sends the default way, then opens a new thread's draft, as ⇧⌘↵ does.
       Does nothing where the composer has no `onSendAndNewThread`. */
   sendAndNewThread: () => void;
+  /** Sends `text` as though it had been typed and submitted: a leading
+      command runs as one. */
+  send: (text: string) => void;
 }
 
 /** A thread's parked drafts, and what the composer's menu can do with them. */
@@ -329,8 +332,9 @@ export function Composer({
     onRunComposerAction,
   });
   const sendAndNew = onSendAndNewThread && (() => void send(undefined, onSendAndNewThread));
-  // Through a ref, so the handle is not rebuilt every render, as `send` is.
+  // Through refs, so the handle is not rebuilt every render, as `send` is.
   const latestSendAndNew = useLatest(sendAndNew);
+  const sendRef = useLatest(send);
 
   // Grow with the content, up to a cap. Runs on mount too, so a restored draft
   // opens at the right height instead of a single collapsed row.
@@ -452,8 +456,9 @@ export function Composer({
         setModelPickerOpen(true);
       },
       sendAndNewThread: () => latestSendAndNew.current?.(),
+      send: (text: string) => void sendRef.current(undefined, undefined, text),
     }),
-    [draftRef, focusAt, hasPicker, latestSendAndNew],
+    [draftRef, focusAt, hasPicker, latestSendAndNew, sendRef],
   );
 
   const textarea = (

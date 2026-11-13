@@ -39,6 +39,9 @@ type extras struct {
 	extraDirs []string
 	skillDirs []string
 	plugins   []string
+	// suggestPrompts asks the harness for a next-prompt suggestion after
+	// each turn.
+	suggestPrompts bool
 }
 
 // options fills in everything a session gets from omniplex rather than from
@@ -47,6 +50,7 @@ type extras struct {
 func (x extras) options(o adapter.CreateOptions) adapter.CreateOptions {
 	o.MCPServers, o.ExtraDirs, o.SkillDirs, o.Plugins = x.mcp, x.extraDirs, x.skillDirs, x.plugins
 	o.Instructions = omniplexInstructions
+	o.SuggestPrompts = x.suggestPrompts
 	return o
 }
 
@@ -58,7 +62,8 @@ func (x extras) options(o adapter.CreateOptions) adapter.CreateOptions {
 // project also gets every folder of the project that is not already inside
 // another. A project's thread working outside the home also gets the home's
 // private skills; a harness in the home finds them by itself. Every thread
-// gets omniplex's bundled plugin.
+// gets omniplex's bundled plugin. Prompt suggestions follow the user's
+// setting, on unless it is turned off or the config cannot be read.
 func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, cwd string, logf func(string, ...any)) extras {
 	home, err := ThreadHome(ctx, st, meta.ProjectID, cwd)
 	if err != nil {
@@ -86,6 +91,8 @@ func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, met
 		x.mcp = ToolServers(meta.ID, home)
 	}
 	x.mcp = append(x.mcp, userMCPServers(ctx, ad, meta.ProjectID)...)
+	cfg, err := userconfig.Load()
+	x.suggestPrompts = err != nil || cfg.SuggestPrompts == nil || *cfg.SuggestPrompts
 	return x
 }
 

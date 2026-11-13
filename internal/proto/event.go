@@ -6,6 +6,7 @@ package proto
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -61,6 +62,11 @@ const (
 	// turn.finished, because it is measured by snapshotting the checkout once
 	// the harness has stopped writing to it.
 	TurnDiff = "turn.diff"
+	// TurnSuggested is the harness's guess at the human's next prompt, made
+	// after a turn ended normally. It arrives after turn.finished, names the
+	// turn it follows, and is offered only while that turn is still the
+	// latest: the next turn.started clears it.
+	TurnSuggested = "turn.suggested"
 
 	MessageChunk    = "message.chunk"
 	ToolCallStarted = "tool_call.started"
@@ -555,6 +561,30 @@ type TurnFinishedPayload struct {
 	// ResetAt is when a FailureLimit's window reopens, in epoch ms. Zero means
 	// the harness did not say, or the failure is not a limit.
 	ResetAt int64 `json:"resetAt,omitempty"`
+}
+
+// TurnSuggestedPayload is a suggested next prompt; see TurnSuggested.
+type TurnSuggestedPayload struct {
+	TurnID string `json:"turnId"`
+	Text   string `json:"text"`
+}
+
+// MaxSuggestion caps a suggested prompt, in runes. It is one line above the
+// composer, and a long one is the harness ignoring its brief.
+const MaxSuggestion = 200
+
+// Suggested builds the payload for a suggestion the harness produced: the
+// text folded onto one line and cut to at most MaxSuggestion runes. ok is false
+// when nothing is left, and then there is nothing to emit.
+func Suggested(turnID, text string) (p TurnSuggestedPayload, ok bool) {
+	text = strings.Join(strings.Fields(text), " ")
+	if r := []rune(text); len(r) > MaxSuggestion {
+		text = strings.TrimSpace(string(r[:MaxSuggestion]))
+	}
+	if turnID == "" || text == "" {
+		return TurnSuggestedPayload{}, false
+	}
+	return TurnSuggestedPayload{TurnID: turnID, Text: text}, true
 }
 
 // TurnLimitResetPayload back-fills TurnFinishedPayload.ResetAt for a limit

@@ -428,8 +428,13 @@ func (s *Store) Append(ctx context.Context, threadID string, em proto.Emission) 
 		threadID, seq, em.Type, payload, ts); err != nil {
 		return proto.Event{}, err
 	}
+	// A suggested next prompt is not news: it lands after the turn it follows,
+	// often once the reader has moved on, and a thread read up to that turn
+	// stays read rather than lighting up with nothing new to see.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE threads SET head_seq = ?, updated_at = ? WHERE id = ?`, seq, ts, threadID); err != nil {
+		`UPDATE threads SET head_seq = ?, updated_at = ?,
+			last_viewed_seq = CASE WHEN ? AND last_viewed_seq = ? THEN ? ELSE last_viewed_seq END
+		WHERE id = ?`, seq, ts, em.Type == proto.TurnSuggested, head, seq, threadID); err != nil {
 		return proto.Event{}, err
 	}
 	if err := updateScheduleIndex(ctx, tx, threadID, em, payload); err != nil {

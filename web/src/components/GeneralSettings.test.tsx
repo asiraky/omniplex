@@ -122,6 +122,16 @@ describe("GeneralSettings", () => {
     expect(onSave.mock.calls[0][0].pinNewThreads).toBe(false);
   });
 
+  it("reads an unset suggestion setting as on, and saves turning it off", async () => {
+    const { onSave } = open({ version: 1 });
+    const toggle = screen.getByRole("switch", { name: "Suggest a next prompt" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(toggle);
+    save();
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave.mock.calls[0][0].suggestPrompts).toBe(false);
+  });
+
   it("reads an unset auto-update as on, and saves turning it off", async () => {
     const { onSave } = open({ version: 1 });
     const toggle = screen.getByRole("switch", { name: "Keep harness CLIs up to date" });

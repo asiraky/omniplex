@@ -551,6 +551,17 @@ describe("the command catalogue", () => {
     expect(onRunComposerAction).toHaveBeenCalledWith("compact", "now", "/compact now");
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it("sends text handed to it as though it were typed, a command included", async () => {
+    const onRunComposerAction = vi.fn().mockResolvedValue(undefined);
+    const ref = createRef<ComposerHandle>();
+    const { onSend } = mount({ ref, catalogue: catalogue(), onRunComposerAction });
+    act(() => ref.current?.send("/compact now"));
+    await waitFor(() => expect(onRunComposerAction).toHaveBeenCalledWith("compact", "now", "/compact now"));
+    expect(onSend).not.toHaveBeenCalled();
+    act(() => ref.current?.send(" run the tests "));
+    expect(onSend).toHaveBeenCalledWith("run the tests", { imageIds: [], files: [] }, undefined);
+  });
 });
 
 // Picks are typed in through execCommand so the browser can undo them.

@@ -62,6 +62,13 @@ const GENERAL: Fixed[] = [
       "Whether the pin beside a new thread's composer starts on. You can still flip it before sending.",
   },
   {
+    anchor: "suggest-prompts",
+    label: "Suggest a next prompt",
+    description:
+      "After a turn, offer the agent's guess at your next message. Takes effect when a session next starts.",
+    keywords: ["suggestion", "autocomplete"],
+  },
+  {
     anchor: "auto-update-harnesses",
     label: "Keep harness CLIs up to date",
     description: "Runs each agent CLI's own update hourly. Turn off to pin a version.",
