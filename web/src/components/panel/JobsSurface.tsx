@@ -4,12 +4,12 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import { Markdown } from "~/components/Markdown";
 import { RetryRow, textButton } from "~/components/RetryRow";
+import { Elapsed } from "~/components/Elapsed";
 import { Spinner } from "~/components/ui/spinner";
 import { fmtTokens } from "~/lib/format";
 import { childJobs, isLive, jobLabel, jobTree, liveJobsLabel } from "~/lib/jobs";
 import { cn } from "~/lib/utils";
 import type { Item, Job, JobKind, ThreadState } from "~/protocol";
-import { formatDuration } from "~/rows";
 import { useLatest } from "~/useLatest";
 
 import { mergeChildren, useAgentChildren } from "./useAgentChildren";
@@ -20,27 +20,11 @@ export interface JobsSurfaceProps {
   command: (command: string, args: unknown) => Promise<any>;
   /** Fetch the jobs the snapshot left out (`state.jobsBefore`); null on failure. */
   loadAllJobs?: () => Promise<ThreadState | null>;
-}
-
-// A live elapsed timer written straight to the DOM: re-rendering the roster
-// once a second to move a clock would fight the fixed-row design it sits in.
-// Frozen at `finishedAt - since` once the job is done.
-function Elapsed({ since, finishedAt }: { since?: number; finishedAt?: number }) {
-  const ref = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    if (!since) return;
-    const el = ref.current;
-    if (!el) return;
-    const tick = () => {
-      el.textContent = formatDuration((finishedAt ?? Date.now()) - since);
-    };
-    tick();
-    if (finishedAt) return;
-    const t = window.setInterval(tick, 1000);
-    return () => window.clearInterval(t);
-  }, [since, finishedAt]);
-  if (!since) return null;
-  return <span ref={ref} className="tabular-nums" />;
+  /**
+   * A job to open, asked for from outside (a row of the transcript's agents
+   * card). Each new nonce opens it again, whatever is on screen.
+   */
+  focus?: { jobId: string; nonce: number };
 }
 
 function StatusMark({ job }: { job: Job }) {
@@ -50,7 +34,7 @@ function StatusMark({ job }: { job: Job }) {
       className={cn(
         "mt-1.5 size-2 shrink-0 rounded-full",
         s === "running" && "bg-primary animate-pulse",
-        s === "paused" && "bg-warning ring-warning/40 ring-2",
+        s === "paused" && "bg-amber-400 ring-2 ring-amber-400/40",
         s === "completed" && "bg-success",
         s === "failed" && "bg-destructive",
         (s === "stopped" || s === "interrupted") && "bg-muted-foreground",
@@ -417,12 +401,20 @@ function RosterTotals({ jobs, partial }: { jobs: Job[]; partial: boolean }) {
 }
 
 /** The jobs roster: agents, shells and monitors running beside the conversation. */
-export function JobsSurface({ threadId, command, loadAllJobs }: JobsSurfaceProps) {
+export function JobsSurface({ threadId, command, loadAllJobs, focus }: JobsSurfaceProps) {
   // `jobs` is the roster, `items` feeds an agent's transcript pane, and
   // `jobsBefore` says the snapshot left some out.
   const state = useThread(useThreadStore(), surfaceFields, shallow);
   const tree = useMemo(() => jobTree(state.jobs), [state.jobs]);
   const [openId, setOpenId] = useState<string | null>(null);
+  // Each focus is taken once, during render, so the job is open in the same
+  // paint as the tab that shows it. A job not in the list yet stays asked
+  // for: the roster shows until it arrives, then it opens.
+  const [focusNonce, setFocusNonce] = useState<number | undefined>(undefined);
+  if (focus && focus.nonce !== focusNonce) {
+    setFocusNonce(focus.nonce);
+    setOpenId(focus.jobId);
+  }
   const open = openId ? state.jobs.find((j) => j.id === openId) : undefined;
 
   const stop = (j: Job) => void command("stop_job", { threadId, jobId: j.id }).catch(() => {});

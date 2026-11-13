@@ -383,7 +383,7 @@ function ComposerDock({
         </Suspense>
       )}
 
-      <JobsStrip onOpen={panel.openJobs} />
+      <JobsStrip onOpen={() => panel.openJobs()} />
 
       <ScheduledPrompts
         schedules={state.scheduledPrompts ?? []}

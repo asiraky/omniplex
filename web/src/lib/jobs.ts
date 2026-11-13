@@ -1,7 +1,7 @@
 // Jobs: work running beside the conversation. Mirrors internal/proto's job
 // vocabulary and the derived helpers the UI needs from a ThreadState.
 
-import type { Job, JobKind, JobStatus } from "../protocol";
+import type { Item, Job, JobKind, JobStatus } from "../protocol";
 
 /** Denylist classifier: the SDK's task_type names are an open set, so
     everything not explicitly a shell, monitor, or housekeeping is an agent.
@@ -98,4 +98,41 @@ export function liveJobsLabel(jobs: Job[]): string {
 
 export function jobLabel(j: Job): string {
   return j.name || j.workflowName || j.role || j.taskType || j.id;
+}
+
+/** What an agent card says an agent is doing. The server's job statuses,
+    renamed for a reader: a paused agent is waiting on someone, an
+    interrupted one was stopped. A spawn with no job yet is queued until the
+    harness reports one. */
+export type AgentStatus = "queued" | "running" | "waiting" | "completed" | "failed" | "stopped";
+
+export function agentStatus(job: Job | undefined, spawn: Item): AgentStatus {
+  if (job) {
+    switch (job.status) {
+      case "running":
+        return "running";
+      case "paused":
+        return "waiting";
+      case "completed":
+        return "completed";
+      case "failed":
+        return "failed";
+      case "stopped":
+      case "interrupted":
+        return "stopped";
+    }
+  }
+  switch (spawn.status) {
+    case "in_progress":
+      return "running";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "cancelled":
+    case "declined":
+      return "stopped";
+    default:
+      return "queued";
+  }
 }

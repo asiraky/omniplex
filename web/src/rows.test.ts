@@ -20,7 +20,7 @@ function turn(id: string, over: Partial<Turn> = {}): Turn {
 const shape = (rows: Row[]) =>
   rows.map((r) => {
     if (r.kind === "fold") return `fold(${r.items.length})`;
-    if (r.kind === "jobs") return `jobs(${r.items.length})`;
+    if (r.kind === "jobs") return r.recap ? `recap(${r.items.length})` : `jobs(${r.items.length})`;
     if (r.kind === "artefacts") return `artefacts(${r.items.map((i) => i.id.replace("artefact:", "")).join(",")})`;
     if (r.kind === "run") return r.live ? `live(${r.items.length})` : `run(${r.items.length})`;
     if (r.item.kind === "plan") return "plan";
@@ -164,7 +164,7 @@ describe("spawn batches", () => {
       [turn("turn1")],
       "idle",
     );
-    expect(shape(rows)).toEqual(["message:user", "fold(1)", "jobs(2)", "fold(1)", "message:agent"]);
+    expect(shape(rows)).toEqual(["message:user", "fold(1)", "jobs(2)", "fold(1)", "message:agent", "recap(2)"]);
   });
 
   it("keeps the card at the first spawn while a turn runs", () => {
@@ -175,6 +175,43 @@ describe("spawn batches", () => {
     );
     expect(shape(rows)).toEqual(["message:user", "jobs(1)", "live(1)"]);
     expect((rows[1] as { id: string }).id).toBe(`jobs:${rows[1].kind === "jobs" ? rows[1].items[0].id : ""}`);
+  });
+
+  it("shows every spawn of a finished turn again under its answer", () => {
+    const a = spawn();
+    const b = spawn();
+    const c = spawn();
+    const rows = buildRows([prompt("go"), a, b, tool(), c, msg("Answer.")], [turn("turn1")], "idle");
+    expect(shape(rows)).toEqual(["message:user", "jobs(2)", "fold(1)", "jobs(1)", "message:agent", "recap(3)"]);
+    const recap = rows[5];
+    expect(recap.kind === "jobs" && recap.items).toEqual([a, b, c]);
+    // Its own key: the batches it repeats are still on screen above it.
+    expect(new Set(rows.map((r) => (r.kind === "item" ? r.item.id : r.id))).size).toBe(rows.length);
+  });
+
+  it("puts the recap before the turn's decided cards and artefacts", () => {
+    const c: Item = { id: `card:r${n++}`, kind: "card", status: "saved", turnId: "turn1", card: { kind: "add_mcp_server" } };
+    const rows = buildRows([prompt("go"), spawn(), c, artefact("a", 1), msg("Answer.")], [turn("turn1")], "idle");
+    expect(shape(rows)).toEqual(["message:user", "jobs(1)", "message:agent", "recap(1)", "card:tool", "artefacts(a@1)"]);
+  });
+
+  it("shows no recap for a finished turn with no answer", () => {
+    const rows = buildRows([prompt("go"), spawn(), tool()], [turn("turn1")], "idle");
+    expect(shape(rows)).toEqual(["message:user", "jobs(1)", "fold(1)"]);
+  });
+
+  it("shows no recap while the turn runs", () => {
+    const rows = buildRows(
+      [prompt("go", { turnId: "live1" }), spawn({ turnId: "live1" }), msg("Started them.", { turnId: "live1" })],
+      [turn("live1", { done: false })],
+      "turn",
+    );
+    expect(shape(rows)).toEqual(["message:user", "jobs(1)", "message:agent"]);
+  });
+
+  it("names the recap's turn, for the changed-files card", () => {
+    const rows = buildRows([prompt("go"), spawn(), msg("Answer.")], [turn("turn1")], "idle");
+    expect(rows.map(rowTurnID)).toEqual(["turn1", "turn1", "turn1", "turn1"]);
   });
 
   it("counts spawns in summaries", () => {
@@ -344,6 +381,30 @@ describe("reuseRows", () => {
     const settled = reuseRows(before, buildRows(items, turns, "idle"));
     expect(settled[1]).not.toBe(before[1]);
     expect(settled[1].kind === "run" && settled[1].live).toBe(false);
+  });
+
+  it("keeps a recap row while its spawns are untouched, and redraws it when one changes", () => {
+    const s = tool({ toolKind: "agent", status: "in_progress" });
+    const items = [prompt("go"), s, msg("Done.")];
+    const turns = [turn("turn1")];
+    const before = buildRows(items, turns, "idle");
+    const recapAt = before.findIndex((r) => r.kind === "jobs" && r.recap);
+    expect(recapAt).toBeGreaterThan(-1);
+
+    expect(reuseRows(before, buildRows([...items], turns, "idle"))).toBe(before);
+
+    const after = reuseRows(before, buildRows(replace(items, s, { status: "completed" }), turns, "idle"));
+    expect(after[recapAt]).not.toBe(before[recapAt]);
+    expect(after[recapAt].kind === "jobs" && after[recapAt].recap).toBe(true);
+  });
+
+  it("does not reuse a recap row for a plain jobs row under the same key", () => {
+    const s = tool({ toolKind: "agent" });
+    const plain: Row = { kind: "jobs", id: "jobs:x", items: [s] };
+    const recap: Row = { kind: "jobs", id: "jobs:x", items: [s], recap: true };
+    expect(reuseRows([plain], [recap])[0]).toBe(recap);
+    expect(reuseRows([recap], [plain])[0]).toBe(plain);
+    expect(reuseRows([recap], [{ ...recap }])[0]).toBe(recap);
   });
 
   it("gives a fold a new row when its turn changed", () => {

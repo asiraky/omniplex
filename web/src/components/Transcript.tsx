@@ -108,8 +108,8 @@ type TranscriptProps = {
   onCancelContinuation?: (p: ScheduledPrompt) => Promise<void>;
   /** Opens the diff panel, on one turn's changes when a turn is given. */
   onOpenDiff: (path?: string, turn?: DiffTurn) => void;
-  /** Opens the panel on the jobs surface. */
-  onOpenJobs?: () => void;
+  /** Opens the panel on the jobs surface, on one job when an id is given. */
+  onOpenJobs?: (jobId?: string) => void;
   /** Opens an artefact in the panel. */
   onOpenArtefact?: OpenArtefact;
   /** The thread branch's pull request, when omniplex could find one. */

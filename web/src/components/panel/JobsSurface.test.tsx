@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-import { fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { emptyState } from "~/apply";
 import type { Item, Job, ThreadState } from "~/protocol";
 import { createThreadStore, ThreadStoreContext } from "~/app/threadStore";
-import { render } from "~/test/harness";
+import { render, wrap } from "~/test/harness";
 
 import { JobsSurface } from "./JobsSurface";
 
@@ -110,5 +110,71 @@ describe("the roster with jobs left out", () => {
       <JobsSurface threadId="s1" command={vi.fn()} loadAllJobs={vi.fn()} />,
     );
     expect(screen.getByRole("button", { name: "Show earlier jobs" })).toBeTruthy();
+  });
+});
+
+describe("a job asked for from outside", () => {
+  const planner: Job = { ...agent, id: "j2", toolCallId: "task2", name: "Plan" };
+  const said2 = (id: string, text: string): Item => ({ ...said(id, text), parentId: "task2" });
+  // Every child in the thread, so neither pane fetches.
+  const state = thread({
+    jobs: [agent, planner],
+    items: [
+      { id: "task", kind: "tool" },
+      said("m1", "explored"),
+      { id: "task2", kind: "tool" },
+      said2("m2", "planned"),
+    ],
+  });
+
+  function mountFocused(focus?: { jobId: string; nonce: number }) {
+    const store = createThreadStore(state);
+    const ui = (f?: { jobId: string; nonce: number }) => (
+      <ThreadStoreContext.Provider value={store}>
+        <JobsSurface threadId="s1" command={vi.fn()} focus={f} />
+      </ThreadStoreContext.Provider>
+    );
+    const { rerender } = render(ui(focus));
+    return (f?: { jobId: string; nonce: number }) => rerender(wrap(ui(f)));
+  }
+
+  const back = () => fireEvent.click(screen.getByRole("button", { name: "Back to jobs" }));
+
+  it("opens on that job's pane", () => {
+    mountFocused({ jobId: "j1", nonce: 1 });
+    expect(screen.getByText("explored")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Back to jobs" })).toBeTruthy();
+  });
+
+  it("reopens the job for a new ask after the user backed out, but not for the same one", () => {
+    const refocus = mountFocused({ jobId: "j1", nonce: 1 });
+    back();
+    expect(screen.queryByText("explored")).toBeNull();
+
+    refocus({ jobId: "j1", nonce: 1 });
+    expect(screen.queryByText("explored")).toBeNull();
+
+    refocus({ jobId: "j1", nonce: 2 });
+    expect(screen.getByText("explored")).toBeTruthy();
+  });
+
+  it("switches to a different job while one is open", () => {
+    const refocus = mountFocused({ jobId: "j1", nonce: 1 });
+    refocus({ jobId: "j2", nonce: 2 });
+    expect(screen.getByText("planned")).toBeTruthy();
+    expect(screen.queryByText("explored")).toBeNull();
+  });
+
+  it("opens a job the list does not hold yet once it arrives", () => {
+    const store = createThreadStore(thread({ jobs: [agent], items: state.items }));
+    render(
+      <ThreadStoreContext.Provider value={store}>
+        <JobsSurface threadId="s1" command={vi.fn()} focus={{ jobId: "j2", nonce: 1 }} />
+      </ThreadStoreContext.Provider>,
+    );
+    expect(screen.getByRole("button", { name: /Explore/ })).toBeTruthy();
+
+    act(() => store.set({ ...state }));
+    expect(screen.getByText("planned")).toBeTruthy();
   });
 });

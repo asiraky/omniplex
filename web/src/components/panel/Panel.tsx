@@ -71,6 +71,8 @@ export interface PanelRequest {
   path?: string;
   line?: number;
   artefactId?: string;
+  /** For a jobs request: the job to open rather than the roster. */
+  jobId?: string;
   /** For a diff request: the turn whose changes to show. */
   turn?: DiffTurn;
   nonce: number;
@@ -134,6 +136,8 @@ interface Route {
   reveal?: { path: string; nonce: number };
   /** The turn whose changes the diff surface should switch to. */
   turn?: DiffTurn;
+  /** A job for the jobs surface to open. */
+  job?: { jobId: string; nonce: number };
   /** Set only when a file tab opens: the line to scroll to, if any. */
   file?: { line?: number };
 }
@@ -167,11 +171,15 @@ function routeRequest(
         reveal: path ? { path, nonce } : undefined,
         turn: request.turn,
       };
-    case "jobs":
-    case "artefacts": {
-      const kind = request.kind;
-      return { update: (p) => openSurface(p, { id: kind, kind }) };
+    case "jobs": {
+      const { jobId } = request;
+      return {
+        update: (p) => openSurface(p, { id: "jobs", kind: "jobs" }),
+        job: jobId ? { jobId, nonce } : undefined,
+      };
     }
+    case "artefacts":
+      return { update: (p) => openSurface(p, { id: "artefacts", kind: "artefacts" }) };
     case "artefact": {
       const id = request.artefactId;
       return id ? { update: (p) => putSurface(p, artefactSurface(id)) } : {};
@@ -346,6 +354,7 @@ function PanelBody({
 
   // ---- requests from outside ----
   const [reveal, setReveal] = useState<{ path: string; nonce: number } | null>(null);
+  const [jobFocus, setJobFocus] = useState<{ jobId: string; nonce: number } | undefined>(undefined);
   const [fileLine, setFileLine] = useState<number | undefined>(undefined);
   // Each nonce is routed exactly once, during render, so the tab it opens is
   // in the same paint as the request rather than one frame behind it. The
@@ -364,6 +373,7 @@ function PanelBody({
       setRoutedNonce(request.nonce);
       if (route.update) setPanel(route.update);
       if (route.reveal) setReveal(route.reveal);
+      if (route.job) setJobFocus(route.job);
       if (route.file) setFileLine(route.file.line);
       // In this same pass, so the reveal waits for the turn's list rather
       // than firing on whatever list was on screen before.
@@ -373,6 +383,14 @@ function PanelBody({
       }
     }
   }
+
+  // A focus is for the jobs tab it opened. Leaving the tab spends it, so
+  // coming back (which remounts the surface) shows the roster, not the agent
+  // the reader may since have backed out of.
+  const onJobs = active?.kind === "jobs";
+  useEffect(() => {
+    if (!onJobs) setJobFocus(undefined);
+  }, [onJobs]);
 
   const selectFile = useCallback((path: string) => {
     setFileLine(undefined);
@@ -546,7 +564,7 @@ function PanelBody({
           />
         )}
         {active?.kind === "jobs" && (
-          <JobsSurface threadId={threadId} command={command} loadAllJobs={loadAllJobs} />
+          <JobsSurface threadId={threadId} command={command} loadAllJobs={loadAllJobs} focus={jobFocus} />
         )}
         {active?.kind === "artefacts" && <ArtefactList artefacts={artefacts} onOpen={openArtefact} />}
         {active?.kind === "artefact" &&

@@ -47,8 +47,9 @@ export function usePanel(threadStore: ThreadStore) {
   // changed; the keybinding and palette name none and leave the comparison be.
   const openDiff = useCallback((path?: string, turn?: DiffTurn) => ask({ kind: "diff", path, turn }), [ask]);
 
-  // Opening the jobs surface from the strip or a spawn card in the transcript.
-  const openJobs = useCallback(() => ask({ kind: "jobs" }), [ask]);
+  // Opening the jobs surface from the strip or the transcript's agents card:
+  // on the roster, or on the one job a card's row names.
+  const openJobs = useCallback((jobId?: string) => ask({ kind: "jobs", jobId }), [ask]);
 
   // Opening an artefact from its card in the transcript.
   const openArtefact = useCallback((artefactId: string) => ask({ kind: "artefact", artefactId }), [ask]);
