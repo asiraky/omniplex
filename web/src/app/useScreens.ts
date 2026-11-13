@@ -36,7 +36,7 @@ export function useScreens() {
   }, []);
   // Drops the hash without a history entry, which fires no hashchange.
   const leaveThemePreview = useCallback(() => {
-    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
     setThemePreview(false);
   }, []);
 

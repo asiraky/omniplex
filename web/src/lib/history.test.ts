@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { createElement, StrictMode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { viewport } from "~/test/harness";
 import { isDraftEntry, navigate, useBackDismiss } from "./history";
 
-// jsdom delivers popstate a task after history.go, as a browser does; a
-// short wait lets it land and React finish what it set off.
+// jsdom delivers popstate a task after history.go, as a browser does, and
+// under a loaded test run that task can come late: so a Back waits for its
+// popstate, and an unwind (which the app never hears) for the depth it lands
+// on. settle only lets React finish what was set off.
 async function settle() {
   await act(async () => {
     await new Promise((r) => setTimeout(r, 10));
@@ -16,8 +18,15 @@ async function settle() {
 
 async function back() {
   await act(async () => {
+    const popped = new Promise((r) => window.addEventListener("popstate", r, { once: true }));
     window.history.back();
+    await popped;
   });
+  await settle();
+}
+
+async function landsAt(depth: number) {
+  await waitFor(() => expect(layerDepth()).toBe(depth));
   await settle();
 }
 
@@ -49,7 +58,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   cleanup();
-  await settle();
+  await landsAt(0);
   navigate("/");
 });
 
@@ -91,9 +100,8 @@ describe("a sheet closed by its own UI", () => {
     mount(a);
 
     act(() => a.set(false));
-    await settle();
+    await landsAt(0);
     expect(window.location.pathname).toBe("/thread/b");
-    expect(layerDepth()).toBe(0);
 
     await back();
     expect(window.location.pathname).toBe("/thread/a");
@@ -111,8 +119,7 @@ describe("a sheet closed by its own UI", () => {
       lower.set(false);
       upper.set(false);
     });
-    await settle();
-    expect(layerDepth()).toBe(0);
+    await landsAt(0);
     expect(window.location.pathname).toBe("/thread/b");
 
     await back();
@@ -138,9 +145,8 @@ describe("a sheet closed by its own UI", () => {
     act(() => first.set(false));
     await act(async () => {}); // the unwind's microtask, not its popstate
     act(() => second.set(true));
-    await settle();
+    await landsAt(1);
     expect(second.open).toBe(true);
-    expect(layerDepth()).toBe(1);
 
     await back();
     expect(second.open).toBe(false);
@@ -182,8 +188,8 @@ describe("navigate", () => {
       act(() => a.set(false));
       await act(async () => {}); // the unwind is in flight
       navigate("/thread/b");
+      await waitFor(() => expect(window.location.pathname).toBe("/thread/b"));
       await settle();
-      expect(window.location.pathname).toBe("/thread/b");
       expect(heard).toEqual([]);
 
       await back();
