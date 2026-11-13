@@ -869,6 +869,106 @@ describe("question records", () => {
     for (const part of [secret, "hunter2", "secret-token"]) expect(items).not.toContain(part);
   });
 
+  it("keeps a masked field masked whatever its siblings hold, and skips a label that is not text", () => {
+    const secret = "hunter2-very-secret-token";
+    let s = applyEvent(
+      emptyState("s1"),
+      ask(1, {
+        prompt: "Set up",
+        ...fields({
+          pw: { title: 5, format: "password" },
+          wo: { description: ["x"], writeOnly: true },
+          both: { format: "password", writeOnly: "yes" },
+          fmt: { format: 1, writeOnly: true },
+          label: { title: { t: 1 }, description: "Described" },
+          none: { title: false, description: 7 },
+        }),
+      }),
+    );
+    s = applyEvent(s, answer(2, { pw: secret, wo: secret, both: secret, fmt: secret, label: "shown", none: "also" }));
+    expect(s.items[0].questions).toEqual([
+      { key: "pw", question: "Set up", secret: true },
+      { key: "wo", question: "Set up", secret: true },
+      { key: "both", question: "Set up", secret: true },
+      { key: "fmt", question: "Set up", secret: true },
+      { key: "label", question: "Described", answer: "shown" },
+      { key: "none", question: "Set up", answer: "also" },
+    ]);
+    expect(JSON.stringify(s.items)).not.toContain("hunter2");
+  });
+
+  it("orders fields as parsed JSON does: index keys by number, then the rest, a repeated key once", () => {
+    const schema = JSON.parse(
+      `{"properties":{"b":{"title":"B"},"10":{},"a":{},"2":{},"01":{},"4294967295":{},"4294967294":{},"-1":{},"b":{"title":"B again"}}}`,
+    );
+    const s = applyEvent(emptyState("s1"), ask(1, { prompt: "", schema }));
+    expect(s.items[0].questions!.map((q) => [q.key, q.question])).toEqual([
+      ["2", "2"],
+      ["10", "10"],
+      ["4294967294", "4294967294"],
+      ["b", "B again"],
+      ["a", "a"],
+      ["01", "01"],
+      ["4294967295", "4294967295"],
+      ["-1", "-1"],
+    ]);
+  });
+
+  it("asks only the prompt when properties is not an object", () => {
+    for (const properties of [["a", "b"], "ab"]) {
+      const s = applyEvent(emptyState("s1"), ask(1, { schema: { properties } }));
+      expect(s.items[0].questions).toEqual([{ key: "", question: "Pick one" }]);
+    }
+  });
+
+  it.each([
+    ["4.50", "4.5"],
+    ["-0", "0"],
+    ["1e21", "1e+21"],
+    ["123456789012345680000", "123456789012345680000"],
+    ["1.7976931348623157e308", "1.7976931348623157e+308"],
+    ["0.000001", "0.000001"],
+    ["9.99e-7", "9.99e-7"],
+    ["1.5e-7", "1.5e-7"],
+    ["-2.5e-10", "-2.5e-10"],
+    ["1e400", "Infinity"],
+    ["-1e400", "-Infinity"],
+  ])("records the number %s as %s", (raw, want) => {
+    const s = applyEvent(applyEvent(emptyState("s1"), ask(1)), answer(2, JSON.parse(raw)));
+    expect(s.items[0].questions![0].answer).toBe(want);
+  });
+
+  it("leaves a settled record alone on a late resolve", () => {
+    let s = applyEvent(emptyState("s1"), ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "tool_call.started", { turnId: "t1", toolCallId: "c1", kind: "execute", title: "rm", status: "pending" }));
+    const perm = (seq: number, requestId: string, toolCallId = "") =>
+      ev(seq, "permission.requested", { requestId, turnId: "t1", toolCallId, title: "Run" });
+    const resolve = (seq: number, requestId: string, outcome: string) => ev(seq, "permission.resolved", { requestId, outcome });
+    s = applyEvent(s, perm(3, "p1", "c1"));
+    s = applyEvent(s, perm(4, "p2"));
+    s = applyEvent(s, perm(5, "p3"));
+    s = applyEvent(s, resolve(6, "p3", "reject_once"));
+    s = applyEvent(s, ask(7));
+    s = applyEvent(s, ask(8, { requestId: "q2" }));
+    s = applyEvent(s, ev(9, "elicitation.resolved", { requestId: "q2", action: "accept", value: "first" }));
+    s = applyEvent(s, ev(10, "turn.finished", { turnId: "t1", stopReason: "cancelled" }));
+
+    s = applyEvent(s, resolve(11, "p1", "allow_once"));
+    s = applyEvent(s, resolve(12, "p2", "allow_once"));
+    s = applyEvent(s, resolve(13, "p3", "allow_always"));
+    s = applyEvent(s, answer(14, "late"));
+    s = applyEvent(s, ev(15, "elicitation.resolved", { requestId: "q2", action: "accept", value: "second" }));
+
+    const byId = Object.fromEntries(s.items.map((it) => [it.id, it]));
+    expect(byId["c1"].approval).toBe("cancelled");
+    expect(byId["approval:p2"].approval).toBe("cancelled");
+    expect(byId["approval:p3"].approval).toBe("denied");
+    expect(byId["question:q1"].status).toBe("cancelled");
+    expect(byId["question:q1"].questions).toEqual([{ key: "", question: "Pick one" }]);
+    expect(byId["question:q2"].status).toBe("answered");
+    expect(byId["question:q2"].questions![0].answer).toBe("first");
+  });
+
   it("cancels a pending question when its turn finishes, leaving an answered one", () => {
     let s = applyEvent(emptyState("s1"), ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
     s = applyEvent(s, ask(2));

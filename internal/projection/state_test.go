@@ -1594,6 +1594,18 @@ func TestQuestionLabels(t *testing.T) {
 			prompt: "Continue?",
 			want:   []QuestionAnswer{{Key: "", Question: "Continue?"}},
 		},
+		{
+			name:   "properties an array",
+			prompt: "Continue?",
+			schema: `{"properties":["a","b"]}`,
+			want:   []QuestionAnswer{{Key: "", Question: "Continue?"}},
+		},
+		{
+			name:   "properties a string",
+			prompt: "Continue?",
+			schema: `{"properties":"ab"}`,
+			want:   []QuestionAnswer{{Key: "", Question: "Continue?"}},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var schema json.RawMessage
@@ -1735,6 +1747,123 @@ func TestSecretAnswerIsNeverStored(t *testing.T) {
 		if strings.Contains(string(blob), part) {
 			t.Fatalf("state JSON holds %q of the secret: %s", part, blob)
 		}
+	}
+}
+
+// An attribute of the wrong type is skipped on its own: a masked field stays
+// masked whatever its siblings hold, and a label that is not text falls
+// through to the next. Mirrored by web/src/apply.test.ts.
+func TestMalformedSchemaAttributes(t *testing.T) {
+	const secret = "hunter2-sk-live-XYZ"
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ElicitationRequested, proto.ElicitationRequestedPayload{
+		RequestID: "q1", Prompt: "Set up", Schema: json.RawMessage(`{"properties":{` +
+			`"pw":{"title":5,"format":"password"},` +
+			`"wo":{"description":["x"],"writeOnly":true},` +
+			`"both":{"format":"password","writeOnly":"yes"},` +
+			`"fmt":{"format":1,"writeOnly":true},` +
+			`"label":{"title":{"t":1},"description":"Described"},` +
+			`"none":{"title":false,"description":7}}}`),
+	}))
+	value, _ := json.Marshal(map[string]string{"pw": secret, "wo": secret, "both": secret, "fmt": secret, "label": "shown", "none": "also"})
+	s.Apply(event(t, 2, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q1", Action: "accept", Value: value}))
+
+	want := []QuestionAnswer{
+		{Key: "pw", Question: "Set up", Secret: true},
+		{Key: "wo", Question: "Set up", Secret: true},
+		{Key: "both", Question: "Set up", Secret: true},
+		{Key: "fmt", Question: "Set up", Secret: true},
+		{Key: "label", Question: "Described", Answer: "shown"},
+		{Key: "none", Question: "Set up", Answer: "also"},
+	}
+	if got := itemOf(t, s, QuestionID("q1")).Questions; !reflect.DeepEqual(got, want) {
+		t.Fatalf("questions = %+v\nwant %+v", got, want)
+	}
+	blob, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), "hunter2") {
+		t.Fatalf("state JSON holds the secret: %s", blob)
+	}
+}
+
+// Fields come in the order the client's Object.entries gives: array-index
+// keys first by number, then the rest as written; a repeated key keeps its
+// first place and its last value. Mirrored by web/src/apply.test.ts.
+func TestQuestionOrderMatchesJavaScript(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ElicitationRequested, proto.ElicitationRequestedPayload{
+		RequestID: "q1", Schema: json.RawMessage(`{"properties":{"b":{"title":"B"},"10":{},"a":{},"2":{},"01":{},"4294967295":{},"4294967294":{},"-1":{},"b":{"title":"B again"}}}`),
+	}))
+	var got [][2]string
+	for _, q := range itemOf(t, s, QuestionID("q1")).Questions {
+		got = append(got, [2]string{q.Key, q.Question})
+	}
+	want := [][2]string{
+		{"2", "2"}, {"10", "10"}, {"4294967294", "4294967294"},
+		{"b", "B again"}, {"a", "a"}, {"01", "01"}, {"4294967295", "4294967295"}, {"-1", "-1"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("questions = %v\nwant %v", got, want)
+	}
+}
+
+// A number answer reads as the client's String(n) writes it, exponent form
+// and all. Mirrored by web/src/apply.test.ts.
+func TestQuestionNumberAnswers(t *testing.T) {
+	for _, tc := range []struct{ value, want string }{
+		{`4.50`, "4.5"},
+		{`-0`, "0"},
+		{`1e21`, "1e+21"},
+		{`123456789012345680000`, "123456789012345680000"},
+		{`1.7976931348623157e308`, "1.7976931348623157e+308"},
+		{`0.000001`, "0.000001"},
+		{`9.99e-7`, "9.99e-7"},
+		{`1.5e-7`, "1.5e-7"},
+		{`-2.5e-10`, "-2.5e-10"},
+		{`1e400`, "Infinity"},
+		{`-1e400`, "-Infinity"},
+	} {
+		s := New("s1")
+		s.Apply(event(t, 1, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q1", Prompt: "How many?"}))
+		s.Apply(event(t, 2, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q1", Action: "accept", Value: json.RawMessage(tc.value)}))
+		if got := itemOf(t, s, QuestionID("q1")).Questions[0].Answer; got != tc.want {
+			t.Errorf("answer for %s = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
+
+// A resolve that comes after the record settled changes nothing: a request
+// its turn's finish cancelled stays cancelled, and one answered keeps its
+// first answer. Mirrored by web/src/apply.test.ts.
+func TestLateResolveLeavesSettledRecords(t *testing.T) {
+	s := toolTurn(t)
+	s.Apply(event(t, 3, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "r1", TurnID: "t1", ToolCallID: "c1"}))
+	s.Apply(event(t, 4, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "r2", TurnID: "t1"}))
+	s.Apply(event(t, 5, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "r3", TurnID: "t1"}))
+	s.Apply(event(t, 6, proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: "r3", Outcome: proto.OutcomeRejectOnce}))
+	s.Apply(event(t, 7, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q1", TurnID: "t1", Prompt: "which?"}))
+	s.Apply(event(t, 8, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q2", TurnID: "t1", Prompt: "and?"}))
+	s.Apply(event(t, 9, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q2", Action: "accept", Value: json.RawMessage(`"first"`)}))
+	s.Apply(event(t, 10, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopCancelled}))
+
+	s.Apply(event(t, 11, proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: "r1", Outcome: proto.OutcomeAllowOnce}))
+	s.Apply(event(t, 12, proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: "r2", Outcome: proto.OutcomeAllowOnce}))
+	s.Apply(event(t, 13, proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: "r3", Outcome: proto.OutcomeAllowAlways}))
+	s.Apply(event(t, 14, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q1", Action: "accept", Value: json.RawMessage(`"late"`)}))
+	s.Apply(event(t, 15, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q2", Action: "accept", Value: json.RawMessage(`"second"`)}))
+
+	for id, want := range map[string]string{"c1": ApprovalCancelled, ApprovalID("r2"): ApprovalCancelled, ApprovalID("r3"): ApprovalDenied} {
+		if a := itemOf(t, s, id).Approval; a != want {
+			t.Errorf("%s approval after a late resolve = %q, want %q", id, a, want)
+		}
+	}
+	if q := itemOf(t, s, QuestionID("q1")); q.Status != QuestionCancelled || q.Questions[0].Answer != "" {
+		t.Errorf("cancelled question after a late answer = %+v, want cancelled with no answer", q)
+	}
+	if q := itemOf(t, s, QuestionID("q2")); q.Status != QuestionAnswered || q.Questions[0].Answer != "first" {
+		t.Errorf("answered question after a second answer = %+v, want its first answer", q)
 	}
 }
 

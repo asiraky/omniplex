@@ -468,13 +468,21 @@ function approvalOutcome(outcome: string | undefined): Approval {
 // no fields is the prompt alone. A masked field is marked so its answer is
 // never recorded. Mirrors internal/projection/state.go.
 function questionsOf(prompt: string, schema: PendingElicitation["schema"]): QuestionAnswer[] {
-  const fields = Object.entries(schema?.properties ?? {});
+  const props: unknown = schema?.properties;
+  // Only an object has fields: Object.entries would index an array or string.
+  const fields = props && typeof props === "object" && !Array.isArray(props) ? Object.entries(props) : [];
   if (!fields.length) return [{ key: "", question: prompt }];
   return fields.map(([key, f]) => ({
     key,
-    question: f?.title || f?.description || prompt || key,
+    question: label(f?.title) || label(f?.description) || prompt || key,
     ...(f?.format === "password" || f?.writeOnly === true ? { secret: true } : {}),
   }));
+}
+
+// A schema label only when it is text: anything else falls through to the
+// next, as internal/projection/state.go skips an attribute of the wrong type.
+function label(v: unknown): string {
+  return typeof v === "string" ? v : "";
 }
 
 // How long a recorded answer may be, in code points. The record says what was
@@ -978,7 +986,9 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       // Never an append: a record paged out is updated on the server, as for
       // elicitation.resolved below.
       const i = approvalTarget(s.items, p.requestId, pending?.toolCallId);
-      if (i < 0) return { ...s, pendingPermissions };
+      // Only a record still waiting takes the outcome: one its turn's finish
+      // already cancelled stays cancelled.
+      if (i < 0 || s.items[i].approval !== "pending") return { ...s, pendingPermissions };
       return {
         ...s,
         pendingPermissions,
@@ -1031,8 +1041,10 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       const pendingElicitations = (s.pendingElicitations ?? []).filter((x) => x.requestId !== p.requestId);
       const qi = s.items.findIndex((it) => it.id === `question:${p.requestId}`);
       if (qi >= 0) {
-        // Only a question this window holds, for the reason below.
+        // Only a question this window holds, for the reason below, and only
+        // while it waits: one its turn's finish cancelled stays cancelled.
         const q = s.items[qi];
+        if (q.status !== "pending") return { ...s, pendingElicitations };
         const status = p.action === "accept" ? "answered" : p.action === "decline" ? "declined" : "cancelled";
         const questions = p.action === "accept" ? q.questions?.map((x) => answered(x, p.value)) : q.questions;
         return { ...s, pendingElicitations, items: replaceAt(s.items, qi, { ...q, status, questions }) };

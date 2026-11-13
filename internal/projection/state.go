@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -1414,7 +1416,9 @@ func (s *State) Apply(ev proto.Event) {
 			}
 		}
 		s.Pending = out
-		if it := s.approvalTarget(p.RequestID, toolCallID); it != nil {
+		// Only a record still waiting takes the outcome: one its turn's
+		// finish already cancelled stays cancelled.
+		if it := s.approvalTarget(p.RequestID, toolCallID); it != nil && it.Approval == ApprovalPending {
 			it.Approval = approvalResult(p.Outcome)
 		}
 
@@ -1465,7 +1469,7 @@ func (s *State) Apply(ev proto.Event) {
 				s.Items[i].Outcome = p.Value
 			}
 		}
-		if i, ok := s.itemIndex[QuestionID(p.RequestID)]; ok && s.Items[i].Kind == ItemQuestion {
+		if i, ok := s.itemIndex[QuestionID(p.RequestID)]; ok && s.Items[i].Kind == ItemQuestion && s.Items[i].Status == QuestionPending {
 			answerQuestion(&s.Items[i], p)
 		}
 	}
@@ -1594,32 +1598,18 @@ const (
 const AnswerCap = 280
 
 // questionsFor lists what a request asks: one entry per schema property, in
-// the schema's own order, since that is the order the form asked them in.
-// A schema with no properties is the prompt alone. Mirrored in
-// web/src/apply.ts.
+// the order the client's form walks them. A schema with no properties is the
+// prompt alone. Mirrored in web/src/apply.ts.
 func questionsFor(prompt string, schema json.RawMessage) []QuestionAnswer {
 	var top struct {
 		Properties json.RawMessage `json:"properties"`
 	}
 	decode(schema, &top)
 	var out []QuestionAnswer
-	// A map would lose the order, so the properties are walked as tokens.
-	dec := json.NewDecoder(bytes.NewReader(top.Properties))
-	if tok, err := dec.Token(); err == nil && tok == json.Delim('{') {
-		for dec.More() {
-			tok, err := dec.Token()
-			if err != nil {
-				break
-			}
-			key, _ := tok.(string)
-			var f schemaField
-			if dec.Decode(&f) != nil {
-				// Not a schema object, but still a field asked.
-				f = schemaField{}
-			}
-			q := cmp.Or(f.Title, f.Description, prompt, key)
-			out = append(out, QuestionAnswer{Key: key, Question: q, Secret: f.Format == "password" || f.WriteOnly})
-		}
+	for _, p := range jsProperties(top.Properties) {
+		f := readField(p.value)
+		q := cmp.Or(f.title, f.description, prompt, p.key)
+		out = append(out, QuestionAnswer{Key: p.key, Question: q, Secret: f.format == "password" || f.writeOnly})
 	}
 	if len(out) == 0 {
 		out = []QuestionAnswer{{Key: "", Question: prompt}}
@@ -1627,12 +1617,88 @@ func questionsFor(prompt string, schema json.RawMessage) []QuestionAnswer {
 	return out
 }
 
+// property is one member of a JSON object, key and raw value.
+type property struct {
+	key   string
+	value json.RawMessage
+}
+
+// jsProperties is an object's members in the order JavaScript's
+// Object.entries gives them once JSON.parse has read it: array-index keys
+// first, ascending by number, then the rest in document order. A key given
+// twice is one member, where it first appeared, with the last value. Nil for
+// anything but an object.
+func jsProperties(raw json.RawMessage) []property {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil
+	}
+	var props []property
+	at := map[string]int{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		key, _ := tok.(string)
+		var v json.RawMessage
+		if dec.Decode(&v) != nil {
+			break
+		}
+		if i, ok := at[key]; ok {
+			props[i].value = v
+			continue
+		}
+		at[key] = len(props)
+		props = append(props, property{key, v})
+	}
+	sort.SliceStable(props, func(i, j int) bool {
+		a, aok := arrayIndex(props[i].key)
+		b, bok := arrayIndex(props[j].key)
+		if aok && bok {
+			return a < b
+		}
+		return aok && !bok
+	})
+	return props
+}
+
+// arrayIndex reads a key JavaScript treats as an array index: a canonical
+// non-negative integer below 2^32-1.
+func arrayIndex(key string) (uint64, bool) {
+	if key == "" || len(key) > 10 || (key[0] == '0' && len(key) > 1) {
+		return 0, false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < '0' || key[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseUint(key, 10, 64)
+	return n, err == nil && n < 1<<32-1
+}
+
 // schemaField is what a question item reads off one schema property.
 type schemaField struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Format      string `json:"format"`
-	WriteOnly   bool   `json:"writeOnly"`
+	title, description, format string
+	writeOnly                  bool
+}
+
+// readField reads each attribute on its own, so one of the wrong type is
+// skipped rather than taking its siblings with it: a field marked secret
+// stays secret whatever else is malformed.
+func readField(raw json.RawMessage) schemaField {
+	var attrs map[string]json.RawMessage
+	var f schemaField
+	if kindOf(raw) != '{' || json.Unmarshal(raw, &attrs) != nil {
+		// Not a schema object, but still a field asked.
+		return f
+	}
+	_ = json.Unmarshal(attrs["title"], &f.title)
+	_ = json.Unmarshal(attrs["description"], &f.description)
+	_ = json.Unmarshal(attrs["format"], &f.format)
+	_ = json.Unmarshal(attrs["writeOnly"], &f.writeOnly)
+	return f
 }
 
 // answerQuestion records how a question ended and, on accept, each answer as
@@ -1716,10 +1782,30 @@ func answerText(raw json.RawMessage) string {
 	}
 	// A number as the client prints it once parsed, so both fold one text:
 	// 4.50 is 4.5.
-	if f, err := strconv.ParseFloat(string(raw), 64); err == nil {
-		return strconv.FormatFloat(f, 'f', -1, 64)
+	if f, err := strconv.ParseFloat(string(raw), 64); err == nil || math.IsInf(f, 0) {
+		return jsNumber(f)
 	}
 	return string(raw)
+}
+
+// jsNumber is a number as JavaScript's String(n) writes it: plain decimal,
+// but an exponent from 1e21 up and below 1e-6 ("1e+21", "1.5e-7"), and
+// overflow as Infinity.
+func jsNumber(f float64) string {
+	switch {
+	case f == 0:
+		return "0" // -0 too
+	case math.IsInf(f, 1):
+		return "Infinity"
+	case math.IsInf(f, -1):
+		return "-Infinity"
+	}
+	if a := math.Abs(f); a >= 1e21 || a < 1e-6 {
+		// Go writes "1.5e-07"; JavaScript has no leading zeros in the exponent.
+		mant, exp, _ := strings.Cut(strconv.FormatFloat(f, 'e', -1, 64), "e")
+		return mant + "e" + exp[:1] + strings.TrimLeft(exp[1:], "0")
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 // capAnswer cuts an answer to AnswerCap code points, the last of them an
