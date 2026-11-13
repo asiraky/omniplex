@@ -37,6 +37,8 @@ const ctx = (over: Partial<KeyContext> = {}): KeyContext => ({
   threadOpen: true,
   turnRunning: false,
   panelOpen: false,
+  terminalFocus: false,
+  diffFocus: false,
   ...over,
 });
 
@@ -197,6 +199,24 @@ describe("resolveCommand", () => {
     const diff = ev("D", "KeyD", { metaKey: true, shiftKey: true });
     expect(early(diff, ctx({ threadOpen: true }))).toBe("openDiff");
     expect(early(diff, ctx({ threadOpen: false }))).toBeNull();
+  });
+
+  it("splits ⌘F by focus: the diff's find in the diff, thread find elsewhere, neither in a terminal", () => {
+    const f = ev("f", "KeyF", { metaKey: true });
+    expect(early(f, ctx())).toBe("findInThread");
+    expect(early(f, app)).toBe("findInThread");
+    // From the composer or any other field, ahead of the browser.
+    expect(early(f, ctx({ editableFocus: true, composerFocus: true }))).toBe("findInThread");
+    expect(early(f, ctx({ diffFocus: true }))).toBe("findInDiff");
+    expect(early(f, ctx({ diffFocus: true, editableFocus: true }))).toBe("findInDiff");
+    // The diff on a phone sits in a sheet; the diff's find still answers there.
+    expect(early(f, ctx({ diffFocus: true, dialogOpen: true }))).toBe("findInDiff");
+    // Nothing claims it, so the browser's own find runs.
+    expect(early(f, ctx({ terminalFocus: true }))).toBeNull();
+    expect(early(f, ctx({ threadOpen: false }))).toBeNull();
+    expect(early(f, ctx({ dialogOpen: true }))).toBeNull();
+    expect(early(ev("f", "KeyF", { ctrlKey: true }), ctx(), "other")).toBe("findInThread");
+    expect(early(ev("f", "KeyF"), ctx())).toBeNull();
   });
 
   it("blocks commands under a dialog", () => {

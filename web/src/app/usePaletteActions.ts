@@ -26,6 +26,7 @@ export function usePaletteActions({
   onSetPinned,
   onSetUnread,
   onCopyTranscript,
+  onFindInThread,
   onCopyLink,
   onDelete,
   onTogglePanel,
@@ -49,6 +50,7 @@ export function usePaletteActions({
   onSetPinned: (threadId: string, pinned: boolean) => void;
   onSetUnread: (threadId: string, unread: boolean) => void;
   onCopyTranscript: () => void;
+  onFindInThread: () => void;
   onCopyLink: (threadId: string) => void;
   onDelete: (meta: ThreadMeta) => void;
   onTogglePanel: () => void;
@@ -88,6 +90,15 @@ export function usePaletteActions({
     }
   }
   if (threadOpen) {
+    thread({
+      id: "find",
+      label: "Find in thread",
+      command: "findInThread",
+      keywords: ["search", "match"],
+      // A frame later the palette has handed focus back to where it was
+      // opened from, and the find field can take it.
+      run: () => window.requestAnimationFrame(onFindInThread),
+    });
     thread({
       id: "copy",
       label: "Copy transcript",

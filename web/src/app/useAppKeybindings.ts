@@ -1,7 +1,7 @@
 import type { RefObject } from "react";
 
 import type { ComposerHandle } from "~/components/Composer";
-import { COMMAND_IDS, jumpIndex } from "~/lib/keybindings";
+import { COMMAND_IDS, DIFF_FIND_EVENT, jumpIndex } from "~/lib/keybindings";
 import type { Project, ThreadMeta } from "~/protocol";
 import { sidebarOrder, type SidebarView } from "~/sidebarOrder";
 import { rowStatus } from "~/threadStatus";
@@ -53,6 +53,7 @@ export function useAppKeybindings({
   onNewThreadIn,
   onNewThreadHere,
   onCopyTranscript,
+  onFindInThread,
   onStopTurn,
   onToggleSidebar,
   onTogglePanel,
@@ -73,6 +74,7 @@ export function useAppKeybindings({
   onNewThreadIn: () => void;
   onNewThreadHere: () => void;
   onCopyTranscript: () => void;
+  onFindInThread: () => void;
   onStopTurn: () => void;
   onToggleSidebar: () => void;
   onTogglePanel: () => void;
@@ -99,6 +101,11 @@ export function useAppKeybindings({
     nextAttention: () =>
       go(nextAttention(sidebarOrder(threads, projects, view, { includeCollapsed: true }), activeId)),
     copyTranscript: onCopyTranscript,
+    findInThread: onFindInThread,
+    // The surface holding focus opens its own find bar; there can be more
+    // than one mounted (docked and expanded), so it is asked, not looked up.
+    findInDiff: () =>
+      document.activeElement?.closest("[data-diff-surface]")?.dispatchEvent(new CustomEvent(DIFF_FIND_EVENT)),
     stopTurn: onStopTurn,
     stopTurnEscape: onStopTurn,
     focusComposer: () => composerRef.current?.focusEnd(),

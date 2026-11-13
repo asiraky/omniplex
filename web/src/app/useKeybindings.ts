@@ -62,6 +62,8 @@ export function readKeyContext(app: AppKeyState): KeyContext {
     electronApp: isElectronApp(),
     editableFocus: isEditable(active),
     composerFocus: !!active?.matches("[data-composer-input]"),
+    terminalFocus: !!active?.closest(".xterm, [data-terminal]"),
+    diffFocus: !!active?.closest("[data-diff-surface]"),
     dialogOpen: keyboardLayerOpen(),
     modelPickerOpen: !!document.querySelector('[aria-label="Harness and model"][aria-expanded="true"]'),
   };

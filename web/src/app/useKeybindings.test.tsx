@@ -193,6 +193,57 @@ describe("useKeybindings", () => {
     expect(effort).toHaveBeenCalledOnce();
   });
 
+  describe("Ctrl+F", () => {
+    const ctrlF: KeyboardEventInit = { key: "f", code: "KeyF", ctrlKey: true };
+    const handlers = () => ({ findInThread: vi.fn(), findInDiff: vi.fn() });
+
+    it("finds in the thread from the composer", () => {
+      const composer = add("textarea", { "data-composer-input": "" });
+      composer.focus();
+      const h = handlers();
+      mount(h);
+
+      const e = press(composer, ctrlF);
+
+      expect(h.findInThread).toHaveBeenCalledOnce();
+      expect(h.findInDiff).not.toHaveBeenCalled();
+      expect(e.defaultPrevented).toBe(true);
+    });
+
+    it("finds in the diff from anywhere inside the diff surface", () => {
+      const surface = add("div", { "data-diff-surface": "" });
+      const button = document.createElement("button");
+      surface.append(button);
+      button.focus();
+      const h = handlers();
+      mount(h);
+
+      press(button, ctrlF);
+
+      expect(h.findInDiff).toHaveBeenCalledOnce();
+      expect(h.findInThread).not.toHaveBeenCalled();
+    });
+
+    it("leaves the terminal's Ctrl+F to the browser", () => {
+      const term = add("div", { "data-terminal": "" });
+      const xterm = document.createElement("div");
+      xterm.className = "xterm";
+      const input = document.createElement("textarea");
+      input.className = "xterm-helper-textarea";
+      xterm.append(input);
+      term.append(xterm);
+      input.focus();
+      const h = handlers();
+      mount(h);
+
+      const e = press(input, ctrlF);
+
+      expect(h.findInThread).not.toHaveBeenCalled();
+      expect(h.findInDiff).not.toHaveBeenCalled();
+      expect(e.defaultPrevented).toBe(false);
+    });
+  });
+
   it("leaves a command with no handler alone", () => {
     const textarea = add("textarea");
     const own = vi.fn();

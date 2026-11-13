@@ -20,6 +20,7 @@ function actions(over: Partial<Args>) {
     onSetPinned: vi.fn(),
     onSetUnread: vi.fn(),
     onCopyTranscript: vi.fn(),
+    onFindInThread: vi.fn(),
     onCopyLink: vi.fn(),
     onDelete: vi.fn(),
     onTogglePanel: vi.fn(),

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
 import { CommandTimeout, uuid, type Client } from "~/client";
 import type { ComposerAttachments } from "~/components/Composer";
 import { overPromptLimit, sendPayload, type Attachment } from "~/lib/attachments";
+import type { LoadThreadTo, SearchThread } from "~/lib/threadFind";
 import { toast } from "~/lib/toast";
 import { errorText } from "~/lib/utils";
 import type { CardEdits, CardOutcome, ComposerItem, Delivery, ThreadState } from "~/protocol";
@@ -432,6 +433,27 @@ export function useThreadCommands({
     void clientRef.current?.loadOlder();
   }, [clientRef]);
 
+  // Find in thread: the server's matches for the open thread, and the one
+  // page down to a match above the window. A page dropped as stale, or one
+  // that failed, is the same to the find bar: the match is not loaded.
+  const searchThread = useCallback<SearchThread>(
+    (q, signal) => {
+      const client = clientRef.current;
+      return client ? client.search(q, signal) : Promise.reject(new Error("Not connected"));
+    },
+    [clientRef],
+  );
+  const loadItemsTo = useCallback<LoadThreadTo>(
+    async (index) => {
+      try {
+        return (await clientRef.current?.loadTo(index)) != null;
+      } catch {
+        return false;
+      }
+    },
+    [clientRef],
+  );
+
   // The transcript's own buttons for a thread that stopped: carry on, retry
   // the workspace, or tear it down.
   const threadCommand = useCallback(
@@ -463,6 +485,8 @@ export function useThreadCommands({
     runComposerAction,
     runClientComposerAction,
     loadOlderItems,
+    searchThread,
+    loadItemsTo,
     threadCommand,
   };
 }

@@ -23,6 +23,7 @@ import {
   useDiffSplit,
   useDiffWrap,
 } from "~/lib/diffPrefs";
+import { DIFF_FIND_EVENT } from "~/lib/keybindings";
 import { reviewComment } from "~/lib/reviewComment";
 import { isTestPath } from "~/lib/testPath";
 import { toast } from "~/lib/toast";
@@ -451,6 +452,20 @@ export function DiffSurface({
   useEffect(() => {
     if (findOpen) findInput.current?.focus();
   }, [findOpen]);
+  // Ctrl/⌘+F with focus in here opens the find bar, or takes the cursor back
+  // to it with the query selected for typing over.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const onFindKey = () => {
+      setFindOpen(true);
+      findInput.current?.focus();
+      findInput.current?.select();
+    };
+    root.addEventListener(DIFF_FIND_EVENT, onFindKey);
+    return () => root.removeEventListener(DIFF_FIND_EVENT, onFindKey);
+  }, []);
 
   // ---- rows ----
   const toggle = (path: string) => {
@@ -572,7 +587,7 @@ export function DiffSurface({
   const shown = finding ? matches : listed;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={rootRef} data-diff-surface="" className="flex h-full min-h-0 flex-col">
       {/* Wraps rather than overflows: docked narrow, the options drop to a
           second line under the scope. */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-1.5">

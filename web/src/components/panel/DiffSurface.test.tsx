@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DiffSurface } from "./DiffSurface";
 import { forgetDiffPlaces } from "./diffScroll";
+import { DIFF_FIND_EVENT } from "~/lib/keybindings";
 import { render, viewport, wrap } from "~/test/harness";
 import type { BranchCommits, FileDiff, ThreadChanges } from "~/protocol";
 
@@ -383,6 +384,23 @@ describe("DiffSurface find", () => {
     expect(listed()).toEqual(["src/gamma.ts"]);
     await act(async () => answers[1]([]));
     expect(listed()).toEqual(["src/gamma.ts"]);
+  });
+
+  it("opens on the find key from inside the surface, and takes the cursor back to an open bar", () => {
+    renderSurface({ changes: LIST });
+    const surface = row(/alpha\.ts/).closest("[data-diff-surface]")!;
+    const findKey = () => act(() => void surface.dispatchEvent(new CustomEvent(DIFF_FIND_EVENT)));
+
+    findKey();
+    expect(document.activeElement).toBe(input());
+
+    fireEvent.change(input(), { target: { value: "beta" } });
+    row(/beta\.ts/).focus();
+    expect(document.activeElement).not.toBe(input());
+    findKey();
+    const field = input() as HTMLInputElement;
+    expect(document.activeElement).toBe(field);
+    expect([field.selectionStart, field.selectionEnd]).toEqual([0, 4]);
   });
 
   it("says a failed search failed, rather than that nothing matched", async () => {
