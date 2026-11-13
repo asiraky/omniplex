@@ -60,6 +60,11 @@ func (s *State) Attention() string {
 		return AttentionNeedsAnswer
 	case s.Phase == "turn" || s.Phase == "provisioning" || s.Phase == "cleaning":
 		return AttentionWorking
+	// Idle with a prompt about to start: between a workspace coming ready and
+	// its first turn, or one turn ending and the next queued one beginning,
+	// the thread is not waiting on anyone, and saying so would read as done.
+	case s.queueRunnable():
+		return AttentionWorking
 	case s.LiveJobs().Working():
 		return AttentionBackground
 	default:
@@ -383,6 +388,17 @@ func (s *State) QueueHeld() bool {
 		}
 	}
 	return true
+}
+
+// queueRunnable says a queued prompt will start without a human: one is
+// queued and neither held nor stuck behind a usage limit.
+func (s *State) queueRunnable() bool {
+	for _, q := range s.Queued {
+		if !q.Held && !s.HeldByLimit(q) {
+			return true
+		}
+	}
+	return false
 }
 
 // HeldByLimit says whether a held queue holds q: it was queued before the
