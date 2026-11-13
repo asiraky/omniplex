@@ -1,70 +1,157 @@
-import { useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
 
 import { type DiffLine, parsePatch } from "~/lib/patch";
+import { type SplitRow, splitRows } from "~/lib/splitDiff";
 import { cn } from "~/lib/utils";
 
+function lineBase(line?: DiffLine): string {
+  return line ? `${line.kind}:${line.oldNo ?? ""}:${line.newNo ?? ""}:${line.text}` : "";
+}
+
 /**
- * A key for each line that stays with it: its kind, numbers and text, plus a
- * count for the rare exact repeat (a patch that touches two files can say "No
- * newline at end of file" twice).
+ * A key for each row that stays with it: what it shows, plus a count for the
+ * rare exact repeat (a patch that touches two files can say "No newline at
+ * end of file" twice).
  */
-function keyed(lines: DiffLine[]): { key: string; line: DiffLine }[] {
+function keyed<T>(items: T[], base: (item: T) => string): { key: string; item: T }[] {
   const seen = new Map<string, number>();
-  return lines.map((line) => {
-    const base = `${line.kind}:${line.oldNo ?? ""}:${line.newNo ?? ""}:${line.text}`;
-    const n = seen.get(base) ?? 0;
-    seen.set(base, n + 1);
-    return { key: `${base}#${n}`, line };
+  return items.map((item) => {
+    const b = base(item);
+    const n = seen.get(b) ?? 0;
+    seen.set(b, n + 1);
+    return { key: `${b}#${n}`, item };
   });
+}
+
+function splitBase(row: SplitRow): string {
+  return row.kind === "pair" ? `pair:${lineBase(row.left)}|${lineBase(row.right)}` : `${row.kind}:${row.text}`;
 }
 
 function gutter(n?: number) {
   return n === undefined ? "" : String(n);
 }
 
+function escapeRegExp(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
- * A unified diff, with the gutters and colouring the eye expects. Split view
- * would need horizontal room this panel does not have on a phone.
+ * The highlight as a pattern, or null when there is nothing to look for. A
+ * regex rather than lowercasing both strings and comparing indices: a few
+ * characters change length when lowercased, which would put the marks in the
+ * wrong place.
+ */
+function matcher(highlight?: string): RegExp | null {
+  if (!highlight?.trim()) return null;
+  // The capture group makes split() keep the matches, at odd indices.
+  return new RegExp(`(${escapeRegExp(highlight)})`, "gi");
+}
+
+/** A line's text, with every match marked. Lines are only split when a highlight is set. */
+function lineText(text: string, re: RegExp | null): ReactNode {
+  if (!text) return " ";
+  if (!re) return text;
+  const parts = text.split(re);
+  if (parts.length === 1) return text;
+  return parts.map((part, i) =>
+    i % 2 === 1 ? (
+      // Index keys are fine: the parts of one string never reorder.
+      <mark key={i} data-diff-match className="bg-attention/40 text-foreground rounded-[2px]">
+        {part}
+      </mark>
+    ) : (
+      part
+    ),
+  );
+}
+
+const NUMBER = "text-muted-foreground/70 w-10 shrink-0 select-none px-1 text-right tabular-nums";
+
+function Sign({ kind }: { kind: DiffLine["kind"] }) {
+  return (
+    <span
+      className={cn(
+        "w-4 shrink-0 select-none text-center",
+        kind === "add" && "text-success",
+        kind === "del" && "text-destructive",
+      )}
+    >
+      {kind === "add" ? "+" : kind === "del" ? "-" : " "}
+    </span>
+  );
+}
+
+/**
+ * A diff, with the gutters and colouring the eye expects: unified by default,
+ * or old and new side by side. The panel only offers split at 768px and up;
+ * a phone does not have the width for two columns of code.
  *
- * Unwrapped, each row is `w-max min-w-full`: the row is as wide as its longest
- * line, so a long line makes the scroll container actually scroll instead of
- * spilling out of a container-width box, and the add/delete tint still covers
- * the row once it is scrolled. Wrapped, rows are held to the container and the
- * text breaks — including mid-token, which is the only thing that helps with
- * the minified line that made someone tick the box.
+ * Unwrapped, each unified row is `w-max min-w-full`: the row is as wide as its
+ * longest line, so a long line makes the scroll container actually scroll
+ * instead of spilling out of a container-width box, and the add/delete tint
+ * still covers the row once it is scrolled. Wrapped, rows are held to the
+ * container and the text breaks — including mid-token, which is the only
+ * thing that helps with the minified line that made someone tick the box.
+ *
+ * `highlight` marks every case-insensitive occurrence of a literal string,
+ * for find-in-diff.
  */
 export function Diff({
   patch,
   wrap = false,
+  layout = "unified",
+  highlight,
   className,
 }: {
   patch: string;
   wrap?: boolean;
+  layout?: "unified" | "split";
+  highlight?: string;
   className?: string;
 }) {
   const lines = useMemo(() => parsePatch(patch), [patch]);
-  return <DiffLines lines={lines} wrap={wrap} className={className} />;
+  return <DiffLines lines={lines} wrap={wrap} layout={layout} highlight={highlight} className={className} />;
 }
 
 /** The same view for lines that never were a patch: two versions compared in the browser. */
 export function DiffLines({
   lines,
   wrap = false,
+  layout = "unified",
+  highlight,
   className,
 }: {
   lines: DiffLine[];
   wrap?: boolean;
+  layout?: "unified" | "split";
+  highlight?: string;
   className?: string;
 }) {
-  const rows = useMemo(() => keyed(lines), [lines]);
+  const re = useMemo(() => matcher(highlight), [highlight]);
 
   if (lines.length === 0) {
     return <p className="text-muted-foreground px-3 py-2 text-[12px]">No textual changes.</p>;
   }
 
+  return layout === "split" ? (
+    <Split lines={lines} wrap={wrap} re={re} className={className} />
+  ) : (
+    <Unified lines={lines} wrap={wrap} re={re} className={className} />
+  );
+}
+
+interface BodyProps {
+  lines: DiffLine[];
+  wrap: boolean;
+  re: RegExp | null;
+  className?: string;
+}
+
+function Unified({ lines, wrap, re, className }: BodyProps) {
+  const rows = useMemo(() => keyed(lines, lineBase), [lines]);
   return (
     <div className={cn("font-mono text-[11px] leading-[1.55]", className)}>
-      {rows.map(({ key, line }) => (
+      {rows.map(({ key, item: line }) => (
         <div
           key={key}
           className={cn(
@@ -77,29 +164,94 @@ export function DiffLines({
           )}
         >
           {line.kind === "hunk" || line.kind === "meta" ? (
-            <span className="px-2 py-0.5">{line.text}</span>
+            <span className="px-2 py-0.5">{lineText(line.text, re)}</span>
           ) : (
             <>
-              <span className="text-muted-foreground/70 w-10 shrink-0 select-none px-1 text-right tabular-nums">
-                {gutter(line.oldNo)}
-              </span>
-              <span className="text-muted-foreground/70 w-10 shrink-0 select-none px-1 text-right tabular-nums">
-                {gutter(line.newNo)}
-              </span>
-              <span
-                className={cn(
-                  "w-4 shrink-0 select-none text-center",
-                  line.kind === "add" && "text-success",
-                  line.kind === "del" && "text-destructive",
-                )}
-              >
-                {line.kind === "add" ? "+" : line.kind === "del" ? "-" : " "}
-              </span>
-              <span className={cn("pr-3", wrap ? "min-w-0 flex-1" : "shrink-0")}>{line.text || " "}</span>
+              <span className={NUMBER}>{gutter(line.oldNo)}</span>
+              <span className={NUMBER}>{gutter(line.newNo)}</span>
+              <Sign kind={line.kind} />
+              <span className={cn("pr-3", wrap ? "min-w-0 flex-1" : "shrink-0")}>{lineText(line.text, re)}</span>
             </>
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Side by side. The rows are `display: contents`, so every cell sits in one
+ * two-column grid: the columns line up from top to bottom, and a cell stretches
+ * to its row's height, so the shorter side of a wrapped pair is still tinted
+ * all the way down.
+ *
+ * Wrapped, the columns are each half the width and the text breaks. Unwrapped,
+ * each column is at least as wide as its longest line and the grid is
+ * `w-max min-w-full`, so long lines scroll the container sideways as unified
+ * rows do, while short diffs still fill it.
+ */
+function Split({ lines, wrap, re, className }: BodyProps) {
+  const rows = useMemo(() => keyed(splitRows(lines), splitBase), [lines]);
+  return (
+    <div
+      className={cn(
+        "grid font-mono text-[11px] leading-[1.55]",
+        wrap
+          ? "w-full grid-cols-2 whitespace-pre-wrap [overflow-wrap:anywhere]"
+          : "w-max min-w-full grid-cols-[repeat(2,minmax(max-content,1fr))] whitespace-pre",
+        className,
+      )}
+    >
+      {rows.map(({ key, item: row }) =>
+        row.kind === "pair" ? (
+          <div key={key} data-diff-row className="contents">
+            <Cell line={row.left} side="left" wrap={wrap} re={re} />
+            <Cell line={row.right} side="right" wrap={wrap} re={re} />
+          </div>
+        ) : (
+          <div
+            key={key}
+            data-diff-row
+            className={cn(
+              "col-span-2 px-2 py-0.5",
+              row.kind === "hunk" ? "bg-muted/70 text-muted-foreground" : "text-muted-foreground italic",
+            )}
+          >
+            {lineText(row.text, re)}
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
+
+function Cell({
+  line,
+  side,
+  wrap,
+  re,
+}: {
+  line?: DiffLine;
+  side: "left" | "right";
+  wrap: boolean;
+  re: RegExp | null;
+}) {
+  const edge = side === "left" && "border-border/60 border-r";
+  // Nothing on this side: the line exists only in the other version.
+  if (!line) return <div data-side={side} data-empty className={cn("bg-muted/40", edge)} />;
+  return (
+    <div
+      data-side={side}
+      className={cn(
+        "flex min-w-0",
+        edge,
+        line.kind === "add" && "bg-success/10",
+        line.kind === "del" && "bg-destructive/10",
+      )}
+    >
+      <span className={NUMBER}>{gutter(side === "left" ? line.oldNo : line.newNo)}</span>
+      <Sign kind={line.kind} />
+      <span className={cn("pr-3", wrap ? "min-w-0 flex-1" : "shrink-0")}>{lineText(line.text, re)}</span>
     </div>
   );
 }
