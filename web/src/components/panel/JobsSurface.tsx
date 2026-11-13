@@ -7,13 +7,7 @@ import { RetryRow, textButton } from "~/components/RetryRow";
 import { Elapsed } from "~/components/Elapsed";
 import { Spinner } from "~/components/ui/spinner";
 import { fmtTokens } from "~/lib/format";
-import {
-  childJobs,
-  isLive,
-  jobLabel,
-  jobTree,
-  liveJobsLabel,
-} from "~/lib/jobs";
+import { childJobs, isLive, jobLabel, jobTree, liveJobsLabel } from "~/lib/jobs";
 import { cn } from "~/lib/utils";
 import type { Item, Job, JobKind, ThreadState } from "~/protocol";
 import { useLatest } from "~/useLatest";
@@ -63,11 +57,7 @@ function fmtCost(c: number): string {
 
 function usageParts(job: Job): { key: string; part: string }[] {
   const out: { key: string; part: string }[] = [];
-  if (job.usage?.totalTokens)
-    out.push({
-      key: "tokens",
-      part: `${fmtTokens(job.usage.totalTokens)} tok`,
-    });
+  if (job.usage?.totalTokens) out.push({ key: "tokens", part: `${fmtTokens(job.usage.totalTokens)} tok` });
   if (job.usage?.cost) out.push({ key: "cost", part: fmtCost(job.usage.cost) });
   return out;
 }
@@ -83,18 +73,11 @@ function JobRow({
 }) {
   const live = isLive(job);
   const meta: { key: string; part: ReactNode }[] = [
-    ...(job.kind === "agent" && job.taskType
-      ? [{ key: "type", part: job.taskType }]
-      : []),
-    {
-      key: "elapsed",
-      part: <Elapsed since={job.startedAt} finishedAt={job.finishedAt} />,
-    },
+    ...(job.kind === "agent" && job.taskType ? [{ key: "type", part: job.taskType }] : []),
+    { key: "elapsed", part: <Elapsed since={job.startedAt} finishedAt={job.finishedAt} /> },
     ...usageParts(job),
   ];
-  const second = live
-    ? job.activity || "working…"
-    : job.error || job.activity || job.status;
+  const second = live ? job.activity || "working…" : job.error || job.activity || job.status;
 
   return (
     // Fixed height on purpose: a streaming activity line must never reflow the
@@ -111,12 +94,7 @@ function JobRow({
         <StatusMark job={job} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-[12.5px] font-medium">{jobLabel(job)}</p>
-          <p
-            className={cn(
-              "h-[1.1rem] truncate font-mono text-[11px]",
-              job.error ? "text-destructive" : "text-muted-foreground",
-            )}
-          >
+          <p className={cn("h-[1.1rem] truncate font-mono text-[11px]", job.error ? "text-destructive" : "text-muted-foreground")}>
             {second}
           </p>
           <p className="text-muted-foreground truncate text-[10px]">
@@ -195,9 +173,7 @@ function ShellPane({
         if (res.text) {
           setText((t) => {
             const next = t + res.text;
-            return next.length > TAIL_CAP
-              ? next.slice(next.length - TAIL_CAP)
-              : next;
+            return next.length > TAIL_CAP ? next.slice(next.length - TAIL_CAP) : next;
           });
         }
         if (res.done) {
@@ -225,9 +201,7 @@ function ShellPane({
 
   if (!job.outputFile) {
     return (
-      <p className="text-muted-foreground px-3 py-4 text-[12px]">
-        This shell has no output file to tail.
-      </p>
+      <p className="text-muted-foreground px-3 py-4 text-[12px]">This shell has no output file to tail.</p>
     );
   }
   return (
@@ -239,8 +213,7 @@ function ShellPane({
         {text || (done ? "(no output)" : "waiting for output…")}
       </pre>
       <p className="text-muted-foreground truncate border-t px-3 py-1 text-[10px]">
-        {error ? `Tail failed: ${error}` : done ? "Finished" : "Tailing…"} ·{" "}
-        {job.outputFile}
+        {error ? `Tail failed: ${error}` : done ? "Finished" : "Tailing…"} · {job.outputFile}
       </p>
     </div>
   );
@@ -278,26 +251,17 @@ function AgentPane({
   onStop: (j: Job) => void;
 }) {
   const live = useMemo(
-    () =>
-      job.toolCallId
-        ? items.filter((it) => it.parentId === job.toolCallId)
-        : [],
+    () => (job.toolCallId ? items.filter((it) => it.parentId === job.toolCallId) : []),
     [items, job.toolCallId],
   );
   // The snapshot holds only part of an agent's narration, if any: none for a
   // settled one, the tail for a running one. A spawn call outside the window
   // says nothing about how much is missing, so that asks too.
-  const spawn = job.toolCallId
-    ? items.find((it) => it.id === job.toolCallId)
-    : undefined;
-  const wanted =
-    !!job.toolCallId && (!spawn || (spawn.childrenBefore ?? 0) > 0);
+  const spawn = job.toolCallId ? items.find((it) => it.id === job.toolCallId) : undefined;
+  const wanted = !!job.toolCallId && (!spawn || (spawn.childrenBefore ?? 0) > 0);
   const fetched = useAgentChildren(threadId, job.toolCallId, wanted);
   const fetchedItems = fetched.status === "ready" ? fetched.items : undefined;
-  const mine = useMemo(
-    () => mergeChildren(fetchedItems, live),
-    [fetchedItems, live],
-  );
+  const mine = useMemo(() => mergeChildren(fetchedItems, live), [fetchedItems, live]);
   const children = useMemo(() => childJobs(jobs, job.id), [jobs, job.id]);
 
   return (
@@ -308,40 +272,22 @@ function AgentPane({
           Loading this agent's activity…
         </p>
       )}
-      {fetched.status === "error" && (
-        <RetryRow
-          className="px-1"
-          message={fetched.error}
-          onRetry={fetched.retry}
-        />
+      {fetched.status === "error" && <RetryRow className="px-1" message={fetched.error} onRetry={fetched.retry} />}
+      {fetched.status !== "loading" && fetched.status !== "error" && mine.length === 0 && children.length === 0 && (
+        <p className="text-muted-foreground px-1 py-4 text-center text-[12px]">Nothing recorded for this agent yet.</p>
       )}
-      {fetched.status !== "loading" &&
-        fetched.status !== "error" &&
-        mine.length === 0 &&
-        children.length === 0 && (
-          <p className="text-muted-foreground px-1 py-4 text-center text-[12px]">
-            Nothing recorded for this agent yet.
-          </p>
-        )}
       {mine.map((it) =>
         it.kind === "tool" ? (
-          <div
-            key={it.id}
-            className="flex items-start gap-2 px-1 text-[11.5px]"
-          >
+          <div key={it.id} className="flex items-start gap-2 px-1 text-[11.5px]">
             <ToolRowMark it={it} />
-            <span className="min-w-0 flex-1 truncate font-mono">
-              {it.title || it.toolKind}
-            </span>
+            <span className="min-w-0 flex-1 truncate font-mono">{it.title || it.toolKind}</span>
           </div>
         ) : it.kind === "message" && it.text ? (
           <div
             key={it.id}
             className={cn(
               "min-w-0 overflow-hidden rounded-md px-2 py-1 text-[12px] break-words [&_pre]:overflow-x-auto",
-              it.contentKind === "thought"
-                ? "text-muted-foreground italic"
-                : "bg-card/60 border",
+              it.contentKind === "thought" ? "text-muted-foreground italic" : "bg-card/60 border",
             )}
           >
             <Markdown text={it.text} />
@@ -350,16 +296,9 @@ function AgentPane({
       )}
       {children.length > 0 && (
         <>
-          <p className="text-muted-foreground px-1 pt-2 text-[10px] font-semibold tracking-wide uppercase">
-            Subagents
-          </p>
+          <p className="text-muted-foreground px-1 pt-2 text-[10px] font-semibold tracking-wide uppercase">Subagents</p>
           {children.map((c) => (
-            <JobRow
-              key={c.id}
-              job={{ ...c, depth: 0 }}
-              onOpen={onOpen}
-              onStop={onStop}
-            />
+            <JobRow key={c.id} job={{ ...c, depth: 0 }} onOpen={onOpen} onStop={onStop} />
           ))}
         </>
       )}
@@ -376,22 +315,10 @@ function EarlierJobs({ load }: { load: () => Promise<ThreadState | null> }) {
     // onState with jobsBefore cleared, and this row goes with it.
     void load().then((next) => setStatus(next ? "idle" : "error"));
   };
-  if (status === "error")
-    return (
-      <RetryRow
-        className="px-1"
-        message="Could not load the earlier jobs."
-        onRetry={run}
-      />
-    );
+  if (status === "error") return <RetryRow className="px-1" message="Could not load the earlier jobs." onRetry={run} />;
   const loading = status === "loading";
   return (
-    <button
-      type="button"
-      onClick={run}
-      disabled={loading}
-      className={textButton}
-    >
+    <button type="button" onClick={run} disabled={loading} className={textButton}>
       {loading && <Spinner className="text-primary size-3" />}
       {loading ? "Loading earlier jobs…" : "Show earlier jobs"}
     </button>
@@ -430,9 +357,7 @@ function OpenJob({
           <ArrowLeftIcon className="size-4" />
         </button>
         <StatusMark job={job} />
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">
-          {jobLabel(job)}
-        </span>
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{jobLabel(job)}</span>
         <span className="text-muted-foreground shrink-0 text-[10px]">
           <Elapsed since={job.startedAt} finishedAt={job.finishedAt} />
         </span>
@@ -449,12 +374,7 @@ function OpenJob({
       </div>
       <div className="min-h-0 flex-1">
         {job.kind === "shell" ? (
-          <ShellPane
-            key={job.id}
-            threadId={threadId}
-            job={job}
-            command={command}
-          />
+          <ShellPane key={job.id} threadId={threadId} job={job} command={command} />
         ) : (
           <AgentPane
             threadId={threadId}
@@ -481,21 +401,14 @@ function RosterTotals({ jobs, partial }: { jobs: Job[]; partial: boolean }) {
       <span className="shrink-0 tabular-nums">
         {/* Totals over a partial list are a floor, and say so. */}
         {partial && (tokens || cost) ? "≥ " : ""}
-        {[tokens ? `${fmtTokens(tokens)} tok` : "", cost ? fmtCost(cost) : ""]
-          .filter(Boolean)
-          .join(" · ")}
+        {[tokens ? `${fmtTokens(tokens)} tok` : "", cost ? fmtCost(cost) : ""].filter(Boolean).join(" · ")}
       </span>
     </div>
   );
 }
 
 /** The jobs roster: agents, shells and monitors running beside the conversation. */
-export function JobsSurface({
-  threadId,
-  command,
-  loadAllJobs,
-  focus,
-}: JobsSurfaceProps) {
+export function JobsSurface({ threadId, command, loadAllJobs, focus }: JobsSurfaceProps) {
   // `jobs` is the roster, `items` feeds an agent's transcript pane, and
   // `jobsBefore` says the snapshot left some out.
   const state = useThread(useThreadStore(), surfaceFields, shallow);
@@ -511,8 +424,7 @@ export function JobsSurface({
   }
   const open = openId ? state.jobs.find((j) => j.id === openId) : undefined;
 
-  const stop = (j: Job) =>
-    void command("stop_job", { threadId, jobId: j.id }).catch(() => {});
+  const stop = (j: Job) => void command("stop_job", { threadId, jobId: j.id }).catch(() => {});
 
   if (open) {
     return (
@@ -539,9 +451,7 @@ export function JobsSurface({
       <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
         <BotIcon className="size-5 opacity-60" />
         <p className="text-[13px]">No jobs yet.</p>
-        <p className="text-[12px]">
-          Subagents, background shells and monitors show up here.
-        </p>
+        <p className="text-[12px]">Subagents, background shells and monitors show up here.</p>
       </div>
     );
   }
@@ -554,16 +464,9 @@ export function JobsSurface({
           if (rows.length === 0) return null;
           return (
             <section key={kind} className="space-y-1.5">
-              <p className="text-muted-foreground px-1 text-[10px] font-semibold tracking-wide uppercase">
-                {title}
-              </p>
+              <p className="text-muted-foreground px-1 text-[10px] font-semibold tracking-wide uppercase">{title}</p>
               {rows.map((j) => (
-                <JobRow
-                  key={j.id}
-                  job={j}
-                  onOpen={(x) => setOpenId(x.id)}
-                  onStop={stop}
-                />
+                <JobRow key={j.id} job={j} onOpen={(x) => setOpenId(x.id)} onStop={stop} />
               ))}
             </section>
           );
