@@ -3,7 +3,7 @@ import { memo } from "react";
 import { ChangedFiles } from "~/components/ChangedFiles";
 import type { Artefact } from "~/lib/artefacts";
 import type { CardSignIn } from "~/lib/cards";
-import type { TurnDiff } from "~/protocol";
+import type { DiffTurn, TurnDiff } from "~/protocol";
 import { rowKey, type Row } from "~/rows";
 
 import { ArtefactCards } from "./ArtefactCards";
@@ -71,6 +71,7 @@ function RowBody({
 export const TranscriptRow = memo(function TranscriptRow({
   row,
   diff,
+  turnNumber,
   latest,
   onOpenDiff,
   ...context
@@ -78,9 +79,11 @@ export const TranscriptRow = memo(function TranscriptRow({
   row: Row;
   /** What this row's turn changed, when this is the turn's last row. */
   diff: TurnDiff | undefined;
+  /** The 1-based place of the diff's turn in the thread; 0 with no diff. */
+  turnNumber: number;
   /** The diff is the newest turn's. */
   latest: boolean;
-  onOpenDiff: (path?: string) => void;
+  onOpenDiff: (path?: string, turn?: DiffTurn) => void;
 }) {
   return (
     // A `display: contents` box, not a `content-visibility: auto` one.
@@ -99,7 +102,7 @@ export const TranscriptRow = memo(function TranscriptRow({
     // the row and its changed-files card as if they were loose children.
     <div data-row-id={rowKey(row)} className="contents">
       <RowBody row={row} {...context} />
-      {diff && <ChangedFiles diff={diff} latest={latest} onOpenDiff={onOpenDiff} />}
+      {diff && <ChangedFiles diff={diff} turnNumber={turnNumber} latest={latest} onOpenDiff={onOpenDiff} />}
     </div>
   );
 });

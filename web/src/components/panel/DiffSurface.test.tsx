@@ -93,6 +93,41 @@ describe("DiffSurface comparison", () => {
   });
 });
 
+describe("DiffSurface turn comparison", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  const surface = (turn: { id: string; number: number } | null, change = () => {}) => (
+    <DiffSurface
+      changes={CHANGES}
+      loading={false}
+      error=""
+      onRefresh={() => {}}
+      loadDiff={() => Promise.resolve(DIFF)}
+      comparison="branch"
+      turn={turn}
+      onComparisonChange={change}
+    />
+  );
+
+  it("offers no turn until one is known", async () => {
+    render(surface(null));
+    fireEvent.click(screen.getByRole("combobox", { name: "Diff comparison" }));
+    await screen.findByRole("option", { name: "Branch changes" });
+    expect(screen.queryByRole("option", { name: /^Turn/ })).toBeNull();
+  });
+
+  it("offers a known turn and reports picking it", async () => {
+    const change = vi.fn();
+    render(surface({ id: "t3", number: 3 }, change));
+    fireEvent.click(screen.getByRole("combobox", { name: "Diff comparison" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Turn 3" }));
+    expect(change).toHaveBeenCalledWith("turn");
+  });
+});
+
 describe("DiffSurface refresh", () => {
   beforeEach(() => {
     localStorage.clear();

@@ -952,7 +952,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		changes, err := c.srv.mgr.ThreadChanges(ctx, a.ThreadID, a.Comparison)
+		changes, err := c.srv.mgr.ThreadChanges(ctx, a.ThreadID, a.Comparison, a.TurnID)
 		if err != nil {
 			return nil, err
 		}
@@ -963,7 +963,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		diff, err := c.srv.mgr.ThreadFileDiff(ctx, a.ThreadID, a.Path, a.Comparison, a.Base, a.Head)
+		diff, err := c.srv.mgr.ThreadFileDiff(ctx, a.ThreadID, a.Path, a.Comparison, a.TurnID, a.Base, a.Head)
 		if err != nil {
 			return nil, err
 		}

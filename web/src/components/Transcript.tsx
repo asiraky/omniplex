@@ -16,6 +16,7 @@ import type { CardSignIn } from "~/lib/cards";
 import { cn } from "~/lib/utils";
 import type {
   ComposerItem,
+  DiffTurn,
   PullRequest,
   QueuedPrompt,
   ScheduledPrompt,
@@ -105,7 +106,8 @@ type TranscriptProps = {
   onSwitchAccount?: (instance: string, turn: Turn) => Promise<boolean>;
   /** Cancels the continuation the server armed at a usage limit's reset. */
   onCancelContinuation?: (p: ScheduledPrompt) => Promise<void>;
-  onOpenDiff: (path?: string) => void;
+  /** Opens the diff panel, on one turn's changes when a turn is given. */
+  onOpenDiff: (path?: string, turn?: DiffTurn) => void;
   /** Opens the panel on the jobs surface. */
   onOpenJobs?: () => void;
   /** Opens an artefact in the panel. */
@@ -237,6 +239,7 @@ function TranscriptBody({
     interrupted,
     switchedTo,
     turnDiffs,
+    turnNumbers,
     lastTurnID,
     recoveredTurns,
     continuation,
@@ -321,6 +324,7 @@ function TranscriptBody({
                 key={rowKey(row)}
                 row={row}
                 diff={diff}
+                turnNumber={diff && turnID ? (turnNumbers.get(turnID) ?? 0) : 0}
                 latest={diff !== undefined && turnID === lastTurnID}
                 onOpenDiff={onOpenDiff}
                 threadId={state.threadId}
