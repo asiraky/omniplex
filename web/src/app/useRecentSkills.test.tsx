@@ -19,6 +19,7 @@ function setup(draft: string, { isDesktop, types }: { isDesktop: boolean; types:
     focusEnd: vi.fn(),
     typeAtEnd: vi.fn(() => types),
     openModelPicker: vi.fn(),
+    sendAndNewThread: vi.fn(),
   };
   const hook = renderHook(() =>
     useRecentSkills({
