@@ -207,7 +207,13 @@ type ArtefactShown = Omit<Artefact, "id" | "shownAt"> & { artefactId: string };
 
 function applyArtefact(s: ThreadState, ts: number, seq: number, p: ArtefactShown): ThreadState {
   const { artefactId, ...rest } = p;
-  const artefact: Artefact = { ...rest, id: artefactId, turnId: p.turnId || undefined, shownAt: ts };
+  const artefact: Artefact = {
+    ...rest,
+    id: artefactId,
+    turnId: p.turnId || undefined,
+    inline: p.inline || undefined,
+    shownAt: ts,
+  };
   const list = s.artefacts ?? [];
   const i = list.findIndex((a) => a.id === artefactId);
   const artefacts = i >= 0 ? list.map((a, j) => (j === i ? artefact : a)) : [...list, artefact];
@@ -223,6 +229,7 @@ function applyArtefact(s: ThreadState, ts: number, seq: number, p: ArtefactShown
       it.artefactId = artefactId;
       it.mediaType = p.mediaType;
       it.size = p.size;
+      it.inline = p.inline || undefined;
     }),
   };
 }

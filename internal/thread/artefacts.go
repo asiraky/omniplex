@@ -3,6 +3,7 @@ package thread
 import (
 	"context"
 	"errors"
+	"mime"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -223,6 +224,9 @@ type Show struct {
 	Note   string
 	Source string
 	Info   artefact.Info
+	// Inline asks for the page to render in the conversation. Only HTML
+	// can, so anything else ignores it and shows as a card.
+	Inline bool
 }
 
 // ShowArtefact records a shown file. The same path is the same artefact, so
@@ -262,6 +266,7 @@ func (a *Actor) handleShow(s *Show) (proto.ArtefactShownPayload, error) {
 	payload := proto.ArtefactShownPayload{
 		ArtefactID: id, Path: s.Path, Name: name, Dir: s.Info.Dir, MediaType: s.Info.MediaType, Size: s.Info.Size,
 		Entry: s.Info.Entry, Files: s.Info.Files, ModifiedAt: s.Info.ModifiedAt, Source: s.Source, Note: s.Note,
+		Inline: s.Inline && isHTML(s.Info.MediaType),
 	}
 	if t := a.lastTurn(); t != nil && !t.Done {
 		payload.TurnID = t.ID
@@ -270,6 +275,14 @@ func (a *Actor) handleShow(s *Show) (proto.ArtefactShownPayload, error) {
 		return proto.ArtefactShownPayload{}, err
 	}
 	return payload, nil
+}
+
+// isHTML reports whether a media type is an HTML page. For a folder the
+// type is its entry's, so a folder of images that opens on no page is not
+// one.
+func isHTML(mediaType string) bool {
+	mt, _, err := mime.ParseMediaType(mediaType)
+	return err == nil && mt == "text/html"
 }
 
 // ArtefactRoots is where a thread may show files from: its home folder, its

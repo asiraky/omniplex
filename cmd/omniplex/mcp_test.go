@@ -20,16 +20,17 @@ func TestMCPShowSendsAbsolutePathAndReportsRefusals(t *testing.T) {
 	t.Chdir(dir)
 
 	var mu sync.Mutex
-	got := map[string]map[string]string{}
+	got := map[string]map[string]any{}
 	var auth []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]string
+		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
+		path, _ := body["path"].(string)
 		mu.Lock()
-		got[filepath.Base(body["path"])] = body
+		got[filepath.Base(path)] = body
 		auth = append(auth, r.Header.Get("Authorization"))
 		mu.Unlock()
-		if strings.HasSuffix(body["path"], "secret") {
+		if strings.HasSuffix(path, "secret") {
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).Encode(map[string]string{"error": "that is outside this project"})
 			return
@@ -43,7 +44,7 @@ func TestMCPShowSendsAbsolutePathAndReportsRefusals(t *testing.T) {
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"show_file","arguments":{"path":"proto","title":"Proto","note":"first cut"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"show_file","arguments":{"path":"proto","title":"Proto","note":"first cut","inline":true}}}`,
 		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"show_file","arguments":{"path":"/etc/secret"}}}`,
 		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"show_file","arguments":{}}}`,
 	}, "\n")
@@ -76,8 +77,12 @@ func TestMCPShowSendsAbsolutePathAndReportsRefusals(t *testing.T) {
 
 	// The server does not know the agent's working directory: the tool
 	// resolves relative paths before sending them.
-	if p := got["proto"]; len(got) != 2 || p["path"] != filepath.Join(dir, "proto") || p["title"] != "Proto" || p["note"] != "first cut" {
+	if p := got["proto"]; len(got) != 2 || p["path"] != filepath.Join(dir, "proto") || p["title"] != "Proto" || p["note"] != "first cut" || p["inline"] != true {
 		t.Fatalf("server got %v", got)
+	}
+	// Inline is the agent's to ask for: left out, it is off.
+	if got["secret"]["inline"] != false {
+		t.Fatalf("inline without asking: %v", got["secret"])
 	}
 	if auth[0] != "Bearer tok" {
 		t.Fatalf("auth = %q", auth[0])

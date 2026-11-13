@@ -52,7 +52,7 @@ function RowBody({
   if (row.kind === "run") return <ToolRun threadId={threadId} items={row.items} live={row.live} />;
   if (row.kind === "jobs") return <JobsCard items={row.items} recap={row.recap} onOpen={onOpenJobs} />;
   if (row.kind === "artefacts")
-    return <ArtefactCards items={row.items} artefacts={artefacts} onOpen={onOpenArtefact} />;
+    return <ArtefactCards threadId={threadId} items={row.items} artefacts={artefacts} onOpen={onOpenArtefact} />;
   if (row.item.kind === "tool") return <ToolCard threadId={threadId} item={row.item} />;
   if (row.item.kind === "notice") return <NoticeCard item={row.item} describeSettings={describeSettings} />;
   if (row.item.kind === "card") return <CardRow item={row.item} onSignIn={onCardSignIn} />;

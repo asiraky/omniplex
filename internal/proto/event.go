@@ -386,6 +386,10 @@ type ArtefactShownPayload struct {
 	Note   string `json:"note,omitempty"`
 	// TurnID is the turn it was shown in, when there was one.
 	TurnID string `json:"turnId,omitempty"`
+	// Inline is set when the agent asked for an HTML page to render in the
+	// conversation rather than as a card. It is never set on anything but
+	// HTML.
+	Inline bool `json:"inline,omitempty"`
 }
 
 const (

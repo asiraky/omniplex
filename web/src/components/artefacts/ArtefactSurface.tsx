@@ -13,6 +13,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useSta
 
 import { useArtefactText } from "~/components/artefacts/artefactText";
 import { TypeBadge } from "~/components/artefacts/ArtefactTile";
+import { usePreview } from "~/components/artefacts/usePreview";
 import {
   CodeView,
   CsvView,
@@ -43,14 +44,12 @@ import {
   loadViewMode,
   rawUrl,
   readsText,
-  requestPreview,
   retoken,
   saveViewMode,
   share,
   unshare,
   viewerFor,
   type Artefact,
-  type ExpiringUrl,
   type ShareLink,
   type ViewerKind,
   type ViewMode,
@@ -63,50 +62,6 @@ import { useNow } from "~/useNow";
 // The browser chrome, its console and its device frames are only wanted once
 // an HTML artefact is on screen.
 const MiniBrowser = lazy(() => import("~/components/artefacts/MiniBrowser"));
-
-// Refresh a preview token this long before it lapses, so "open in a new tab"
-// never hands out a dead link. The frame itself is not reloaded for it.
-const REFRESH_BEFORE_MS = 5 * 60_000;
-
-interface PreviewState {
-  preview?: ExpiringUrl;
-  error?: string;
-}
-
-/** A preview URL for an HTML artefact, kept fresh while the surface is open.
-    The URL serves the live files, so a revision needs no new one. */
-function usePreview(threadId: string, artefactId: string, enabled: boolean) {
-  const [state, setState] = useState<PreviewState & { key: string }>({ key: "" });
-  const [attempt, setAttempt] = useState(0);
-  const key = `${threadId}/${artefactId}`;
-
-  useEffect(() => {
-    if (!enabled) return;
-    let stale = false;
-    requestPreview(threadId, artefactId)
-      .then((preview) => !stale && setState({ key, preview }))
-      .catch((e: unknown) => !stale && setState({ key, error: e instanceof Error ? e.message : String(e) }));
-    return () => {
-      stale = true;
-    };
-  }, [threadId, artefactId, enabled, attempt, key]);
-
-  const refresh = useCallback(async () => {
-    const preview = await requestPreview(threadId, artefactId);
-    setState({ key, preview });
-    return preview;
-  }, [threadId, artefactId, key]);
-
-  const current = state.key === key ? state : { key };
-  useEffect(() => {
-    if (!current.preview) return;
-    const wait = Math.max(10_000, current.preview.expiresAt - Date.now() - REFRESH_BEFORE_MS);
-    const t = setTimeout(() => void refresh().catch(() => {}), wait);
-    return () => clearTimeout(t);
-  }, [current.preview, refresh]);
-
-  return { ...current, refresh, retry: () => setAttempt((n) => n + 1) };
-}
 
 /** Preview or source for this kind of file, remembered per kind. */
 function useViewMode(kind: ViewerKind): [ViewMode, (mode: ViewMode) => void] {
