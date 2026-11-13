@@ -19,6 +19,7 @@ import type {
   Workspace,
 } from "~/protocol";
 import { AgentTools } from "./threadDraft/AgentTools";
+import { CompareChips } from "./threadDraft/CompareChips";
 import { DraftHero } from "./threadDraft/DraftHero";
 import { GitChip } from "./threadDraft/GitChip";
 import { InstanceAlerts } from "./threadDraft/InstanceAlerts";
@@ -26,6 +27,7 @@ import { PinToggle } from "./threadDraft/PinToggle";
 import { FolderChip, ProjectChip } from "./threadDraft/ScopeChips";
 import { toolClass } from "./threadDraft/shared";
 import { threadChoices, useAgentChoice } from "./threadDraft/useAgentChoice";
+import { useCompare } from "./threadDraft/useCompare";
 import { useDraftScope } from "./threadDraft/useDraftScope";
 import { useRememberedChoices } from "./threadDraft/useRememberedChoices";
 import {
@@ -71,12 +73,15 @@ export interface CompareRun {
   label: string;
 }
 
+const FILES_WITH_COMPARE = "Files go to one thread: remove them or the extra models";
+
 /** Why sending is not possible yet, or "" when it is. */
 function blockerFor({
   status,
   project,
   ready,
   missingWorktree,
+  filesWithCompare,
   loadingSpaces,
   starting,
 }: {
@@ -84,6 +89,7 @@ function blockerFor({
   project: Project | undefined;
   ready: boolean;
   missingWorktree: boolean;
+  filesWithCompare: boolean;
   loadingSpaces: boolean;
   starting: boolean;
 }) {
@@ -91,6 +97,8 @@ function blockerFor({
   if (!project) return "Add a project first";
   if (!ready) return "Sign in to a model to start";
   if (missingWorktree) return "Pick a worktree to continue on";
+  // Each thread would need its own upload of every file, over a phone link.
+  if (filesWithCompare) return FILES_WITH_COMPARE;
   // The busy warning is made of this list, so wait for it.
   if (loadingSpaces) return "Loading worktrees…";
   if (starting) return "Starting…";
@@ -112,6 +120,7 @@ export function ThreadDraft({
   status,
   drafts,
   onStart,
+  onCompare,
   attachments,
   onAttachFiles,
   onRemoveAttachment,
@@ -139,6 +148,11 @@ export function ThreadDraft({
   drafts: DraftStore;
   /** `schedule` starts the thread empty and opens a schedule for the message. */
   onStart: (input: NewThreadInput, schedule?: boolean) => Promise<void>;
+  /**
+   * Starts one thread per model, the draft's own first. Throws only when none
+   * started. Absent, there is no comparing.
+   */
+  onCompare?: (runs: CompareRun[]) => Promise<void>;
   /** Files for the first message, held until the thread exists. */
   attachments?: Attachment[];
   onAttachFiles?: (files: File[]) => void;
@@ -202,10 +216,14 @@ export function ThreadDraft({
     preset?.folderId,
   );
   const { project, scope, gitScope } = where;
-  const agent = useAgentChoice(
-    { project, remembered: where.remembered, harnesses, userConfig },
-    remembered,
-  );
+  const sources = { project, remembered: where.remembered, harnesses, userConfig };
+  const agent = useAgentChoice(sources, remembered);
+  const primary = {
+    harness: agent.harnessId,
+    instance: agent.instance?.id ?? "",
+    model: agent.model,
+  };
+  const compare = useCompare(sources, primary, !!gitScope && !!onCompare);
   const git = useWorkspaceChoice({
     project,
     gitScope,
@@ -213,7 +231,10 @@ export function ThreadDraft({
     onListWorkspaces,
     onListIssues,
     preset: preset && { ...preset, projectId: presetProject },
+    forceWorktree: compare.comparing,
   });
+  const modelLabel =
+    agent.instance?.models.find((m) => m.id === agent.model)?.label ?? "";
   const ownComposer = useRef<ComposerHandle | null>(null);
   const composer = composerRef ?? ownComposer;
   // Asked for from the keyboard or the palette, the cursor goes straight into
@@ -265,6 +286,7 @@ export function ThreadDraft({
     project,
     ready: agent.instance?.availability?.state === "ready",
     missingWorktree: git.kind === "attach" && !git.choice.attachPath,
+    filesWithCompare: compare.comparing && !!attachments?.some((a) => a.status !== "error"),
     loadingSpaces: git.loadingSpaces,
     starting,
   });
@@ -273,29 +295,34 @@ export function ThreadDraft({
     if (!project || blocker) return;
     setStarting(true);
     setError(null);
+    const input: NewThreadInput = {
+      projectId: project.id,
+      folderId: scope?.id ?? "",
+      harness: agent.harnessId,
+      instance: agent.instance?.id ?? "",
+      model: agent.effectiveModel,
+      mode: agent.mode,
+      effort: agent.effort,
+      serviceTier: agent.serviceTier,
+      agentSettingsExplicit: true,
+      ...git.sent,
+      text,
+      pinned,
+    };
+    const comparing = compare.comparing;
     try {
-      await onStart(
-        {
-          projectId: project.id,
-          folderId: scope?.id ?? "",
-          harness: agent.harnessId,
-          instance: agent.instance?.id ?? "",
-          model: agent.effectiveModel,
-          mode: agent.mode,
-          effort: agent.effort,
-          serviceTier: agent.serviceTier,
-          agentSettingsExplicit: true,
-          ...git.sent,
-          text,
-          pinned,
-        },
-        schedule,
-      );
+      if (comparing && onCompare) {
+        await onCompare(compare.runs(input, modelLabel || agent.model));
+        compare.clear();
+      } else {
+        await onStart(input, schedule);
+      }
       saveLastProject(project.id);
       remembered.recordStart(project.id, {
         harness: agent.harnessId,
         folderId: scope?.id ?? "",
-        copy: gitScope ? git.kind !== "main" : where.remembered?.copy,
+        // A worktree forced by comparing is not what the project chose.
+        copy: gitScope && !comparing ? git.kind !== "main" : where.remembered?.copy,
       });
     } catch (e) {
       // The composer cleared itself on send; the message goes back.
@@ -326,10 +353,7 @@ export function ThreadDraft({
           project={project?.name ?? ""}
           workspace={gitScope ? git.label : ""}
           harness={agent.harnessId}
-          model={
-            agent.instance?.models.find((m) => m.id === agent.model)?.label ??
-            ""
-          }
+          model={modelLabel}
         />
       </div>
 
@@ -342,6 +366,12 @@ export function ThreadDraft({
           onManageProviders={onManageProviders}
           onAddAccount={onAddAccount}
         />
+
+        {/* The placeholder that says why send is held is hidden under the
+            message already typed, and this one is easy to walk into. */}
+        {blocker === FILES_WITH_COMPARE && (
+          <p className="text-muted-foreground text-[12px]">{blocker}</p>
+        )}
 
         {error && (
           <Alert variant="destructive">
@@ -405,6 +435,9 @@ export function ThreadDraft({
               {gitScope && (
                 <GitChip folder={gitScope} git={git} userConfig={userConfig} />
               )}
+              {gitScope && onCompare && (
+                <CompareChips harnesses={harnesses} primary={primary} compare={compare} />
+              )}
             </>
           }
           draft={draft}
@@ -415,7 +448,8 @@ export function ThreadDraft({
           disabledPlaceholder={blocker}
           busy={false}
           onSend={(text) => void start(text)}
-          onSchedule={() => void start(draft, true)}
+          // A schedule fires one prompt into one thread.
+          onSchedule={compare.comparing ? undefined : () => void start(draft, true)}
           attachments={attachments}
           onAttachFiles={onAttachFiles}
           onRemoveAttachment={onRemoveAttachment}

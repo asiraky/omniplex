@@ -7,6 +7,7 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent,
+  type ReactNode,
   type RefObject,
 } from "react";
 
@@ -94,6 +95,7 @@ export function ModelPicker({
   open: controlledOpen,
   onOpenChange,
   focusRequest = null,
+  trigger: customTrigger,
 }: {
   harnesses: HarnessMeta[];
   value: ModelSelection;
@@ -145,6 +147,12 @@ export function ModelPicker({
    * Null leaves focus where opening puts it, on the search.
    */
   focusRequest?: { target: PickerFocus } | null;
+  /**
+   * Opens the picker in place of the built-in button, for a caller adding a
+   * model rather than showing one. A single element that takes a ref and
+   * props, since the popover or sheet hangs its trigger wiring on it.
+   */
+  trigger?: ReactNode;
 }) {
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
@@ -313,7 +321,7 @@ export function ModelPicker({
     />
   );
 
-  const trigger = (
+  const trigger = customTrigger ?? (
     <Button
       id={id}
       variant="outline"

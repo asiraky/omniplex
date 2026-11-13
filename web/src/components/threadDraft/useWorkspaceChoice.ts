@@ -71,6 +71,7 @@ export function useWorkspaceChoice({
   onListWorkspaces,
   onListIssues,
   preset,
+  forceWorktree = false,
 }: {
   project: Project | undefined;
   gitScope: Folder | undefined;
@@ -79,6 +80,11 @@ export function useWorkspaceChoice({
   onListIssues: (projectId: string, folderId: string) => Promise<IssueListing>;
   /** Read on mount only. */
   preset?: WorkspacePreset;
+  /**
+   * Comparing models: each thread gets its own new worktree, whatever was
+   * picked or last used. The picked kind is kept for when this lifts.
+   */
+  forceWorktree?: boolean;
 }) {
   // A preset belongs to the scope the draft opens on. Mounted before the
   // project list, there is no scope yet and it waits for the first one; after
@@ -131,7 +137,12 @@ export function useWorkspaceChoice({
     !choice.attachPath || spaces.loading || attachable.some((w) => w.path === choice.attachPath);
   const current = listed ? choice : { ...choice, attachPath: "" };
   const lastWorktree = remembered?.copy ?? project?.defaults.workspace === "managed";
-  const kind: WorkspaceKind = !gitScope ? "main" : chosenKind || (lastWorktree ? "branch" : "main");
+  const forced = !!gitScope && forceWorktree;
+  const kind: WorkspaceKind = !gitScope
+    ? "main"
+    : forced
+      ? "branch"
+      : chosenKind || (lastWorktree ? "branch" : "main");
   // Branches already on disk are the useful bases: stacking on another worktree's
   // work is what the field is for.
   const baseChoices = Array.from(
@@ -140,6 +151,8 @@ export function useWorkspaceChoice({
 
   return {
     kind,
+    /** Held on a new worktree while models are compared. */
+    forced,
     label: labelFor(kind, current, attachable),
     choice: current,
     naming,

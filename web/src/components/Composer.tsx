@@ -614,7 +614,7 @@ export function Composer({
           <div
             role="group"
             aria-label="Thread options"
-            className="scroll-thin flex gap-0.5 overflow-x-auto py-0.5"
+            className="flex flex-wrap gap-0.5 py-0.5"
           >
             {drawerTools}
             {footer}

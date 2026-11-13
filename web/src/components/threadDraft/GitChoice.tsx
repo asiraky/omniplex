@@ -39,18 +39,21 @@ function KindChoice({ folder, git }: { folder: Folder; git: WorkspaceChoiceState
     <div role="radiogroup" aria-label="Git" className="flex flex-col gap-1.5">
       {kinds.map((k) => {
         const picked = k.id === "main" ? git.kind === "main" : git.kind !== "main";
+        // Compared models would all edit the one checkout.
+        const locked = git.forced && k.id === "main";
         return (
           <button
             key={k.id}
             type="button"
             role="radio"
             aria-checked={picked}
+            disabled={locked}
             onClick={() => {
               if (!picked) git.pickKind(k.id);
             }}
             className={cn(
-              "focus-visible:ring-ring flex min-h-11 flex-col justify-center gap-0.5 rounded-lg border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2",
-              picked ? "border-primary/60 bg-primary/10" : "hover:bg-accent/50",
+              "focus-visible:ring-ring flex min-h-11 flex-col justify-center gap-0.5 rounded-lg border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2 disabled:opacity-50",
+              picked ? "border-primary/60 bg-primary/10" : !locked && "hover:bg-accent/50",
             )}
           >
             <span className="text-[13px] leading-tight">{k.label}</span>
@@ -92,7 +95,7 @@ function NewWorktreeFields({
         >
           {git.naming ? "Let Omniplex name the branch" : "Name the branch"}
         </Button>
-        {git.attachable.length > 0 && (
+        {git.attachable.length > 0 && !git.forced && (
           <Button
             type="button"
             variant="link"
@@ -199,6 +202,12 @@ export function GitChoice({ folder, git, userConfig }: GitChoiceProps) {
   return (
     <>
       <KindChoice folder={folder} git={git} />
+      {git.forced && (
+        <p className="text-muted-foreground px-1 text-[11px] leading-tight">
+          Comparing runs each model in its own new worktree. A named branch
+          gets the model on the end.
+        </p>
+      )}
       {git.kind === "branch" && (
         <NewWorktreeFields folder={folder} git={git} userConfig={userConfig} />
       )}
