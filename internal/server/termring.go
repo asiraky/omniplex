@@ -54,3 +54,26 @@ func (r *termRing) Since(off int64, limit int) ([]byte, int64) {
 	copy(out[c:], r.buf)
 	return out, off
 }
+
+// TailStart is the offset where the newest n lines held begin, so a client
+// that keeps only that much scrollback is not sent the rest. A trailing line
+// with no newline yet counts as one; a newline as the last byte ends a line
+// rather than starting an empty one. With fewer lines held than asked, no
+// newline at all, or n not positive, it is Start: the whole ring.
+func (r *termRing) TailStart(n int) int64 {
+	start := r.Start()
+	size := int64(len(r.buf))
+	end := r.total
+	if end > start && r.buf[(end-1)%size] == '\n' {
+		end--
+	}
+	for off := end - 1; off >= start; off-- {
+		if r.buf[off%size] != '\n' {
+			continue
+		}
+		if n--; n == 0 {
+			return off + 1
+		}
+	}
+	return start
+}

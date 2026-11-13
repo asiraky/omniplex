@@ -44,15 +44,20 @@ class FakeSocket {
 
 const latest = () => FakeSocket.all[FakeSocket.all.length - 1];
 
-function setup(target: { thread: string } | { login: string } = { thread: "t1" }) {
+function setup(target: { thread: string } | { login: string } = { thread: "t1" }, tail?: () => number) {
   const out: string[] = [];
   const log = { resets: 0, statuses: [] as TermStatus[], ended: [] as TermEnd[] };
-  const term = openTermSocket("term-1", target, {
-    onData: (b) => out.push(new TextDecoder().decode(b)),
-    onReset: () => log.resets++,
-    onStatus: (s) => log.statuses.push(s),
-    onEnded: (r) => log.ended.push(r),
-  });
+  const term = openTermSocket(
+    "term-1",
+    target,
+    {
+      onData: (b) => out.push(new TextDecoder().decode(b)),
+      onReset: () => log.resets++,
+      onStatus: (s) => log.statuses.push(s),
+      onEnded: (r) => log.ended.push(r),
+    },
+    tail,
+  );
   return { term, out, log };
 }
 
@@ -190,6 +195,67 @@ describe("reconnect", () => {
     term.send("b");
     expect(FakeSocket.all[0].sent).toEqual([{ type: "input", data: "a" }]);
     expect(latest().sent).toEqual([{ type: "input", data: "b" }]);
+  });
+});
+
+describe("tail", () => {
+  const keeps = (lines: number) => setup({ thread: "t1" }, () => lines);
+
+  it("asks a first connect for only the lines the screen keeps", () => {
+    keeps(1040);
+    expect(latest().params.get("tail")).toBe("1040");
+    expect(latest().params.has("since")).toBe(false);
+  });
+
+  it("asks a retry still at the start for the lines the screen keeps now", () => {
+    let lines = 1024;
+    setup({ thread: "t1" }, () => lines);
+    latest().close();
+    lines = 1050;
+    vi.advanceTimersByTime(300);
+    expect(latest().params.get("tail")).toBe("1050");
+  });
+
+  it("is not sent on a reconnect after bytes arrived", () => {
+    keeps(1040);
+    latest().open();
+    latest().sync(0);
+    latest().bytes("abc");
+    latest().close();
+    vi.advanceTimersByTime(300);
+    expect(latest().params.get("since")).toBe("3");
+    expect(latest().params.has("tail")).toBe(false);
+  });
+
+  it("is not sent on a reconnect after a sync past the start, with no bytes since", () => {
+    keeps(1040);
+    latest().open();
+    latest().sync(9000);
+    latest().close();
+    vi.advanceTimersByTime(300);
+    expect(latest().params.get("since")).toBe("9000");
+    expect(latest().params.has("tail")).toBe(false);
+  });
+
+  it("is not sent without a getter", () => {
+    setup();
+    expect(latest().params.has("tail")).toBe(false);
+  });
+
+  it.each([0, -5, 12.5, NaN, Infinity])("is not sent when the getter gives %s", (lines) => {
+    keeps(lines);
+    expect(latest().params.has("tail")).toBe(false);
+  });
+
+  it("is sent again on the first connect after a restart", () => {
+    const { term } = keeps(1040);
+    latest().open();
+    latest().sync(0);
+    latest().bytes("bye");
+    latest().close(4000);
+    term.restart();
+    expect(latest().params.get("tail")).toBe("1040");
+    expect(latest().params.has("since")).toBe(false);
   });
 });
 

@@ -13,6 +13,10 @@ import { useLatest } from "~/useLatest";
 import { attachTerminalLinks } from "./attachTerminalLinks";
 import { TerminalActions } from "./TerminalActions";
 
+// Lines xterm keeps above the screen. The server is asked for only this many
+// plus the visible rows on a fresh attach, so the two must be the same number.
+const SCROLLBACK = 1000;
+
 const SHELL_ENDED: Record<TermEnd, string> = {
   exited: "The shell exited.",
   gone: "This shell is no longer running: it was closed, sat idle too long, or the server restarted.",
@@ -85,6 +89,7 @@ export function TerminalSurface({
       fontFamily:
         'ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas, "Liberation Mono", monospace',
       cursorBlink: true,
+      scrollback: SCROLLBACK,
       convertEol: false,
       theme: { background: "#00000000" },
       allowTransparency: true,
@@ -109,7 +114,7 @@ export function TerminalSurface({
         setEnded(reason);
         onEndedRef.current?.();
       },
-    });
+    }, () => SCROLLBACK + term.rows);
     socketRef.current = socket;
     socket.resize(term.cols, term.rows);
 

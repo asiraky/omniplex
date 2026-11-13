@@ -63,7 +63,17 @@ const CLOSE_ENDS: Record<number, TermEnd> = { 4000: "exited", 4404: "gone", 4400
 // go ahead without it.
 const WHERE_TIMEOUT_MS = 3000;
 
-export function openTermSocket(id: string, target: TerminalTarget, events: TermSocketEvents): TermSocket {
+/**
+ * tail is how many lines the screen keeps (scrollback plus rows). A socket
+ * with nothing on screen yet asks the server to replay only that many, not
+ * its whole buffer. A getter, so a retry still at the start uses the size now.
+ */
+export function openTermSocket(
+  id: string,
+  target: TerminalTarget,
+  events: TermSocketEvents,
+  tail?: () => number,
+): TermSocket {
   let ws: WebSocket | null = null;
   let disposed = false;
   // The stream offset of the next byte the screen has not seen.
@@ -99,6 +109,12 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
     if ("thread" in target) q.set("thread", target.thread);
     else q.set("login", target.login);
     if (offset > 0) q.set("since", String(offset));
+    else {
+      // Past the start, since already says what to send; tail would only
+      // contradict it.
+      const lines = tail?.();
+      if (lines !== undefined && Number.isInteger(lines) && lines > 0) q.set("tail", String(lines));
+    }
     if (synced) q.set("attach", "1");
     else if (fresh) q.set("fresh", "1");
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
