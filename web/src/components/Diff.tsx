@@ -134,7 +134,7 @@ export function DiffLines({
   }
 
   return layout === "split" ? (
-    <Split lines={lines} wrap={wrap} re={re} className={className} />
+    <Split lines={lines} re={re} className={className} />
   ) : (
     <Unified lines={lines} wrap={wrap} re={re} className={className} />
   );
@@ -185,28 +185,26 @@ function Unified({ lines, wrap, re, className }: BodyProps) {
  * to its row's height, so the shorter side of a wrapped pair is still tinted
  * all the way down.
  *
- * Wrapped, the columns are each half the width and the text breaks. Unwrapped,
- * each column is at least as wide as its longest line and the grid is
- * `w-max min-w-full`, so long lines scroll the container sideways as unified
- * rows do, while short diffs still fill it.
+ * Split always wraps, whatever `wrap` says. Unwrapped, the grid has to be as
+ * wide as both sides' longest lines together, so in a panel docked beside the
+ * transcript the new side sits off to the right and the view shows only the
+ * old one — the opposite of what split is for. Two half-width columns that
+ * break their text keep both sides on screen.
  */
-function Split({ lines, wrap, re, className }: BodyProps) {
+function Split({ lines, re, className }: Omit<BodyProps, "wrap">) {
   const rows = useMemo(() => keyed(splitRows(lines), splitBase), [lines]);
   return (
     <div
       className={cn(
-        "grid font-mono text-[11px] leading-[1.55]",
-        wrap
-          ? "w-full grid-cols-2 whitespace-pre-wrap [overflow-wrap:anywhere]"
-          : "w-max min-w-full grid-cols-[repeat(2,minmax(max-content,1fr))] whitespace-pre",
+        "grid w-full grid-cols-2 font-mono text-[11px] leading-[1.55] whitespace-pre-wrap [overflow-wrap:anywhere]",
         className,
       )}
     >
       {rows.map(({ key, item: row }) =>
         row.kind === "pair" ? (
           <div key={key} data-diff-row className="contents">
-            <Cell line={row.left} side="left" wrap={wrap} re={re} />
-            <Cell line={row.right} side="right" wrap={wrap} re={re} />
+            <Cell line={row.left} side="left" re={re} />
+            <Cell line={row.right} side="right" re={re} />
           </div>
         ) : (
           <div
@@ -228,12 +226,10 @@ function Split({ lines, wrap, re, className }: BodyProps) {
 function Cell({
   line,
   side,
-  wrap,
   re,
 }: {
   line?: DiffLine;
   side: "left" | "right";
-  wrap: boolean;
   re: RegExp | null;
 }) {
   const edge = side === "left" && "border-border/60 border-r";
@@ -251,7 +247,7 @@ function Cell({
     >
       <span className={NUMBER}>{gutter(side === "left" ? line.oldNo : line.newNo)}</span>
       <Sign kind={line.kind} />
-      <span className={cn("pr-3", wrap ? "min-w-0 flex-1" : "shrink-0")}>{lineText(line.text, re)}</span>
+      <span className="min-w-0 flex-1 pr-3">{lineText(line.text, re)}</span>
     </div>
   );
 }

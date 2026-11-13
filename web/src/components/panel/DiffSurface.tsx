@@ -438,7 +438,8 @@ export function DiffSurface({
   // ---- the toolbar ----
   const toggles: DiffToggle[] = [
     ...(desktop ? [{ label: "Split view", Icon: TOGGLE_ICONS.split, on: split, set: setSplit }] : []),
-    { label: "Wrap text", Icon: TOGGLE_ICONS.wrap, on: wrap, set: setWrap },
+    // Split view always wraps (see Diff), so the toggle would do nothing there.
+    ...(desktop && split ? [] : [{ label: "Wrap text", Icon: TOGGLE_ICONS.wrap, on: wrap, set: setWrap }]),
     { label: "Ignore whitespace", Icon: TOGGLE_ICONS.whitespace, on: ignoreWhitespace, set: setIgnoreWhitespace },
     { label: "Show full files", Icon: TOGGLE_ICONS.context, on: fullContext, set: setFullContext },
     ...(testCount > 0

@@ -388,6 +388,10 @@ describe("DiffSurface on a phone", () => {
     fireEvent.click(row(/long\.ts/));
     const line = await screen.findByText("line in web/src/long.ts");
     expect(line.closest(".grid")).not.toBeNull();
+    // Split always wraps, so the wrap toggle is not offered beside it.
+    expect(screen.queryByRole("button", { name: "Wrap text" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Split view" }));
+    expect(screen.getByRole("button", { name: "Wrap text" })).toBeTruthy();
   });
 
   it("opens find from the options menu, with the field focused", async () => {

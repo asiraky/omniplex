@@ -43,6 +43,15 @@ describe("Diff split layout", () => {
     expect(side(row, "right").textContent).toContain("3");
   });
 
+  it("breaks long lines in both columns even when not asked to wrap", () => {
+    // Both sides have to stay on screen in a narrow panel: unwrapped, the old
+    // side alone would fill it and push the new side out of view.
+    render(<Diff patch={PATCH} layout="split" wrap={false} />);
+    const grid = rowOf("before change").parentElement;
+    expect(grid?.className).toContain("grid-cols-2");
+    expect(grid?.className).toContain("whitespace-pre-wrap");
+  });
+
   it("shows context on both sides with each side's own number", () => {
     render(<Diff patch={PATCH} layout="split" />);
     const row = screen.getAllByText("tail")[0]?.closest<HTMLElement>("[data-diff-row]");
