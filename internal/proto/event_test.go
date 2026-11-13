@@ -20,3 +20,30 @@ func TestAttachmentTitle(t *testing.T) {
 		}
 	}
 }
+
+func TestSuggested(t *testing.T) {
+	long := ""
+	for range MaxSuggestion + 50 {
+		long += "é"
+	}
+	for _, tc := range []struct {
+		name, turn, in, want string
+		ok                   bool
+	}{
+		{"trimmed", "t1", "  run the tests \n", "run the tests", true},
+		{"one line", "t1", "run the tests\nthen commit", "run the tests then commit", true},
+		{"empty", "t1", " \n\t ", "", false},
+		{"no turn", "", "run the tests", "", false},
+		{"capped in runes", "t1", long, long[:MaxSuggestion*len("é")], true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, ok := Suggested(tc.turn, tc.in)
+			if ok != tc.ok || p.Text != tc.want {
+				t.Fatalf("Suggested(%q, %q) = %q, %v; want %q, %v", tc.turn, tc.in, p.Text, ok, tc.want, tc.ok)
+			}
+			if ok && p.TurnID != tc.turn {
+				t.Fatalf("turn id %q, want %q", p.TurnID, tc.turn)
+			}
+		})
+	}
+}
