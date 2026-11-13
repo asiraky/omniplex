@@ -11,6 +11,7 @@
 //   host -> here (request):        setModel, setEffort, setPermissionMode, supportedCommands, stopTask,
 //                                  mcpStatus, reconnectMcp
 //   here -> host (notifications):  message, models, fatal, permissionCancelled {id}
+//                                  (message carries every SDK message, prompt_suggestion included)
 //   here -> host (request):        permission  -> {behavior, updatedInput?, message?}
 //
 // permissionCancelled withdraws a permission request the SDK aborted before
@@ -314,6 +315,9 @@ const session = query({
     // Session-only plugins: omniplex's bundled skill, never installed into
     // the user's Claude config.
     ...(config.plugins?.length ? { plugins: config.plugins } : {}),
+    // One prompt_suggestion message per turn, after its result. The relay
+    // below already keeps reading past a result, so it reaches the host.
+    ...(config.promptSuggestions ? { promptSuggestions: true } : {}),
     // Echo each user message back on the stream at the moment the CLI reads
     // it, with the uuid the host stamped on it. A prompt sent while a turn is
     // running is held by the CLI until its next model call; the echo is the
