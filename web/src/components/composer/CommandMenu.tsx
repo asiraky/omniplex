@@ -1,22 +1,17 @@
 import type { ReactElement, RefObject } from "react";
 
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandItem,
-  CommandList,
-} from "~/components/ui/command";
+import { ChunkFallback } from "~/components/ChunkFallback";
 import { Popover, PopoverAnchor, PopoverContent } from "~/components/ui/popover";
-import type { ComposerItem } from "~/protocol";
+import { chunk } from "~/lib/chunk";
+import { useChunk, useIdlePrefetch } from "~/useChunk";
 
-interface MenuListProps {
-  matches: ComposerItem[];
-  activeIndex: number;
-  loading: boolean;
-  onHover: (index: number) => void;
-  onChoose: (item: ComposerItem) => void;
-}
+import type { MenuListProps } from "./CommandMenuList";
+
+// The list is built on cmdk, which stays out of the first load. The composer
+// fetches it once the page is idle, so the first slash rarely waits; when it
+// does, a spinner holds the menu's place. The keys never needed it: arrows,
+// Enter and Escape are the textarea's, so nothing typed is lost meanwhile.
+export const menuList = chunk(() => import("./CommandMenuList").then((m) => m.MenuList));
 
 /** The completion menu, in a popover above the textarea. On a phone it must
     not cover the textarea: the composer sits at the bottom of the screen, so
@@ -35,6 +30,8 @@ export function CommandMenu({
   /** Keeps the menu shut for the current token. */
   onDismiss: () => void;
 }) {
+  useIdlePrefetch(menuList);
+  const { loaded: MenuList, failed } = useChunk(menuList, open);
   return (
     <Popover open={open}>
       <PopoverAnchor asChild>{anchor}</PopoverAnchor>
@@ -53,45 +50,12 @@ export function CommandMenu({
         // shift a wider menu back on screen.
         className="w-[min(40rem,var(--radix-popover-trigger-width))] p-0"
       >
-        <MenuList {...list} />
+        {MenuList ? (
+          <MenuList {...list} />
+        ) : (
+          <ChunkFallback failed={failed} className="p-3 text-[12px]" />
+        )}
       </PopoverContent>
     </Popover>
-  );
-}
-
-function MenuList({ matches, activeIndex, loading, onHover, onChoose }: MenuListProps) {
-  return (
-    <Command shouldFilter={false} className="bg-transparent">
-      {/* The 2px is the popover's border, so the list never overflows the space above. */}
-      <CommandList className="max-h-[min(45dvh,18rem,calc(var(--radix-popover-content-available-height)-2px))]">
-        <CommandEmpty>{loading ? "Loading commands…" : "No matching command."}</CommandEmpty>
-        <CommandGroup>
-          {matches.map((item, index) => (
-            <CommandItem
-              key={item.id}
-              value={item.id}
-              aria-selected={index === activeIndex}
-              className={index === activeIndex ? "bg-accent text-accent-foreground" : undefined}
-              onMouseDown={(event) => event.preventDefault()}
-              onMouseMove={() => onHover(index)}
-              onSelect={() => onChoose(item)}
-            >
-              <span className="line-clamp-2 min-w-0 flex-1">
-                <span className="font-medium">{item.insertText}</span>
-                {item.argsHint && (
-                  <span className="text-muted-foreground ml-1">{item.argsHint}</span>
-                )}
-                {item.description && (
-                  <span className="text-muted-foreground ml-2 text-xs">{item.description}</span>
-                )}
-              </span>
-              {item.origin && (
-                <span className="text-muted-foreground shrink-0 text-[11px]">[{item.origin}]</span>
-              )}
-            </CommandItem>
-          ))}
-        </CommandGroup>
-      </CommandList>
-    </Command>
   );
 }
