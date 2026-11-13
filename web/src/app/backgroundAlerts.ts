@@ -60,7 +60,9 @@ const REPORT_MS = 6_000;
 
 const content: Record<AlertKind, Pick<AlertToast, "variant" | "title" | "sound" | "duration">> = {
   finished: { variant: "success", title: "Thread finished", sound: "done", duration: REPORT_MS },
-  failed: { variant: "error", title: "Thread failed", sound: "done", duration: REPORT_MS },
+  // A failure needs you as much as a question does, so it does not get the
+  // same chime as a clean finish.
+  failed: { variant: "error", title: "Thread failed", sound: "needs", duration: REPORT_MS },
   permission: {
     variant: "warning",
     title: "Approval needed",

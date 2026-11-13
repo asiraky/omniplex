@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import { alertSoundOn, playAlertSound, type AlertSound } from "~/lib/alertSound";
+import { playAlertSound, type AlertSound } from "~/lib/alertSound";
 import { toast } from "~/lib/toast";
 import type { ThreadMeta } from "~/protocol";
 import { useLatest } from "~/useLatest";
@@ -71,7 +71,7 @@ export function useBackgroundAlerts({
       // thread waiting on you outranks one that is only done.
       if (sound !== "needs") sound = t.sound;
     }
-    if (sound && alertSoundOn()) playAlertSound(sound);
+    if (sound) playAlertSound(sound);
 
     // A thread that has gone (deleted, or no longer listed) has nothing to
     // open, so its toast goes with it.

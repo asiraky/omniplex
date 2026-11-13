@@ -102,7 +102,7 @@ describe("alert sound preference", () => {
     expect(result.current[0]).toBe(true);
   });
 
-  it("falls back to off when storage is blocked", async () => {
+  it("falls back to off when storage is blocked, then keeps this page's choice", async () => {
     localStorage.setItem(KEY, "1");
     const { alertSoundOn, useAlertSound } = await load();
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
@@ -114,6 +114,8 @@ describe("alert sound preference", () => {
     expect(alertSoundOn()).toBe(false);
     const { result } = renderHook(() => useAlertSound());
     expect(() => act(() => result.current[1](true))).not.toThrow();
+    expect(result.current[0]).toBe(true);
+    expect(alertSoundOn()).toBe(true);
   });
 });
 

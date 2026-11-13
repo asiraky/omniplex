@@ -11,19 +11,23 @@ const KEY = "omniplex.alertSound";
 // that stays quiet until you say otherwise.
 const DEFAULT = false;
 
-/** done: a thread finished or failed. needs: an approval or a question is waiting. */
+// The last choice made on this page, for when storage refuses to keep it.
+let chosen = DEFAULT;
+
+/** done: a thread finished. needs: it failed, or an approval or a question is waiting. */
 export type AlertSound = "done" | "needs";
 
 export function alertSoundOn(): boolean {
   try {
     return localStorage.getItem(KEY) === "1";
   } catch {
-    // Storage blocked (Safari private mode): stay quiet.
-    return DEFAULT;
+    // Storage blocked (Safari private mode): whatever was picked on this page.
+    return chosen;
   }
 }
 
 function storeAlertSound(on: boolean) {
+  chosen = on;
   try {
     localStorage.setItem(KEY, on ? "1" : "0");
   } catch {

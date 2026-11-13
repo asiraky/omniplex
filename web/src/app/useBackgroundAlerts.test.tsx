@@ -2,7 +2,7 @@
 import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { alertSoundOn, playAlertSound } from "~/lib/alertSound";
+import { playAlertSound } from "~/lib/alertSound";
 import { toast } from "~/lib/toast";
 import type { ThreadMeta } from "~/protocol";
 
@@ -11,7 +11,7 @@ import { useBackgroundAlerts } from "./useBackgroundAlerts";
 vi.mock("~/lib/toast", () => ({
   toast: { success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: vi.fn(), dismiss: vi.fn() },
 }));
-vi.mock("~/lib/alertSound", () => ({ alertSoundOn: vi.fn(() => false), playAlertSound: vi.fn() }));
+vi.mock("~/lib/alertSound", () => ({ playAlertSound: vi.fn() }));
 
 type Attention = ThreadMeta["attention"];
 const thread = (id: string, attention: Attention) => ({ id, title: id, attention }) as ThreadMeta;
@@ -45,7 +45,6 @@ const raised = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(alertSoundOn).mockReturnValue(false);
 });
 
 describe("useBackgroundAlerts", () => {
@@ -119,14 +118,14 @@ describe("useBackgroundAlerts", () => {
     expect(toast.dismiss).toHaveBeenCalledWith("thread-alert:a");
   });
 
-  it("plays no sound when the sound is off", () => {
+  it("chimes done for a thread that finished", () => {
     const { rerender } = setup({ threads: [thread("a", "working")] });
     rerender({ threads: [thread("a", "needs_prompt")] });
-    expect(playAlertSound).not.toHaveBeenCalled();
+    expect(playAlertSound).toHaveBeenCalledTimes(1);
+    expect(playAlertSound).toHaveBeenCalledWith("done");
   });
 
   it("plays one sound for a list carrying two alerts, the one that needs you", () => {
-    vi.mocked(alertSoundOn).mockReturnValue(true);
     const { rerender } = setup({ threads: [thread("a", "working"), thread("b", "working")] });
     rerender({ threads: [thread("a", "needs_prompt"), thread("b", "needs_permission")] });
     expect(raised()).toHaveLength(2);
@@ -135,7 +134,6 @@ describe("useBackgroundAlerts", () => {
   });
 
   it("plays no sound for a list that raised nothing", () => {
-    vi.mocked(alertSoundOn).mockReturnValue(true);
     const { rerender } = setup({ threads: [thread("a", "working")], activeId: "a" });
     rerender({ threads: [thread("a", "needs_prompt")], activeId: "a" });
     expect(playAlertSound).not.toHaveBeenCalled();
