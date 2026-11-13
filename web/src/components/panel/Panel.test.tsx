@@ -5,10 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Panel, type PanelProps, type PanelRequest } from "~/components/panel/Panel";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "~/components/ui/dropdown-menu";
-import { createThreadStore } from "~/app/threadStore";
+import { emptyState } from "~/apply";
+import { createThreadStore, ThreadStoreContext } from "~/app/threadStore";
 import { usePanel, type PanelControls } from "~/app/usePanel";
 import { savePanel } from "~/lib/panel";
-import type { ThreadChanges } from "~/protocol";
+import type { Job, ThreadChanges } from "~/protocol";
 import { render, viewport, wrap } from "~/test/harness";
 
 function renderPanel(onClose: () => void) {
@@ -205,6 +206,62 @@ describe("Panel requests across remounts", () => {
     // Asking for the same file again is a new request, and is routed.
     act(() => panel().openPath("src/b.ts"));
     await waitFor(() => expect(selectedTab()?.textContent).toBe("b.ts"));
+  });
+});
+
+describe("Panel jobs request", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  // A panel on the Diff tab, driven through usePanel, for a thread with one
+  // running agent.
+  function mountJobsPanel() {
+    const agent: Job = { id: "j1", toolCallId: "task", depth: 0, kind: "agent", name: "Explore", status: "running", usage: {} };
+    const threadStore = createThreadStore({
+      ...emptyState("s1"),
+      jobs: [agent],
+      items: [{ id: "task", kind: "tool" }, { id: "m1", kind: "message", role: "agent", parentId: "task", text: "exploring" }],
+    });
+    savePanel("s1", { surfaces: [{ id: "diff", kind: "diff" }], active: "diff" });
+    let controls!: PanelControls;
+    function Host() {
+      const panel = usePanel(threadStore);
+      controls = panel;
+      return (
+        <Panel {...props()} open={panel.open} request={panel.request} onRequestRouted={panel.requestRouted} />
+      );
+    }
+    render(
+      <ThreadStoreContext.Provider value={threadStore}>
+        <Host />
+      </ThreadStoreContext.Provider>,
+    );
+    return () => controls;
+  }
+
+  it("opens the jobs tab on the job a request names", () => {
+    const controls = mountJobsPanel();
+    act(() => controls().openJobs("j1"));
+    expect(selectedTab()?.textContent).toMatch(/^Jobs/);
+    expect(screen.getByText("exploring")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Back to jobs" })).toBeTruthy();
+
+    // Leaving the tab spends the focus: coming back shows the roster.
+    fireEvent.click(screen.getByRole("tab", { name: /Diff/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Jobs/ }));
+    expect(screen.queryByRole("button", { name: "Back to jobs" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop Explore" })).toBeTruthy();
+  });
+
+  it("goes back to the roster when the strip asks after a row opened an agent", () => {
+    const controls = mountJobsPanel();
+    act(() => controls().openJobs("j1"));
+    expect(screen.getByRole("button", { name: "Back to jobs" })).toBeTruthy();
+    act(() => controls().openJobs());
+    expect(screen.queryByRole("button", { name: "Back to jobs" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop Explore" })).toBeTruthy();
   });
 });
 

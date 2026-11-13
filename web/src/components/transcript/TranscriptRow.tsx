@@ -25,7 +25,8 @@ type RowContext = {
   streaming: boolean;
   artefacts: Artefact[];
   onOpenArtefact?: OpenArtefact;
-  onOpenJobs?: () => void;
+  /** Opens the jobs panel, on one agent when it names one. */
+  onOpenJobs?: (jobId?: string) => void;
   /** Why this row's prompt was sent by the server, if it was. */
   recovered: Recovered | undefined;
   /** Opens the sign-in a saved card offers. */
@@ -48,7 +49,7 @@ function RowBody({
   if (row.kind === "fold")
     return <TurnFold threadId={threadId} turn={row.turn} items={row.items} continued={row.continued} />;
   if (row.kind === "run") return <ToolRun threadId={threadId} items={row.items} live={row.live} />;
-  if (row.kind === "jobs") return <JobsCard items={row.items} onOpen={onOpenJobs} />;
+  if (row.kind === "jobs") return <JobsCard items={row.items} recap={row.recap} onOpen={onOpenJobs} />;
   if (row.kind === "artefacts")
     return <ArtefactCards items={row.items} artefacts={artefacts} onOpen={onOpenArtefact} />;
   if (row.item.kind === "tool") return <ToolCard threadId={threadId} item={row.item} />;

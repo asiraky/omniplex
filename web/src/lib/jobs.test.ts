@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { Job } from "../protocol";
-import { childJobs, classifyJob, jobTree, jobVisible, liveJobCount, liveJobCounts, liveJobsLabel } from "./jobs";
+import type { Item, Job } from "../protocol";
+import { agentStatus, childJobs, classifyJob, jobTree, jobVisible, liveJobCount, liveJobCounts, liveJobsLabel } from "./jobs";
 
 function job(over: Partial<Job> & { id: string }): Job {
   return { depth: 0, kind: "agent", status: "running", usage: {}, ...over };
@@ -95,5 +95,32 @@ describe("jobTree", () => {
   });
   it("treats an orphan as a root", () => {
     expect(jobTree([job({ id: "o", parentJobId: "gone", depth: 1 })]).map((j) => j.id)).toEqual(["o"]);
+  });
+});
+
+describe("agentStatus", () => {
+  const spawn = (status?: Item["status"]): Item => ({ id: "t", kind: "tool", toolKind: "agent", status });
+
+  it("renames the job's status for a reader", () => {
+    expect(agentStatus(job({ id: "a" }), spawn())).toBe("running");
+    expect(agentStatus(job({ id: "a", status: "paused" }), spawn())).toBe("waiting");
+    expect(agentStatus(job({ id: "a", status: "completed" }), spawn())).toBe("completed");
+    expect(agentStatus(job({ id: "a", status: "failed" }), spawn())).toBe("failed");
+    expect(agentStatus(job({ id: "a", status: "stopped" }), spawn())).toBe("stopped");
+    expect(agentStatus(job({ id: "a", status: "interrupted" }), spawn())).toBe("stopped");
+  });
+
+  it("prefers the job over the spawn call it came from", () => {
+    expect(agentStatus(job({ id: "a", status: "running" }), spawn("completed"))).toBe("running");
+  });
+
+  it("falls back to the spawn call before the harness reports a job", () => {
+    expect(agentStatus(undefined, spawn("pending"))).toBe("queued");
+    expect(agentStatus(undefined, spawn())).toBe("queued");
+    expect(agentStatus(undefined, spawn("in_progress"))).toBe("running");
+    expect(agentStatus(undefined, spawn("completed"))).toBe("completed");
+    expect(agentStatus(undefined, spawn("failed"))).toBe("failed");
+    expect(agentStatus(undefined, spawn("cancelled"))).toBe("stopped");
+    expect(agentStatus(undefined, spawn("declined"))).toBe("stopped");
   });
 });

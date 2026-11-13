@@ -1,79 +1,220 @@
 import { BotIcon, ChevronRightIcon } from "lucide-react";
-import { useCallback } from "react";
+import { memo, useCallback } from "react";
 
 import { shallow, useThread, useThreadStore } from "~/app/threadStore";
+import { Elapsed } from "~/components/Elapsed";
+import { ProviderLogo } from "~/components/ProviderLogo";
 import { Spinner } from "~/components/ui/spinner";
 import { fmtTokens } from "~/lib/format";
-import { isLive, jobLabel } from "~/lib/jobs";
-import type { Item, ThreadState, ToolStatus } from "~/protocol";
-
-import { StatusMark } from "./ToolCards";
+import { agentStatus, jobDone, jobLabel, type AgentStatus } from "~/lib/jobs";
+import { PROVIDER_LOGOS } from "~/lib/providerLogos";
+import { cn } from "~/lib/utils";
+import type { Item, Job, ThreadState } from "~/protocol";
 
 // A batch of subagents, as one card that stays in the transcript: unlike a
 // tool call, a spawned agent keeps running after the turn that started it, so
 // the card reads from the live job rather than the tool item where it can.
-// Clicking anywhere on it opens the jobs panel.
+// Each agent is its own row and its own tap target: it opens the jobs panel on
+// that agent.
 //
 // It selects its own agents' jobs from the store, one per item, rather than
 // being handed the thread's: jobs tick far more often than anything else in
 // the transcript, and this way a tick redraws the card whose agent it is and
 // not the transcript, nor the other cards.
-export function JobsCard({ items, onOpen }: { items: Item[]; onOpen?: () => void }) {
+//
+// A recap is the same agents again under the turn's answer, one line each, so
+// a long answer does not leave them a scroll away.
+export function JobsCard({
+  items,
+  recap,
+  onOpen,
+}: {
+  items: Item[];
+  recap?: boolean;
+  onOpen?: (jobId?: string) => void;
+}) {
   const jobsOf = useCallback(
     (s: ThreadState | null) =>
       items.map((item) => s?.jobs.find((j) => j.toolCallId === item.id)),
     [items],
   );
   const jobs = useThread(useThreadStore(), jobsOf, shallow);
-  const rows = items.map((item, i) => ({ item, job: jobs[i] }));
-  const live = rows.some((r) =>
-    r.job ? isLive(r.job) : r.item.status === "in_progress" || r.item.status === "pending",
+  const harness = useThread(useThreadStore(), harnessOf);
+  const rows = items.map((item, i) => ({
+    item,
+    job: jobs[i],
+    status: agentStatus(jobs[i], item),
+  }));
+  const live = rows.some(
+    (r) => r.status === "running" || r.status === "queued",
   );
+  const count = items.length === 1 ? "1 agent" : `${items.length} agents`;
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="fade-in bg-card/60 hover:bg-accent/40 focus-visible:ring-ring w-full rounded-lg border text-left transition-colors outline-none focus-visible:ring-2"
-    >
+    <div className="fade-in bg-card/60 w-full overflow-hidden rounded-lg border">
       <div className="text-muted-foreground flex items-center gap-2 px-3 pt-2 font-mono text-[10px] tracking-wide uppercase">
         <BotIcon className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate">
-          {items.length === 1 ? "1 agent" : `${items.length} agents`}
+          {recap ? `${count} from this turn` : count}
         </span>
         {live ? <Spinner className="text-primary size-3.5" /> : null}
-        <ChevronRightIcon className="size-3.5" />
       </div>
-      <ul className="space-y-1 px-3 py-2">
-        {rows.map(({ item, job }) => {
-          const label = job ? jobLabel(job) : item.title || "agent";
-          const status: ToolStatus | undefined = job
-            ? isLive(job)
-              ? "in_progress"
-              : job.status === "completed"
-                ? "completed"
-                : job.status === "failed"
-                  ? "failed"
-                  : "cancelled"
-            : (item.status as ToolStatus | undefined);
-          const tokens = job?.usage.totalTokens;
-          return (
-            <li key={item.id} className="flex min-w-0 items-center gap-2 text-[13px]">
-              <span className="min-w-0 flex-1 truncate font-mono">{label}</span>
-              {job?.activity && isLive(job) && (
-                <span className="text-muted-foreground hidden min-w-0 max-w-[40%] truncate text-[11px] sm:inline">
-                  {job.activity}
-                </span>
-              )}
-              {tokens ? (
-                <span className="text-muted-foreground shrink-0 font-mono text-[10px]">
-                  {fmtTokens(tokens)}
-                </span>
-              ) : null}
-              <StatusMark status={status} />
-            </li>
-          );
-        })}
+      <ul className="py-1">
+        {rows.map(({ item, job, status }) => (
+          <AgentRow
+            key={item.id}
+            item={item}
+            job={job}
+            status={status}
+            harness={harness}
+            compact={recap}
+            onOpen={onOpen}
+          />
+        ))}
       </ul>
-    </button>
+    </div>
   );
 }
+
+const harnessOf = (s: ThreadState | null) => s?.harness ?? "";
+
+// How each status reads: its word, the dot on the avatar, and the word's colour.
+const STATUS: Record<
+  AgentStatus,
+  { label: string; dot: string; tone: string }
+> = {
+  queued: {
+    label: "queued",
+    dot: "bg-muted-foreground/60",
+    tone: "text-muted-foreground",
+  },
+  running: {
+    label: "running",
+    dot: "bg-primary animate-pulse",
+    tone: "text-primary",
+  },
+  waiting: {
+    label: "waiting",
+    dot: "bg-amber-400",
+    tone: "text-amber-500 dark:text-amber-400",
+  },
+  completed: {
+    label: "done",
+    dot: "bg-success",
+    tone: "text-muted-foreground",
+  },
+  failed: { label: "failed", dot: "bg-destructive", tone: "text-destructive" },
+  stopped: {
+    label: "stopped",
+    dot: "bg-muted-foreground",
+    tone: "text-muted-foreground",
+  },
+};
+
+/** The harness's mark in a disc, with the agent's status as a dot on its rim. */
+function AgentAvatar({
+  harness,
+  status,
+}: {
+  harness: string;
+  status: AgentStatus;
+}) {
+  return (
+    <span className="bg-muted relative flex size-6 shrink-0 items-center justify-center rounded-full">
+      {PROVIDER_LOGOS[harness] ? (
+        <ProviderLogo provider={harness} className="size-3.5" />
+      ) : (
+        <BotIcon className="text-muted-foreground size-3.5" />
+      )}
+      <span
+        aria-hidden
+        className={cn(
+          "ring-card absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full ring-2",
+          STATUS[status].dot,
+        )}
+      />
+    </span>
+  );
+}
+
+/** The second line: why it failed, else what it is doing or last did, and its tokens. */
+function AgentActivity({
+  job,
+  status,
+}: {
+  job: Job | undefined;
+  status: AgentStatus;
+}) {
+  const text =
+    job?.error || job?.activity || (status === "running" ? "working…" : "");
+  const tokens = job?.usage.totalTokens;
+  if (!text && !tokens) return null;
+  return (
+    <span className="flex min-w-0 items-baseline gap-2">
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate text-[11px]",
+          job?.error ? "text-destructive" : "text-muted-foreground",
+        )}
+      >
+        {text}
+      </span>
+      {tokens ? (
+        <span className="text-muted-foreground shrink-0 font-mono text-[10px]">
+          {fmtTokens(tokens)} tok
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+// One agent: avatar, task, status and time on the first line, what it is doing
+// on the second, so a phone reads it all without the activity being dropped
+// for width. A recap keeps to the first line.
+const AgentRow = memo(function AgentRow({
+  item,
+  job,
+  status,
+  harness,
+  compact,
+  onOpen,
+}: {
+  item: Item;
+  job: Job | undefined;
+  status: AgentStatus;
+  harness: string;
+  compact?: boolean;
+  onOpen?: (jobId?: string) => void;
+}) {
+  const label = job ? jobLabel(job) : item.title || "agent";
+  const { label: word, tone } = STATUS[status];
+  // A settled job the server never stamped would otherwise tick on forever.
+  const since =
+    job && (!jobDone(job.status) || job.finishedAt) ? job.startedAt : undefined;
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => onOpen?.(job?.id)}
+        aria-label={`${label}, ${word}`}
+        className="hover:bg-accent/40 focus-visible:ring-ring flex min-h-11 w-full min-w-0 items-center gap-2.5 px-3 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset"
+      >
+        <AgentAvatar harness={harness} status={status} />
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate font-mono text-[13px]">
+              {label}
+            </span>
+            <span className={cn("shrink-0 text-[11px]", tone)}>{word}</span>
+            <Elapsed
+              since={since}
+              finishedAt={job?.finishedAt}
+              className="text-muted-foreground min-w-[4ch] shrink-0 text-right font-mono text-[11px]"
+            />
+          </span>
+          {!compact && <AgentActivity job={job} status={status} />}
+        </span>
+        <ChevronRightIcon className="text-muted-foreground size-3.5 shrink-0" />
+      </button>
+    </li>
+  );
+});

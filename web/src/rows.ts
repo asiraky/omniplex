@@ -46,7 +46,10 @@ export type Row =
   // A batch of subagent spawns, pinned where the first one happened. Never
   // folded: the work is still running beside the conversation after the turn
   // that started it is over, so the card has to stay where it can be seen.
-  | { kind: "jobs"; id: string; items: Item[] }
+  // `recap` marks the copy a finished turn shows again under its answer: every
+  // spawn from the turn, across all its batches, so the agents it started are
+  // in view without scrolling back up to where they were started.
+  | { kind: "jobs"; id: string; items: Item[]; recap?: true }
   // Artefacts the agent showed. Never folded: they are what the turn was
   // for. A finished turn shows them under its answer, one card per artefact
   // however many times it was shown.
@@ -109,6 +112,7 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
       let folds = 0;
       const produced: Item[] = [];
       const decided: Item[] = [];
+      const spawns = segment.filter(isSpawn);
       const flush = () => {
         if (hidden.length > 0)
           rows.push({
@@ -157,6 +161,8 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
       }
       flush();
       if (answer) rows.push({ kind: "item", item: answer });
+      if (answer && spawns.length > 0)
+        rows.push({ kind: "jobs", id: `jobs-recap:${spawns[0].id}`, items: spawns, recap: true });
       for (const it of decided) rows.push({ kind: "item", item: it });
       if (produced.length > 0)
         rows.push({ kind: "artefacts", id: `artefacts:${produced[0].id}`, items: latestPerArtefact(produced) });
@@ -224,6 +230,7 @@ function sameRow(a: Row, b: Row): boolean {
         sameItems(a.items, b.items)
       );
     case "jobs":
+      return b.kind === "jobs" && a.recap === b.recap && sameItems(a.items, b.items);
     case "artefacts":
       return b.kind === a.kind && sameItems(a.items, b.items);
   }

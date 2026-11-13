@@ -19,7 +19,7 @@ import { IconButton } from "~/components/IconButton";
 
 import { DiffSurface } from "~/components/panel/DiffSurface";
 import { FileBrowser } from "~/components/panel/FileBrowser";
-import { JobsSurface } from "~/components/panel/JobsSurface";
+import { JobsSurface, type JobFocus } from "~/components/panel/JobsSurface";
 import { TerminalSurface } from "~/components/panel/TerminalSurface";
 import {
   DropdownMenu,
@@ -71,6 +71,8 @@ export interface PanelRequest {
   path?: string;
   line?: number;
   artefactId?: string;
+  /** For a jobs request: the job to open rather than the roster. */
+  jobId?: string;
   /** For a diff request: the turn whose changes to show. */
   turn?: DiffTurn;
   nonce: number;
@@ -134,6 +136,8 @@ interface Route {
   reveal?: { path: string; nonce: number };
   /** The turn whose changes the diff surface should switch to. */
   turn?: DiffTurn;
+  /** What the jobs surface should show: a job, or the roster (null). */
+  job?: JobFocus;
   /** Set only when a file tab opens: the line to scroll to, if any. */
   file?: { line?: number };
 }
@@ -167,11 +171,17 @@ function routeRequest(
         reveal: path ? { path, nonce } : undefined,
         turn: request.turn,
       };
-    case "jobs":
-    case "artefacts": {
-      const kind = request.kind;
-      return { update: (p) => openSurface(p, { id: kind, kind }) };
+    case "jobs": {
+      const { jobId } = request;
+      return {
+        update: (p) => openSurface(p, { id: "jobs", kind: "jobs" }),
+        // No job named is still an ask: the roster, not whichever agent a
+        // row tapped earlier left open.
+        job: { jobId: jobId ?? null, nonce },
+      };
     }
+    case "artefacts":
+      return { update: (p) => openSurface(p, { id: "artefacts", kind: "artefacts" }) };
     case "artefact": {
       const id = request.artefactId;
       return id ? { update: (p) => putSurface(p, artefactSurface(id)) } : {};
@@ -346,6 +356,12 @@ function PanelBody({
 
   // ---- requests from outside ----
   const [reveal, setReveal] = useState<{ path: string; nonce: number } | null>(null);
+  const [jobFocus, setJobFocus] = useState<JobFocus | undefined>(undefined);
+  // A focus is for the jobs tab it opened. Leaving the tab spends it, so
+  // coming back (which remounts the surface) shows the roster, not the agent
+  // the reader may since have backed out of. Checked before routing: a
+  // request routed below sees this render's tab, not the one it is opening.
+  if (jobFocus && active?.kind !== "jobs") setJobFocus(undefined);
   const [fileLine, setFileLine] = useState<number | undefined>(undefined);
   // Each nonce is routed exactly once, during render, so the tab it opens is
   // in the same paint as the request rather than one frame behind it. The
@@ -364,6 +380,7 @@ function PanelBody({
       setRoutedNonce(request.nonce);
       if (route.update) setPanel(route.update);
       if (route.reveal) setReveal(route.reveal);
+      if (route.job) setJobFocus(route.job);
       if (route.file) setFileLine(route.file.line);
       // In this same pass, so the reveal waits for the turn's list rather
       // than firing on whatever list was on screen before.
@@ -546,7 +563,7 @@ function PanelBody({
           />
         )}
         {active?.kind === "jobs" && (
-          <JobsSurface threadId={threadId} command={command} loadAllJobs={loadAllJobs} />
+          <JobsSurface threadId={threadId} command={command} loadAllJobs={loadAllJobs} focus={jobFocus} />
         )}
         {active?.kind === "artefacts" && <ArtefactList artefacts={artefacts} onOpen={openArtefact} />}
         {active?.kind === "artefact" &&
