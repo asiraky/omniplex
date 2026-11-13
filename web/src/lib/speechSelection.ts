@@ -1,9 +1,10 @@
 import { useSyncExternalStore, type RefObject } from "react";
 
-// The reader's current text selection, for read-aloud's "play selection". One
-// selectionchange listener serves every message; each message asks only
-// whether the selection reaches into it, so dragging a selection re-renders
-// the messages it enters and leaves rather than the whole transcript.
+// The reader's current text selection, for read-aloud's "play selection" and
+// the footer's "reply to selection". One selectionchange listener serves every
+// message; each message asks only whether the selection reaches into it, so
+// dragging a selection re-renders the messages it enters and leaves rather
+// than the whole transcript.
 
 let range: Range | null = null;
 const listeners = new Set<() => void>();
@@ -38,13 +39,9 @@ export function currentSelection(): Range | null {
   return range;
 }
 
-/**
- * Whether `sel` selects any of `root`'s text. Touching is not enough: a
- * triple-clicked paragraph ends at the start of the next message, which the
- * reader never highlighted.
- */
-export function selects(sel: Range | null, root: Node | null): boolean {
-  if (!sel || !root || !sel.intersectsNode(root)) return false;
+/** The part of `sel` inside `root`, or null when they do not meet. */
+export function within(sel: Range | null, root: Node | null): Range | null {
+  if (!sel || !root || !sel.intersectsNode(root)) return null;
   const part = document.createRange();
   part.selectNodeContents(root);
   if (sel.compareBoundaryPoints(Range.START_TO_START, part) > 0) {
@@ -53,7 +50,16 @@ export function selects(sel: Range | null, root: Node | null): boolean {
   if (sel.compareBoundaryPoints(Range.END_TO_END, part) < 0) {
     part.setEnd(sel.endContainer, sel.endOffset);
   }
-  return part.toString().trim() !== "";
+  return part;
+}
+
+/**
+ * Whether `sel` selects any of `root`'s text. Touching is not enough: a
+ * triple-clicked paragraph ends at the start of the next message, which the
+ * reader never highlighted.
+ */
+export function selects(sel: Range | null, root: Node | null): boolean {
+  return (within(sel, root)?.toString().trim() ?? "") !== "";
 }
 
 /** Whether the reader's selection reaches into `root`. Listens only while `enabled`. */

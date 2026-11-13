@@ -3,8 +3,11 @@ import { lazy, Suspense, type RefObject } from "react";
 
 import { useCopy } from "~/lib/clipboard";
 import { useReadAloud } from "~/lib/readAloud";
+import { useReply } from "~/lib/reply";
 import { cn } from "~/lib/utils";
 import type { Item } from "~/protocol";
+
+import { ReplyButton } from "./ReplyButton";
 
 const PlayButton = lazy(() => import("./PlayButton"));
 
@@ -20,28 +23,35 @@ const footerButton =
   "hover:text-foreground focus-visible:ring-ring hit-44 relative flex cursor-pointer items-center gap-1 rounded-md px-1 py-0.5 outline-none focus-visible:ring-2";
 
 /**
- * The footer under a message: when it arrived, and a one-click copy of
- * the raw text. Quiet by design — metadata should not compete with the prose —
- * so with a mouse it fades in on hover, and it stays small everywhere. A touch
- * screen has no hover to bring it in, so there it is always showing.
+ * The footer under a message: when it arrived, a one-click copy of the raw
+ * text, and on an agent's reply a way to answer it. Quiet by design (metadata
+ * should not compete with the prose), so with a mouse it fades in on hover, and
+ * it stays small everywhere. A touch screen has no hover to bring it in, so
+ * there it is always showing.
  *
  * With read-aloud on it also plays the message, or the reader's selection when
  * that reaches into this message. `speakRef` is the message's rendered content
  * (its `data-speak-root`); without one there is nothing to read and no button.
  * `rawMarkdown` says the content shows markdown source, as a prompt does; it
  * is read as if rendered, so a pasted fence or table reads as a reply's would.
+ *
+ * `replyable` marks an agent's reply, which can be quoted into the composer to
+ * answer it; a prompt cannot. It needs `speakRef` too, to find a selection in.
  */
 export function MessageMeta({
   item,
   speakRef,
   rawMarkdown = false,
+  replyable = false,
 }: {
   item: Item;
   speakRef?: RefObject<HTMLElement | null>;
   rawMarkdown?: boolean;
+  replyable?: boolean;
 }) {
   const { copied, copy } = useCopy();
   const readAloud = useReadAloud();
+  const reply = useReply();
   const canSpeak = !!readAloud && !!speakRef && !!item.text;
   const time = receivedTime(item.receivedAt);
   if (!time && !item.text) return null;
@@ -69,6 +79,14 @@ export function MessageMeta({
         )}
         {copied ? "copied" : "copy"}
       </button>
+      {replyable && reply && speakRef && item.text && (
+        <ReplyButton
+          text={item.text}
+          contentRef={speakRef}
+          onReply={reply}
+          className={footerButton}
+        />
+      )}
       {canSpeak && (
         <Suspense fallback={null}>
           <PlayButton
