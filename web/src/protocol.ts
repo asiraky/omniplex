@@ -62,7 +62,7 @@ export interface PromptImage {
 
 export interface Item {
   id: string;
-  kind: "message" | "tool" | "notice" | "artefact" | "card" | "plan";
+  kind: "message" | "tool" | "notice" | "artefact" | "card" | "plan" | "approval" | "question";
   turnId?: string;
   /** The Task/Agent tool call this item's work happened inside, for subagents. */
   parentId?: string;
@@ -80,8 +80,14 @@ export interface Item {
   images?: PromptImage[];
   toolKind?: ToolKind;
   title?: string;
-  /** A tool's status, or for a card "pending" until answered, then its result. */
-  status?: ToolStatus | CardResult;
+  /** A tool's status; for a card "pending" until answered, then its result;
+      for a question "pending" until answered, then how it ended. */
+  status?: ToolStatus | CardResult | QuestionStatus;
+  /** On a tool call, or a standalone "approval" item: the permission it was
+      asked to clear and how that went. A standalone item stands in for a
+      request whose tool call this projection does not hold; its `title` is
+      the request's. */
+  approval?: Approval;
   input?: unknown;
   content?: ToolContent[];
   /** The last lines a running tool has printed, until it finishes and
@@ -121,6 +127,29 @@ export interface Item {
   explanation?: string;
   /** A TodoWrite list a later one replaced. Codex turn plans never are. */
   superseded?: boolean;
+  // question: what the harness asked, and once answered, what was said
+  questions?: QuestionAnswer[];
+}
+
+/** How a permission request went, recorded on the item it was raised for. */
+export type Approval = "pending" | "allowed" | "allowed_always" | "denied" | "cancelled";
+
+/** A question item's status: pending until answered, then how it ended. A
+    question its turn finished on, or withdrawn, is cancelled. */
+export type QuestionStatus = "pending" | "answered" | "declined" | "cancelled";
+
+/** One question of a question item, and its answer once given. */
+export interface QuestionAnswer {
+  /** The schema field it is; "" for a prompt with no fields. */
+  key: string;
+  /** The field's title, else its description, else the request's prompt. */
+  question: string;
+  /** The answer as text, capped at 280 characters. Absent until answered,
+      and always on a secret field. */
+  answer?: string;
+  /** A masked field (format "password", or writeOnly): the record says only
+      that something was provided, never what. */
+  secret?: boolean;
 }
 
 /** One task in an agent's plan. */

@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Item, ToolContent, Turn } from "~/protocol";
 import { render, wrap } from "~/test/harness";
 
+import { PromptFocusContext } from "./promptFocus";
 import { ToolCard, ToolRun, TurnFold } from "./ToolCards";
 
 function bash(id: string, over: Partial<Item> = {}): Item {
@@ -430,5 +432,80 @@ describe("text in a tool result", () => {
     expect(screen.queryByText(/line one/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /browser_screenshot/ }));
     expect(screen.getByText("line one line two").tagName).toBe("PRE");
+  });
+});
+
+describe("a call waiting on a permission", () => {
+  const waiting = bash("2", { status: "pending", approval: "pending", title: "rm -rf build" });
+
+  function renderWithFocus(ui: ReactElement) {
+    const focusPrompt = vi.fn();
+    const view = render(<PromptFocusContext.Provider value={focusPrompt}>{ui}</PromptFocusContext.Provider>);
+    return { focusPrompt, view };
+  }
+
+  it("says so on the live line, as its own control beside the run's toggle", () => {
+    const { focusPrompt, view } = renderWithFocus(
+      <ToolRun threadId="t1" items={[bash("1", { status: "completed" }), waiting]} live />,
+    );
+    expect(view.container.querySelector("button button")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Needs approval" }));
+    expect(focusPrompt).toHaveBeenCalledWith("permission");
+    expect(screen.getByRole("button", { expanded: false }).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("says so on the line even when the line names another call", () => {
+    renderWithFocus(<ToolRun threadId="t1" items={[waiting, bash("3")]} live />);
+    expect(screen.getByRole("button", { name: "Needs approval" })).toBeTruthy();
+  });
+
+  it("shows how the named call's permission went on the live line once settled", () => {
+    renderWithFocus(<ToolRun threadId="t1" items={[{ ...waiting, status: "in_progress", approval: "allowed" }]} live />);
+    expect(screen.getByRole("button", { expanded: false }).textContent).toContain("Allowed");
+  });
+
+  it("puts nothing on a past run's summary once settled", () => {
+    renderWithFocus(
+      <ToolRun threadId="t1" items={[{ ...waiting, status: "completed", approval: "allowed" }]} live={false} />,
+    );
+    expect(screen.queryByText("Allowed")).toBeNull();
+  });
+
+  it("shows the chip on its card, with no button inside another", () => {
+    const { focusPrompt, view } = renderWithFocus(<ToolCard threadId="t1" item={waiting} />);
+    expect(view.container.querySelector("button button")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Needs approval" }));
+    expect(focusPrompt).toHaveBeenCalledWith("permission");
+  });
+
+  it("says Denied on a refused card rather than declined twice", () => {
+    renderWithFocus(<ToolCard threadId="t1" item={{ ...waiting, status: "declined", approval: "denied" }} />);
+    expect(screen.getByText("Denied")).toBeTruthy();
+    expect(screen.queryByText("declined")).toBeNull();
+  });
+});
+
+describe("a finished turn's records", () => {
+  const turn = { id: "turn:1", prompt: "go", done: true } as Turn;
+
+  it("opens to a question as its record, not as text", () => {
+    const asked: Item = {
+      id: "question:r1",
+      kind: "question",
+      status: "answered",
+      questions: [{ key: "db", question: "Which database?", answer: "Postgres" }],
+    };
+    render(<TurnFold threadId="t1" turn={turn} items={[bash("1", { status: "completed" }), asked]} />);
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText("Which database?")).toBeTruthy();
+    expect(screen.getByText("Postgres")).toBeTruthy();
+  });
+
+  it("opens to a standalone approval with its outcome", () => {
+    const asked: Item = { id: "approval:r1", kind: "approval", title: "Use the network", approval: "allowed_always" };
+    render(<TurnFold threadId="t1" turn={turn} items={[asked]} />);
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText("Use the network")).toBeTruthy();
+    expect(screen.getByText("Always allowed")).toBeTruthy();
   });
 });

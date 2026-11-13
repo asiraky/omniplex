@@ -7,6 +7,7 @@ import { cn } from "~/lib/utils";
 import type { DiffTurn, TurnDiff } from "~/protocol";
 import { rowKey, type Row } from "~/rows";
 
+import { ApprovalRecord } from "./ApprovalChip";
 import { ArtefactCards } from "./ArtefactCards";
 import type { OpenArtefact } from "./Attachments";
 import { CardRow } from "./CardRow";
@@ -14,6 +15,7 @@ import { JobsCard } from "./JobsCard";
 import { Message, type Recovered } from "./Message";
 import { NoticeCard } from "./NoticeCard";
 import { PlanRow } from "./PlanRow";
+import { QuestionRecord } from "./QuestionRecord";
 import { ToolCard, ToolRun, TurnFold } from "./ToolCards";
 
 // Everything a row gets is already resolved for that row, never a lookup over
@@ -57,6 +59,8 @@ function RowBody({
   if (row.item.kind === "notice") return <NoticeCard item={row.item} describeSettings={describeSettings} />;
   if (row.item.kind === "card") return <CardRow item={row.item} onSignIn={onCardSignIn} />;
   if (row.item.kind === "plan") return <PlanRow item={row.item} />;
+  if (row.item.kind === "approval") return <ApprovalRecord item={row.item} />;
+  if (row.item.kind === "question") return <QuestionRecord item={row.item} />;
   return (
     <Message
       item={row.item}

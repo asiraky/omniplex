@@ -4,9 +4,14 @@
 package projection
 
 import (
+	"bytes"
+	"cmp"
 	"encoding/json"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/asiraky/omniplex/internal/proto"
 )
@@ -153,6 +158,15 @@ const (
 	// call is an item of its own, and the newest marks the earlier ones
 	// Superseded. A codex plan is one item per turn, revised in place.
 	ItemPlan = "plan"
+	// ItemApproval stands in for a permission request whose tool call this
+	// projection does not hold: the request named none, or its item has not
+	// arrived. Title is the request's; Approval is how it went. A request
+	// that names a tool item marks that item instead.
+	ItemApproval = "approval"
+	// ItemQuestion is a question the harness asked, where it asked it, and
+	// once answered what was said. The composer's prompt is still where it is
+	// answered: this is the record. Cards are their own kind and get none.
+	ItemQuestion = "question"
 )
 
 // Item is one entry in the thread timeline, in the order it first appeared.
@@ -187,6 +201,9 @@ type Item struct {
 	// call finishes: from then on Content holds the output, capped to a preview
 	// when it is long (see Truncated).
 	Tail string `json:"tail,omitempty"`
+	// Approval is the permission this call (or a standalone approval item)
+	// was asked to clear, and how that went: one of the Approval* values.
+	Approval string `json:"approval,omitempty"`
 	// Truncated: some of Content was cut to a preview or dropped (see
 	// capText), or Input was capped on the way to a client. The event log
 	// still has it whole.
@@ -232,6 +249,25 @@ type Item struct {
 	Steps       []proto.PlanStep `json:"steps,omitempty"`
 	Explanation string           `json:"explanation,omitempty"`
 	Superseded  bool             `json:"superseded,omitempty"`
+
+	// question: what was asked, and once answered what was said. Status is
+	// one of the Question* values.
+	Questions []QuestionAnswer `json:"questions,omitempty"`
+}
+
+// QuestionAnswer is one field of a question item, and its answer once given.
+type QuestionAnswer struct {
+	// Key is the schema field; "" for a prompt with no fields.
+	Key string `json:"key"`
+	// Question is the field's title, else its description, else the
+	// request's prompt.
+	Question string `json:"question"`
+	// Answer is the answer as text, capped at AnswerCap. The item is a
+	// record, not a store: the full value stays in the log.
+	Answer string `json:"answer,omitempty"`
+	// Secret is a masked field. Its answer is never stored, so the record
+	// can only say something was provided.
+	Secret bool `json:"secret,omitempty"`
 }
 
 // settle moves a tool call to a terminal status. The tail goes with it: it
@@ -408,6 +444,12 @@ func (s *State) HeldByLimit(q QueuedPrompt) bool {
 
 // CardID is the timeline item id of the card a request raised.
 func CardID(requestID string) string { return "card:" + requestID }
+
+// ApprovalID is the timeline item id of a standalone approval item.
+func ApprovalID(requestID string) string { return "approval:" + requestID }
+
+// QuestionID is the timeline item id of the question a request raised.
+func QuestionID(requestID string) string { return "question:" + requestID }
 
 // TurnPlanID is the timeline item id of a turn's plan (codex), revised in
 // place as the turn goes.
@@ -1341,17 +1383,44 @@ func (s *State) Apply(ev proto.Event) {
 			Input:      p.RawInput,
 			Options:    p.Options,
 		})
+		// The chip goes on the call the request names. With no such call
+		// here, a standalone item holds the record where the request was
+		// raised. Mirrored in web/src/apply.ts.
+		if s.itemIndex == nil {
+			s.reindex()
+		}
+		if i, ok := s.itemIndex[p.ToolCallID]; ok && p.ToolCallID != "" && s.Items[i].Kind == ItemTool {
+			s.Items[i].Approval = ApprovalPending
+		} else {
+			s.upsert(ApprovalID(p.RequestID), func(it *Item) {
+				it.Kind = ItemApproval
+				it.TurnID = p.TurnID
+				if it.ReceivedAt == 0 {
+					it.ReceivedAt = ev.Timestamp
+				}
+				it.Title = p.Title
+				it.Approval = ApprovalPending
+			})
+		}
 
 	case proto.PermissionResolved:
 		var p proto.PermissionResolvedPayload
 		decode(ev.Payload, &p)
+		toolCallID := ""
 		out := s.Pending[:0]
 		for _, pend := range s.Pending {
 			if pend.RequestID != p.RequestID {
 				out = append(out, pend)
+			} else {
+				toolCallID = pend.ToolCallID
 			}
 		}
 		s.Pending = out
+		// Only a record still waiting takes the outcome: one its turn's
+		// finish already cancelled stays cancelled.
+		if it := s.approvalTarget(p.RequestID, toolCallID); it != nil && it.Approval == ApprovalPending {
+			it.Approval = approvalResult(p.Outcome)
+		}
 
 	case proto.ElicitationRequested:
 		var p proto.ElicitationRequestedPayload
@@ -1368,6 +1437,16 @@ func (s *State) Apply(ev proto.Event) {
 				it.TurnID = p.TurnID
 				it.Card = p.Card
 				it.Status = CardPending
+			})
+		} else {
+			s.upsert(QuestionID(p.RequestID), func(it *Item) {
+				it.Kind = ItemQuestion
+				it.TurnID = p.TurnID
+				if it.ReceivedAt == 0 {
+					it.ReceivedAt = ev.Timestamp
+				}
+				it.Status = QuestionPending
+				it.Questions = questionsFor(p.Prompt, p.Schema)
 			})
 		}
 
@@ -1390,6 +1469,9 @@ func (s *State) Apply(ev proto.Event) {
 				s.Items[i].Outcome = p.Value
 			}
 		}
+		if i, ok := s.itemIndex[QuestionID(p.RequestID)]; ok && s.Items[i].Kind == ItemQuestion && s.Items[i].Status == QuestionPending {
+			answerQuestion(&s.Items[i], p)
+		}
 	}
 }
 
@@ -1397,16 +1479,22 @@ func (s *State) Apply(ev proto.Event) {
 // blocked on. The harness has stopped waiting on them once its turn is over,
 // whether or not it said so, and a card left up would answer nothing. A
 // request that names no turn is left alone: nothing says this finish ended
-// it. Cards are omniplex's to hold and outlive the turn. Mirrored in
-// web/src/apply.ts.
+// it. Cards are omniplex's to hold and outlive the turn. The records a
+// dropped request left in the timeline read cancelled, so none says it is
+// still waiting. Mirrored in web/src/apply.ts.
 func (s *State) settleRequests(turnID string) {
 	if turnID == "" {
 		return
+	}
+	if s.itemIndex == nil {
+		s.reindex()
 	}
 	perms := s.Pending[:0]
 	for _, p := range s.Pending {
 		if p.TurnID != turnID {
 			perms = append(perms, p)
+		} else if it := s.approvalTarget(p.RequestID, p.ToolCallID); it != nil && it.Approval == ApprovalPending {
+			it.Approval = ApprovalCancelled
 		}
 	}
 	s.Pending = perms
@@ -1414,6 +1502,10 @@ func (s *State) settleRequests(turnID string) {
 	for _, p := range s.Elicitations {
 		if p.IsCard() || p.TurnID != turnID {
 			elicits = append(elicits, p)
+			continue
+		}
+		if i, ok := s.itemIndex[QuestionID(p.RequestID)]; ok && s.Items[i].Kind == ItemQuestion && s.Items[i].Status == QuestionPending {
+			s.Items[i].Status = QuestionCancelled
 		}
 	}
 	s.Elicitations = elicits
@@ -1448,6 +1540,286 @@ func (s *State) rewind(p proto.ThreadRewoundPayload) {
 		s.Jobs = jobs
 	}
 	s.reindex()
+}
+
+// Approval states: pending until the request resolves, then how it went. A
+// request withdrawn, or one its turn finished on, is cancelled.
+const (
+	ApprovalPending       = "pending"
+	ApprovalAllowed       = "allowed"
+	ApprovalAllowedAlways = "allowed_always"
+	ApprovalDenied        = "denied"
+	ApprovalCancelled     = "cancelled"
+)
+
+// approvalResult maps a permission outcome to the approval it records.
+// Anything unrecognised reads as cancelled: the request is over, and nothing
+// says it was allowed.
+func approvalResult(outcome string) string {
+	switch outcome {
+	case proto.OutcomeAllowOnce:
+		return ApprovalAllowed
+	case proto.OutcomeAllowAlways:
+		return ApprovalAllowedAlways
+	case proto.OutcomeRejectOnce, proto.OutcomeRejectAlways:
+		return ApprovalDenied
+	}
+	return ApprovalCancelled
+}
+
+// approvalTarget is the item holding a request's approval record: its
+// standalone item if it got one, else the tool call it named. Nil if
+// neither is here. Mirrored in web/src/apply.ts.
+func (s *State) approvalTarget(requestID, toolCallID string) *Item {
+	if s.itemIndex == nil {
+		s.reindex()
+	}
+	if i, ok := s.itemIndex[ApprovalID(requestID)]; ok && s.Items[i].Kind == ItemApproval {
+		return &s.Items[i]
+	}
+	if i, ok := s.itemIndex[toolCallID]; ok && toolCallID != "" && s.Items[i].Kind == ItemTool {
+		return &s.Items[i]
+	}
+	return nil
+}
+
+// Question statuses: pending until answered, then how it ended. A question
+// withdrawn, or one its turn finished on, is cancelled.
+const (
+	QuestionPending   = "pending"
+	QuestionAnswered  = "answered"
+	QuestionDeclined  = "declined"
+	QuestionCancelled = "cancelled"
+)
+
+// AnswerCap is how many characters (code points) of each answer a question
+// item keeps. It is a record for the transcript, and a pasted essay would
+// ride along in every snapshot. Mirrored in web/src/apply.ts.
+const AnswerCap = 280
+
+// questionsFor lists what a request asks: one entry per schema property, in
+// the order the client's form walks them. A schema with no properties is the
+// prompt alone. Mirrored in web/src/apply.ts.
+func questionsFor(prompt string, schema json.RawMessage) []QuestionAnswer {
+	// Member by member, not into a struct: encoding/json matches field names
+	// case-insensitively, and JSON.parse on the web does not.
+	var properties json.RawMessage
+	for _, p := range jsProperties(schema) {
+		if p.key == "properties" {
+			properties = p.value
+		}
+	}
+	var out []QuestionAnswer
+	for _, p := range jsProperties(properties) {
+		f := readField(p.value)
+		q := cmp.Or(f.title, f.description, prompt, p.key)
+		out = append(out, QuestionAnswer{Key: p.key, Question: q, Secret: f.format == "password" || f.writeOnly})
+	}
+	if len(out) == 0 {
+		out = []QuestionAnswer{{Key: "", Question: prompt}}
+	}
+	return out
+}
+
+// property is one member of a JSON object, key and raw value.
+type property struct {
+	key   string
+	value json.RawMessage
+}
+
+// jsProperties is an object's members in the order JavaScript's
+// Object.entries gives them once JSON.parse has read it: array-index keys
+// first, ascending by number, then the rest in document order. A key given
+// twice is one member, where it first appeared, with the last value. Nil for
+// anything but an object.
+func jsProperties(raw json.RawMessage) []property {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil
+	}
+	var props []property
+	at := map[string]int{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		key, _ := tok.(string)
+		var v json.RawMessage
+		if dec.Decode(&v) != nil {
+			break
+		}
+		if i, ok := at[key]; ok {
+			props[i].value = v
+			continue
+		}
+		at[key] = len(props)
+		props = append(props, property{key, v})
+	}
+	sort.SliceStable(props, func(i, j int) bool {
+		a, aok := arrayIndex(props[i].key)
+		b, bok := arrayIndex(props[j].key)
+		if aok && bok {
+			return a < b
+		}
+		return aok && !bok
+	})
+	return props
+}
+
+// arrayIndex reads a key JavaScript treats as an array index: a canonical
+// non-negative integer below 2^32-1.
+func arrayIndex(key string) (uint64, bool) {
+	if key == "" || len(key) > 10 || (key[0] == '0' && len(key) > 1) {
+		return 0, false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < '0' || key[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseUint(key, 10, 64)
+	return n, err == nil && n < 1<<32-1
+}
+
+// schemaField is what a question item reads off one schema property.
+type schemaField struct {
+	title, description, format string
+	writeOnly                  bool
+}
+
+// readField reads each attribute on its own, so one of the wrong type is
+// skipped rather than taking its siblings with it: a field marked secret
+// stays secret whatever else is malformed.
+func readField(raw json.RawMessage) schemaField {
+	var attrs map[string]json.RawMessage
+	var f schemaField
+	if kindOf(raw) != '{' || json.Unmarshal(raw, &attrs) != nil {
+		// Not a schema object, but still a field asked.
+		return f
+	}
+	_ = json.Unmarshal(attrs["title"], &f.title)
+	_ = json.Unmarshal(attrs["description"], &f.description)
+	_ = json.Unmarshal(attrs["format"], &f.format)
+	_ = json.Unmarshal(attrs["writeOnly"], &f.writeOnly)
+	return f
+}
+
+// answerQuestion records how a question ended and, on accept, each answer as
+// capped text. A secret field's value is never read: the record keeps only
+// that it was asked. Mirrored in web/src/apply.ts.
+func answerQuestion(it *Item, p proto.ElicitationResolvedPayload) {
+	switch p.Action {
+	case "accept":
+		it.Status = QuestionAnswered
+	case "decline":
+		it.Status = QuestionDeclined
+		return
+	default:
+		it.Status = QuestionCancelled
+		return
+	}
+	var fields map[string]json.RawMessage
+	if kindOf(p.Value) == '{' {
+		_ = json.Unmarshal(p.Value, &fields)
+	}
+	for i := range it.Questions {
+		q := &it.Questions[i]
+		if q.Secret {
+			continue
+		}
+		var raw json.RawMessage
+		if q.Key == "" {
+			if k := kindOf(p.Value); k != '{' && k != '[' && k != 'n' {
+				raw = p.Value
+			}
+		} else {
+			raw = fields[q.Key]
+		}
+		q.Answer = capAnswer(answerText(raw))
+	}
+}
+
+// kindOf is the first byte of a JSON value, which says what it is: '{', '[',
+// '"', 't'/'f', 'n', or a digit or '-'. Zero for none.
+func kindOf(raw json.RawMessage) byte {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return 0
+	}
+	return raw[0]
+}
+
+// answerText is an answer as a person reads it: a string as typed, a choice
+// list joined, a yes/no as words. Null or missing is no answer, and so is a
+// list of nothing but nulls.
+func answerText(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	switch kindOf(raw) {
+	case 0, 'n':
+		return ""
+	case '"':
+		var v string
+		_ = json.Unmarshal(raw, &v)
+		return v
+	case 't':
+		return "Yes"
+	case 'f':
+		return "No"
+	case '[':
+		var elems []json.RawMessage
+		_ = json.Unmarshal(raw, &elems)
+		// A null element is no answer, not an empty one in the list.
+		parts := make([]string, 0, len(elems))
+		for _, e := range elems {
+			if k := kindOf(e); k != 0 && k != 'n' {
+				parts = append(parts, answerText(e))
+			}
+		}
+		return strings.Join(parts, ", ")
+	case '{':
+		var b bytes.Buffer
+		if json.Compact(&b, raw) != nil {
+			return ""
+		}
+		return b.String()
+	}
+	// A number as the client prints it once parsed, so both fold one text:
+	// 4.50 is 4.5.
+	if f, err := strconv.ParseFloat(string(raw), 64); err == nil || math.IsInf(f, 0) {
+		return jsNumber(f)
+	}
+	return string(raw)
+}
+
+// jsNumber is a number as JavaScript's String(n) writes it: plain decimal,
+// but an exponent from 1e21 up and below 1e-6 ("1e+21", "1.5e-7"), and
+// overflow as Infinity.
+func jsNumber(f float64) string {
+	switch {
+	case f == 0:
+		return "0" // -0 too
+	case math.IsInf(f, 1):
+		return "Infinity"
+	case math.IsInf(f, -1):
+		return "-Infinity"
+	}
+	if a := math.Abs(f); a >= 1e21 || a < 1e-6 {
+		// Go writes "1.5e-07"; JavaScript has no leading zeros in the exponent.
+		mant, exp, _ := strings.Cut(strconv.FormatFloat(f, 'e', -1, 64), "e")
+		return mant + "e" + exp[:1] + strings.TrimLeft(exp[1:], "0")
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// capAnswer cuts an answer to AnswerCap code points, the last of them an
+// ellipsis when anything was cut.
+func capAnswer(s string) string {
+	if utf8.RuneCountInString(s) <= AnswerCap {
+		return s
+	}
+	r := []rune(s)
+	return string(r[:AnswerCap-1]) + "…"
 }
 
 // Card statuses: pending until answered, then the outcome's result.
@@ -1615,6 +1987,9 @@ func copyItem(it Item) Item {
 	}
 	if len(it.Steps) > 0 {
 		it.Steps = append([]proto.PlanStep(nil), it.Steps...)
+	}
+	if len(it.Questions) > 0 {
+		it.Questions = append([]QuestionAnswer(nil), it.Questions...)
 	}
 	return it
 }
