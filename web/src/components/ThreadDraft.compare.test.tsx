@@ -222,6 +222,28 @@ describe("comparing models from the draft", () => {
     expect(props.onCompare).not.toHaveBeenCalled();
   });
 
+  it("gives back the worktree picked before comparing, untouched by a branch typed during it", async () => {
+    const path = "/tmp/repo/.worktrees/wt";
+    const props = open({
+      preset: { projectId: "p1", folderId: "f1", kind: "attach", attachPath: path },
+      onListWorkspaces: vi.fn(async () => [{ path, branch: "wt-branch" }] as Workspace[]),
+    });
+    await waitFor(() => expect(gitChip().textContent).toContain("Worktree: wt-branch"));
+    add("Sonnet 5");
+    await waitFor(() => expect(document.querySelector("[cmdk-list]")).toBeNull());
+    fireEvent.click(gitChip());
+    fireEvent.click(await screen.findByRole("button", { name: "Name the branch" }));
+    fireEvent.change(screen.getByLabelText("Branch"), { target: { value: "try/x" } });
+    expect(gitChip().textContent).toContain("New worktree: try/x");
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop comparing with Sonnet 5" }));
+    expect(gitChip().textContent).toContain("Worktree: wt-branch");
+    await send();
+    await waitFor(() => expect(props.onStart).toHaveBeenCalled());
+    const input = vi.mocked(props.onStart).mock.calls[0][0] as NewThreadInput;
+    expect(input).toMatchObject({ workspacePath: path, branch: "" });
+  });
+
   it("holds send while files are attached", async () => {
     const file = { key: "a", kind: "file", status: "ready", name: "notes.txt" } as unknown as Attachment;
     open({ attachments: [file] });

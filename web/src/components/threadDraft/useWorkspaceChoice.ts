@@ -100,6 +100,10 @@ export function useWorkspaceChoice({
   const [chosenKind, setChosenKind] = useState<"" | WorkspaceKind>(initial?.kind ?? "");
   const [naming, setNaming] = useState(false);
   const [baseRef, setBaseRef] = useState("");
+  // The branch typed while comparing holds a worktree the person did not pick,
+  // so it is kept apart from their own choice, which is there again unchanged
+  // once the lock lifts.
+  const [lockChoice, setLockChoice] = useState<WorkspaceChoice>(NO_CHOICE);
 
   // Every choice here belongs to one git folder, so another folder starts
   // over rather than carrying a branch or a worktree that means nothing there.
@@ -110,6 +114,7 @@ export function useWorkspaceChoice({
     const late = fits(pending) ? pending : undefined;
     if (project) setPending(undefined);
     setChoice(late ? presetChoice(late) : NO_CHOICE);
+    setLockChoice(NO_CHOICE);
     setChosenKind(late?.kind ?? "");
     setBaseRef("");
     setNaming(false);
@@ -135,14 +140,16 @@ export function useWorkspaceChoice({
   // here always came from the list.
   const listed =
     !choice.attachPath || spaces.loading || attachable.some((w) => w.path === choice.attachPath);
-  const current = listed ? choice : { ...choice, attachPath: "" };
+  const own = listed ? choice : { ...choice, attachPath: "" };
   const lastWorktree = remembered?.copy ?? project?.defaults.workspace === "managed";
   const forced = !!gitScope && forceWorktree;
-  const kind: WorkspaceKind = !gitScope
+  const ownKind: WorkspaceKind = !gitScope
     ? "main"
-    : forced
-      ? "branch"
-      : chosenKind || (lastWorktree ? "branch" : "main");
+    : chosenKind || (lastWorktree ? "branch" : "main");
+  const kind: WorkspaceKind = forced ? "branch" : ownKind;
+  // A new worktree chosen before comparing is already this kind, so its branch carries over.
+  const locked = forced && ownKind !== "branch";
+  const current = locked ? lockChoice : own;
   // Branches already on disk are the useful bases: stacking on another worktree's
   // work is what the field is for.
   const baseChoices = Array.from(
@@ -166,7 +173,7 @@ export function useWorkspaceChoice({
     loadingIssues: issues.loading,
     /** What the thread is created with. */
     sent: sentFor(kind, current, baseRef),
-    setChoice,
+    setChoice: locked ? setLockChoice : setChoice,
     setNaming,
     setBaseRef,
     /** A different kind of workspace starts its choice over. */
