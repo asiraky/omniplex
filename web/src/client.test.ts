@@ -393,6 +393,80 @@ describe("snapshot fetch", () => {
     expect(attaches()).toEqual([{ type: "attach", threadId: "t" }]);
   });
 
+  // A fetch the test answers by hand.
+  function heldFetch() {
+    let answer!: (state: ThreadState | null) => void;
+    const fetch = vi.fn(
+      (_url: string, init: { signal: AbortSignal }) =>
+        new Promise<Response>((resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+          answer = (state) =>
+            resolve(state ? new Response(JSON.stringify(state)) : new Response("", { status: 404 }));
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    return { fetch, answer: (state: ThreadState | null) => answer(state) };
+  }
+  const booted = (on: Partial<ClientEvents> = {}) => {
+    const c = new Client("ws://test", { ...events, ...on });
+    clients.push(c);
+    return c;
+  };
+
+  it("starts before the socket, and attaches from it once the socket opens", async () => {
+    const { fetch, answer } = heldFetch();
+    const published: ThreadState[] = [];
+    const c = booted({ onState: (_id, s) => published.push(s) });
+    c.attach("t");
+    c.connect();
+    expect(fetch).toHaveBeenCalledWith("/api/threads/t", expect.anything());
+
+    answer({ ...emptyState("t"), seq: 7 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(published.map((s) => s.seq)).toEqual([7]);
+
+    latest().open();
+    expect(attaches()).toEqual([{ type: "attach", threadId: "t", afterSeq: 7 }]);
+  });
+
+  it("holds the socket's attach until a slower fetch lands", async () => {
+    const { answer } = heldFetch();
+    const c = booted();
+    c.attach("t");
+    c.connect();
+    latest().open();
+    expect(attaches()).toEqual([]);
+
+    answer({ ...emptyState("t"), seq: 7 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(attaches()).toEqual([{ type: "attach", threadId: "t", afterSeq: 7 }]);
+  });
+
+  it("asks the socket for the whole thread when the fetch fails before it opens", async () => {
+    const { answer } = heldFetch();
+    const c = booted();
+    c.attach("gone");
+    c.connect();
+    answer(null);
+    await vi.advanceTimersByTimeAsync(0);
+
+    latest().open();
+    expect(attaches()).toEqual([{ type: "attach", threadId: "gone", afterSeq: 0 }]);
+  });
+
+  it("publishes nothing once closed", async () => {
+    const { answer } = heldFetch();
+    const published: ThreadState[] = [];
+    const c = booted({ onState: (_id, s) => published.push(s) });
+    c.attach("t");
+    c.connect();
+    c.close();
+    answer({ ...emptyState("t"), seq: 7 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(published).toEqual([]);
+  });
+
   it("does nothing for a fetch superseded by another attach", async () => {
     stallFetch();
     const { c } = live();

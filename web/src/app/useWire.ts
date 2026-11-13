@@ -55,25 +55,30 @@ export function useWire() {
   // Unless the page was opened at /thread/<id> (a tapped notification) for a
   // different thread: painting the last one first would flash the wrong
   // thread before the link took over.
+  //
+  // The boot thread is the one the restore will open if the list still has
+  // it: the cached one, else the link, else the last thread. Without a cache
+  // its snapshot is fetched while the socket is still connecting rather than
+  // after the welcome, which on a slow connection is the round trips the
+  // reader would otherwise spend looking at a spinner.
   const [link] = useState(() => threadIdFromPath(window.location.pathname));
-  const [resume, setResume] = useState(() => {
+  const [boot] = useState(() => {
+    let last: string | null = null;
     try {
-      const last = localStorage.getItem(LAST_THREAD);
-      if (link && link !== last) return null;
-      return loadResume(last);
+      last = localStorage.getItem(LAST_THREAD);
+      const resume = link && link !== last ? null : loadResume(last);
+      return { resume, thread: resume?.state.threadId ?? link ?? last };
     } catch {
-      return null;
+      return { resume: null, thread: link ?? last };
     }
   });
+  const [resume, setResume] = useState(boot.resume);
   const dropResume = useCallback(() => setResume(null), []);
-  // The copy the socket-setup effect reads: priming must use what the page
-  // hydrated with, not what later clearing left behind.
-  const resumeRef = useRef(resume);
   // The socket callbacks below outlive any single render, so they read the
   // attached thread from a ref rather than a captured closure. The ref is
   // written after commit, never during render (see useThreadSelection), so it
   // can only ever hold a value the UI actually rendered.
-  const activeRef = useRef<string | null>(resume?.state.threadId ?? null);
+  const activeRef = useRef<string | null>(boot.thread);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [threads, setThreads] = useState<ThreadMeta[]>([]);
   // True until the first thread list lands, which is when we know whether
@@ -131,11 +136,15 @@ export function useWire() {
     clientRef.current = client;
     // A resumed page attaches where it left off: the client carries the
     // cached state and cursor into its first attach, and the server answers
-    // with just the gap.
-    if (resumeRef.current) client.prime(resumeRef.current.state);
+    // with just the gap. Any other boot thread starts its snapshot fetch now,
+    // alongside the handshake; the socket attaches from its cursor once both
+    // are in. A thread that turns out to be gone is let go when the list
+    // lands (useThreadSelection's restore).
+    if (boot.resume) client.prime(boot.resume.state);
+    else if (boot.thread) client.attach(boot.thread);
     client.connect();
     return () => client.close();
-  }, [threadStore]);
+  }, [boot, threadStore]);
 
   // User-scope preferences are read once the socket is up, and again after a
   // reconnect only if we never got them; they change far less often than state.
@@ -182,6 +191,8 @@ export function useWire() {
     clientRef,
     /** The thread the page's /thread/<id> URL named at load, if any. */
     link,
+    /** The thread attached at load, before the list could say it exists, if any. */
+    bootThread: boot.thread,
     resume,
     dropResume,
     activeRef,

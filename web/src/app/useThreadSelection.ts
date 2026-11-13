@@ -63,7 +63,9 @@ export function useThreadSelection({
   onOpenLink: () => void;
 }) {
   const { clientRef, activeRef, threads, threadsLoaded, threadStore, dropResume } = wire;
-  const [activeId, setActiveId] = useState<string | null>(wire.resume?.state.threadId ?? null);
+  // The boot thread (useWire) is already attached, so the restore below
+  // starts from it rather than selecting it again.
+  const [activeId, setActiveId] = useState<string | null>(wire.bootThread);
   useEffect(() => {
     activeRef.current = activeId;
   }, [activeRef, activeId]);
@@ -212,23 +214,28 @@ export function useThreadSelection({
     pendingLink.current = null;
     if (link) {
       if (openable(threads, link)) {
+        // A link the page loaded at is the boot thread, already attached; one
+        // the service worker named since is not.
         if (link !== activeId) {
           dropResume();
           select(link, { history: false });
         }
+        localStorage.setItem(LAST_THREAD, link);
         writeRestoredUrl(link);
         return;
       }
       // Gone or closed: carry on as if there had been no link.
     }
     if (activeId) {
-      // Hydrated from the resume cache before the list could say whether the
-      // thread still exists. It usually does; when it doesn't (deleted or
-      // closed from elsewhere while the page was dead) let go the same way
-      // a live delete would. The seenActive effect below can't: it only acts
-      // on threads it saw in a list first.
-      // It was hydrated at /, from a cache that does not know the URL.
+      // Attached at boot (the resume cache, the link, or the last thread)
+      // before the list could say whether the thread still exists. It usually
+      // does; when it doesn't (deleted or closed from elsewhere while the page
+      // was dead) let go the same way a live delete would. The seenActive
+      // effect below can't: it only acts on threads it saw in a list first.
+      // A cache hydrates at /, not knowing the URL; a link is the last thread
+      // from here on, as a pick would make it.
       if (openable(threads, activeId)) {
+        localStorage.setItem(LAST_THREAD, activeId);
         writeRestoredUrl(activeId);
         return;
       }
@@ -237,7 +244,9 @@ export function useThreadSelection({
       // react-doctor-disable-next-line react-doctor/no-pass-live-state-to-parent -- not live state: the scroll memory must drop a thread the list says is gone, which only this list arriving can tell
       onForget(activeId);
       release();
-      return;
+      // A dead link still leaves the last thread to fall back on. Otherwise
+      // the last thread is the one just let go, and the branch below finds
+      // nothing to open.
     }
     const last = localStorage.getItem(LAST_THREAD);
     if (last && openable(threads, last)) {
