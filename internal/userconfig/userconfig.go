@@ -66,6 +66,10 @@ type Config struct {
 	// self-update in the background. Nil means on; off is for pinning a CLI
 	// version while debugging.
 	AutoUpdateHarnesses *bool `json:"autoUpdateHarnesses,omitempty"`
+	// SuggestPrompts is whether a harness that can is asked to propose the
+	// next prompt after each turn, shown above the composer. Nil means on. It
+	// takes effect when a session next starts.
+	SuggestPrompts *bool `json:"suggestPrompts,omitempty"`
 	// DictationCleanup is whether a dictated message is tidied by a small
 	// model before it lands in the composer: punctuation fixed, filler words
 	// dropped. Off by default, because it adds seconds and Scribe's own

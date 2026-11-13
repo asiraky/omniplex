@@ -1244,3 +1244,41 @@ func TestFromSnapshotDefaultsExtensionStatuses(t *testing.T) {
 		t.Fatal("extensionStatuses decoded as nil")
 	}
 }
+
+// A suggestion is offered only for the latest turn: one that names an earlier
+// turn arrived after the human had moved on. The next turn starting clears
+// it. Mirrored by web/src/apply.test.ts.
+func TestSuggestionFollowsTheLatestTurn(t *testing.T) {
+	s := New("s1")
+	s.Apply(startTurn(t, 1, "t1"))
+	s.Apply(event(t, 2, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+	s.Apply(event(t, 3, proto.TurnSuggested, proto.TurnSuggestedPayload{TurnID: "t1", Text: "run the tests"}))
+	if s.Suggestion == nil || *s.Suggestion != (proto.TurnSuggestedPayload{TurnID: "t1", Text: "run the tests"}) {
+		t.Fatalf("suggestion = %+v, want t1's", s.Suggestion)
+	}
+
+	s.Apply(startTurn(t, 4, "t2"))
+	if s.Suggestion != nil {
+		t.Fatalf("suggestion after the next turn started = %+v, want none", s.Suggestion)
+	}
+
+	// t1's suggestion turning up late, after t2 started, is stale.
+	s.Apply(event(t, 5, proto.TurnSuggested, proto.TurnSuggestedPayload{TurnID: "t1", Text: "run the tests"}))
+	if s.Suggestion != nil {
+		t.Fatalf("stale suggestion = %+v, want ignored", s.Suggestion)
+	}
+	// So is one naming a turn the log never opened.
+	s.Apply(event(t, 6, proto.TurnSuggested, proto.TurnSuggestedPayload{TurnID: "t-unknown", Text: "commit"}))
+	if s.Suggestion != nil {
+		t.Fatalf("suggestion for an unknown turn = %+v, want ignored", s.Suggestion)
+	}
+}
+
+// Before any turn there is no latest turn to suggest after.
+func TestSuggestionWithNoTurnIsIgnored(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnSuggested, proto.TurnSuggestedPayload{TurnID: "t1", Text: "go"}))
+	if s.Suggestion != nil {
+		t.Fatalf("suggestion = %+v, want none", s.Suggestion)
+	}
+}
