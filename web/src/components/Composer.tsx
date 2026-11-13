@@ -16,6 +16,7 @@ import type { Attachment } from "~/lib/attachments";
 import type { ArtefactRef } from "~/lib/artefacts";
 import type { PickerFocus } from "~/components/ModelPicker";
 import { isComposing } from "~/lib/ime";
+import { typeInto } from "~/lib/typeInto";
 import { currentPlatform, formatShortcut } from "~/lib/keybindings";
 import type { PickerInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
@@ -50,6 +51,10 @@ export interface ComposerAttachments {
 export interface ComposerHandle {
   /** Focuses the input and parks the cursor at `cursor`, or at the end. */
   focusEnd: (cursor?: number) => void;
+  /** Focuses the input and types `text` at the end of the draft, where undo
+      can take it back out. False when the browser would not take it; the
+      caller then writes the draft itself. */
+  typeAtEnd: (text: string) => boolean;
   /** Opens the model picker; "effort" puts focus on the effort control. Already open: moves focus there. */
   openModelPicker: (focus?: PickerFocus) => void;
 }
@@ -351,6 +356,11 @@ export function Composer({
     ref,
     () => ({
       focusEnd: (nextCursor?: number) => focusAt(nextCursor ?? draftRef.current.length),
+      typeAtEnd: (text: string) => {
+        const el = textareaRef.current;
+        if (!el || el.value !== draftRef.current) return false;
+        return typeInto(el, el.value.length, el.value.length, text);
+      },
       openModelPicker: (focus: PickerFocus = "model") => {
         if (!hasPicker) return;
         // A fresh object each time, so asking again while open moves focus.

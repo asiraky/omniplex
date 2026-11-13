@@ -178,6 +178,39 @@ func TestAttention(t *testing.T) {
 	}
 }
 
+// A failed turn goes idle like any other, so failure is its own signal: set
+// by the latest turn ending in an error, cleared by the next turn starting.
+func TestLastTurnFailed(t *testing.T) {
+	s := New("s1")
+	if s.LastTurnFailed() {
+		t.Fatal("a thread with no turns reports a failed turn")
+	}
+
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+	if s.LastTurnFailed() {
+		t.Fatal("a turn that ended normally reports failed")
+	}
+
+	s.Apply(event(t, 3, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t2", Prompt: "again"}))
+	s.Apply(event(t, 4, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t2", StopReason: proto.StopError, Error: "boom"}))
+	if !s.LastTurnFailed() {
+		t.Fatal("a turn that ended in an error does not report failed")
+	}
+	if got := s.Attention(); got != AttentionNeedsPrompt {
+		t.Fatalf("failed-turn attention = %q, want needs_prompt", got)
+	}
+
+	s.Apply(event(t, 5, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t3", Prompt: "retry"}))
+	if s.LastTurnFailed() {
+		t.Fatal("a new turn after a failed one still reports failed")
+	}
+	s.Apply(event(t, 6, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t3", StopReason: proto.StopEndTurn}))
+	if s.LastTurnFailed() {
+		t.Fatal("a turn that succeeded after a failed one reports failed")
+	}
+}
+
 // The defence must not resurrect a closed thread.
 func TestStreamingDoesNotReopenClosedThread(t *testing.T) {
 	s := New("s1")
