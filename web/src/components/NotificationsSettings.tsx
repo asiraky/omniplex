@@ -132,7 +132,7 @@ export function NotificationsSettings({ onBack }: { onBack?: () => void }) {
       </p>
 
       {support === "ok" ? (
-        <div className="space-y-1.5">
+        <div data-setting="push-this-device" className="space-y-1.5">
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1 space-y-1.5">
               <Label htmlFor="settings-push-this-device">Notifications on this device</Label>
@@ -162,7 +162,7 @@ export function NotificationsSettings({ onBack }: { onBack?: () => void }) {
           </div>
         </div>
       ) : (
-        <Alert>
+        <Alert data-setting="push-this-device">
           <BellOffIcon />
           <AlertDescription className="text-[12px]">{UNSUPPORTED[support]}</AlertDescription>
         </Alert>
@@ -174,7 +174,7 @@ export function NotificationsSettings({ onBack }: { onBack?: () => void }) {
         </p>
       )}
 
-      <div className="flex items-start gap-3">
+      <div data-setting="alert-sound" className="flex items-start gap-3">
         <div className="min-w-0 flex-1 space-y-1.5">
           <Label htmlFor="settings-alert-sound">Play a sound</Label>
           <p className="text-muted-foreground text-[11px]">
@@ -195,7 +195,7 @@ export function NotificationsSettings({ onBack }: { onBack?: () => void }) {
 
       <Separator />
 
-      <div className="space-y-2">
+      <div data-setting="devices" className="space-y-2">
         <h3 className="text-[12px] font-medium">Devices</h3>
         <DeviceList
           push={push}

@@ -392,6 +392,30 @@
     }
   }
 
+  /* A setting just picked from the settings search: a soft wash around it
+     that fades, long enough to find, gone before it is in the way. Colour
+     only, no movement, so it stays on under reduced motion. */
+  [data-setting][data-found] {
+    border-radius: 0.375rem;
+    animation: settingFound 1.8s ease-out;
+  }
+
+  @keyframes settingFound {
+    0%,
+    45% {
+      background-color: var(--accent);
+      box-shadow:
+        0 0 0 6px var(--accent),
+        0 0 0 7px color-mix(in oklab, var(--ring) 45%, transparent);
+    }
+    to {
+      background-color: transparent;
+      box-shadow:
+        0 0 0 6px transparent,
+        0 0 0 7px transparent;
+    }
+  }
+
   @keyframes fadeIn {
     from {
       opacity: 0;

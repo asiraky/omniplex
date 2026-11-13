@@ -84,11 +84,14 @@ interface Listing {
 
 function HookField({
   label,
+  anchor,
   root,
   value,
   onChange,
 }: {
   label: string;
+  /** The settings search's mark for this field. */
+  anchor: string;
   root: string;
   value: string;
   onChange: (v: string) => void;
@@ -109,7 +112,7 @@ function HookField({
   };
 
   return (
-    <div className="space-y-1.5">
+    <div data-setting={anchor} className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
       <div className="flex gap-2">
         <Input
@@ -228,7 +231,7 @@ function FoldersSection({
   );
 
   return (
-    <div className="space-y-2">
+    <div data-setting="folders" className="space-y-2">
       <SectionHeading>Folders</SectionHeading>
       <ul className="divide-y rounded-lg border">
         {folders.map((f) => (
@@ -352,7 +355,7 @@ function DeleteProjectSection({
   };
 
   return (
-    <div className="space-y-2">
+    <div data-setting="remove" className="space-y-2">
       <SectionHeading note="cannot be undone">Remove project</SectionHeading>
       <p className="text-muted-foreground text-[11px]">
         {blocked
@@ -485,7 +488,7 @@ export function ProjectSettings({
     >
           {
             <div className="space-y-5">
-              <div className="space-y-1.5">
+              <div data-setting="name" className="space-y-1.5">
                 <Label htmlFor="project-name">Project name</Label>
                 <Input
                   id="project-name"
@@ -512,7 +515,11 @@ export function ProjectSettings({
                     value={defs.harness ?? ""}
                     onValueChange={(v) => defaults({ harness: v })}
                   >
-                    <SelectTrigger aria-label="Default harness" className="w-full">
+                    <SelectTrigger
+                      aria-label="Default harness"
+                      data-setting="default-harness"
+                      className="w-full"
+                    >
                       <SelectValue placeholder="Harness" />
                     </SelectTrigger>
                     <SelectContent>
@@ -525,7 +532,11 @@ export function ProjectSettings({
                   </Select>
 
                   <Select value={settingsHarness} onValueChange={setSettingsHarness}>
-                    <SelectTrigger aria-label="Harness settings" className="w-full">
+                    <SelectTrigger
+                      aria-label="Harness settings"
+                      data-setting="harness-settings"
+                      className="w-full"
+                    >
                       <SelectValue placeholder="Settings for harness" />
                     </SelectTrigger>
                     <SelectContent>
@@ -541,7 +552,11 @@ export function ProjectSettings({
                     value={defs.harnesses?.[settingsHarness]?.model || UNSET}
                     onValueChange={(v) => agentDefaults({ model: v === UNSET ? "" : v })}
                   >
-                    <SelectTrigger aria-label="Default model" className="w-full">
+                    <SelectTrigger
+                      aria-label="Default model"
+                      data-setting="default-model"
+                      className="w-full"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -577,7 +592,11 @@ export function ProjectSettings({
                     value={defs.harnesses?.[settingsHarness]?.effort || UNSET}
                     onValueChange={(v) => agentDefaults({ effort: v === UNSET ? "" : v })}
                   >
-                    <SelectTrigger aria-label="Default effort" className="w-full">
+                    <SelectTrigger
+                      aria-label="Default effort"
+                      data-setting="default-effort"
+                      className="w-full"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -597,7 +616,11 @@ export function ProjectSettings({
                     value={defs.harnesses?.[settingsHarness]?.mode || UNSET}
                     onValueChange={(v) => agentDefaults({ mode: v === UNSET ? "" : v })}
                   >
-                    <SelectTrigger aria-label="Default permission mode" className="w-full">
+                    <SelectTrigger
+                      aria-label="Default permission mode"
+                      data-setting="default-mode"
+                      className="w-full"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -630,7 +653,11 @@ export function ProjectSettings({
                     value={defs.workspace ?? "local"}
                     onValueChange={(v) => defaults({ workspace: v })}
                   >
-                    <SelectTrigger aria-label="Default workspace" className="w-full">
+                    <SelectTrigger
+                      aria-label="Default workspace"
+                      data-setting="default-workspace"
+                      className="w-full"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -648,7 +675,7 @@ export function ProjectSettings({
               {hasElevenLabsKey && (
                 <>
                   <Separator />
-                  <div className="space-y-1.5">
+                  <div data-setting="voice" className="space-y-1.5">
                     <Label htmlFor="project-voice">Voice</Label>
                     <VoicePicker
                       id="project-voice"
@@ -670,7 +697,7 @@ export function ProjectSettings({
                   <SectionHeading note={gitFolders.length > 1 ? f.path : undefined}>
                     Workspace
                   </SectionHeading>
-                  <div className="space-y-1.5">
+                  <div data-setting={`base-branch-${f.id}`} className="space-y-1.5">
                     <Label htmlFor={`base-branch-${f.id}`}>Base branch</Label>
                     <Input
                       id={`base-branch-${f.id}`}
@@ -682,12 +709,14 @@ export function ProjectSettings({
                   </div>
                   <HookField
                     label="Provision"
+                    anchor={`provision-${f.id}`}
                     root={f.path}
                     value={f.provision ?? ""}
                     onChange={(v) => folder(f.id, { provision: v })}
                   />
                   <HookField
                     label="Deprovision"
+                    anchor={`deprovision-${f.id}`}
                     root={f.path}
                     value={f.deprovision ?? ""}
                     onChange={(v) => folder(f.id, { deprovision: v })}

@@ -56,7 +56,7 @@ function BranchFormatField({
   onChange: (v: string) => void;
 }) {
   return (
-    <div className="space-y-1.5">
+    <div data-setting="branch-format" className="space-y-1.5">
       <Label htmlFor="settings-branch-format">Branch names from issues</Label>
       <p className="text-muted-foreground text-[11px]">
         Names the copies started from your open GitHub issues. {"{number}"} is the issue number
@@ -114,7 +114,7 @@ function ElevenLabsKeyField({
   };
 
   return (
-    <div className="space-y-1.5">
+    <div data-setting="elevenlabs-key" className="space-y-1.5">
       <Label htmlFor={hasKey ? undefined : "settings-elevenlabs-key"}>ElevenLabs API key</Label>
       {hasKey ? (
         <div className="flex items-center gap-2">
@@ -186,7 +186,7 @@ function VoiceSettings({
       <h3 className="text-[12px] font-medium">Read aloud and dictation</h3>
       <ElevenLabsKeyField hasKey={hasKey} onSet={onSetKey} />
       {hasKey && (
-        <div className="space-y-1.5">
+        <div data-setting="voice" className="space-y-1.5">
           <Label htmlFor="settings-voice">Default voice</Label>
           <VoicePicker id="settings-voice" value={voice} onChange={onVoice} />
           <p className="text-muted-foreground text-[11px]">
@@ -197,7 +197,7 @@ function VoiceSettings({
         </div>
       )}
       {hasKey && (
-        <div className="flex items-start gap-3">
+        <div data-setting="dictation-cleanup" className="flex items-start gap-3">
           <div className="min-w-0 flex-1 space-y-1.5">
             <Label htmlFor="settings-dictation-cleanup">Clean up dictation</Label>
             <p className="text-muted-foreground text-[11px]">
@@ -275,7 +275,7 @@ export function GeneralSettings({
         </Button>
       }
     >
-      <div className="space-y-1.5">
+      <div data-setting="projects-dir" className="space-y-1.5">
         <Label htmlFor="settings-projects-dir">Projects folder</Label>
         <Input
           id="settings-projects-dir"
@@ -292,7 +292,7 @@ export function GeneralSettings({
 
       <Separator />
 
-      <div className="space-y-1.5">
+      <div data-setting="default-model" className="space-y-1.5">
         <Label htmlFor="settings-default-model">Default model</Label>
         <div className="flex items-center gap-2">
           <ModelPicker
@@ -323,7 +323,7 @@ export function GeneralSettings({
         </p>
       </div>
 
-      <div className="space-y-1.5">
+      <div data-setting="default-level" className="space-y-1.5">
         <Label htmlFor="settings-default-level">Default permissions</Label>
         <Select
           value={cfg.defaultLevel || UNSET}
@@ -343,7 +343,7 @@ export function GeneralSettings({
         </Select>
       </div>
 
-      <div className="flex items-start gap-3">
+      <div data-setting="pin-new-threads" className="flex items-start gap-3">
         <div className="min-w-0 flex-1 space-y-1.5">
           <Label htmlFor="settings-pin-new-threads">Pin new threads</Label>
           <p className="text-muted-foreground text-[11px]">
@@ -358,7 +358,7 @@ export function GeneralSettings({
         />
       </div>
 
-      <div className="flex items-start gap-3">
+      <div data-setting="auto-update-harnesses" className="flex items-start gap-3">
         <div className="min-w-0 flex-1 space-y-1.5">
           <Label htmlFor="settings-auto-update-harnesses">Keep harness CLIs up to date</Label>
           <p className="text-muted-foreground text-[11px]">

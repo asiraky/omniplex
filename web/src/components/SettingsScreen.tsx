@@ -4,9 +4,11 @@ import {
   FolderIcon,
   KeyRoundIcon,
   PlusIcon,
+  SearchIcon,
   SlidersHorizontalIcon,
+  XIcon,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 
 import type { AuthWires } from "~/components/AuthFlowDialog";
 import { GeneralSettings } from "~/components/GeneralSettings";
@@ -15,7 +17,15 @@ import { ProjectSettings, type AddFolderRequest } from "~/components/ProjectSett
 import ProvidersSettings from "~/components/ProvidersSettings";
 import { SettingsPane } from "~/components/SettingsPane";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "~/components/ui/dialog";
-import { useIsDesktop } from "~/useMediaQuery";
+import { Input } from "~/components/ui/input";
+import { useCanHover, useIsDesktop } from "~/useMediaQuery";
+import {
+  entryKey,
+  searchSettings,
+  settingsIndex,
+  type AccountRef,
+  type SettingEntry,
+} from "~/lib/settingsSearch";
 import { cn } from "~/lib/utils";
 import type {
   Folder,
@@ -37,6 +47,44 @@ const GENERAL: SettingsSection = { kind: "general" };
 
 const same = (a: SettingsSection | null, b: SettingsSection) =>
   !!a && a.kind === b.kind && (a.kind !== "project" || (b.kind === "project" && a.id === b.id));
+
+/** What a picked result is still waiting to land on; `n` tells two picks of one setting apart. */
+type Jump = { anchor: string; n: number };
+
+/**
+ * Where focus may go on a pick: the setting's own field, switch or select, or
+ * the setting itself when it is a button. Never a button inside one, since
+ * that is often a Remove that acts on the next Enter without asking.
+ */
+const FOCUSABLE =
+  "input:not([disabled]), textarea:not([disabled]), [role=combobox], [role=switch]";
+
+/**
+ * Brings a setting into view inside `root` and marks it, so the eye finds it.
+ * Focus moves to its control only with a mouse: on a phone that would open the
+ * keyboard over the very thing it was asked to show. False while the section
+ * has not rendered it yet.
+ */
+function land(root: HTMLElement, anchor: string, focus: boolean): boolean {
+  const el = [...root.querySelectorAll<HTMLElement>("[data-setting]")].find(
+    (e) => e.dataset.setting === anchor,
+  );
+  if (!el) return false;
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  el.scrollIntoView?.({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+  if (focus) {
+    const control =
+      el.matches(FOCUSABLE) || el instanceof HTMLButtonElement
+        ? el
+        : el.querySelector<HTMLElement>(FOCUSABLE);
+    control?.focus({ preventScroll: true });
+  }
+  // Off and on again, so a second pick of the same setting plays it again.
+  el.removeAttribute("data-found");
+  void el.offsetWidth;
+  el.setAttribute("data-found", "");
+  return true;
+}
 
 /**
  * Every setting in one place: yours, the accounts the agents sign in with, and
@@ -88,12 +136,59 @@ export function SettingsScreen({
   onClose: () => void;
 }) {
   const isDesktop = useIsDesktop();
+  const canHover = useCanHover();
   const [picked, setPicked] = useState<SettingsSection | null>(at ?? null);
+  const [query, setQuery] = useState("");
+  const [jump, setJump] = useState<Jump | null>(null);
+  // Which Providers view a pick asked for: the list, or one account.
+  const [providersShow, setProvidersShow] = useState<{ account?: AccountRef; n: number }>();
+  const contentRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const picks = useRef(0);
+  const landedPick = useRef(0);
+
+  const index = useMemo(
+    () => settingsIndex({ projects, harnesses, hasElevenLabsKey }),
+    [projects, harnesses, hasElevenLabsKey],
+  );
+  const results = useMemo(() => searchSettings(index, query), [index, query]);
+  const searching = query.trim() !== "";
   // A project deleted from under its own section leaves nothing to show.
   const valid =
     picked?.kind === "project" && !projects.some((p) => p.id === picked.id) ? null : picked;
   const section = valid ?? (isDesktop ? GENERAL : null);
-  const back = isDesktop ? undefined : () => setPicked(null);
+  // Moving by hand drops a pick that has not landed yet, so it cannot land
+  // later on a same-named setting somewhere else, and the account a pick
+  // opened, so Providers opens on its list next time.
+  const goTo = (s: SettingsSection | null) => {
+    setJump(null);
+    setProvidersShow(undefined);
+    setPicked(s);
+  };
+  const back = isDesktop ? undefined : () => goTo(null);
+
+  const pick = (e: SettingEntry) => {
+    const n = ++picks.current;
+    if (e.place.kind === "providers") {
+      setPicked({ kind: "providers" });
+      setProvidersShow({ account: e.place.account, n });
+    } else {
+      setPicked(e.place);
+    }
+    setJump({ anchor: e.anchor, n });
+  };
+
+  const clearSearch = () => {
+    setQuery("");
+    searchRef.current?.focus();
+  };
+
+  // Once the picked section shows the setting. General waits for the config,
+  // so this tries again when that arrives rather than giving up.
+  useEffect(() => {
+    if (!jump || landedPick.current === jump.n || !contentRef.current) return;
+    if (land(contentRef.current, jump.anchor, canHover)) landedPick.current = jump.n;
+  }, [jump, section, userConfig, canHover]);
 
   let pane: ReactNode = null;
   if (section?.kind === "general") {
@@ -117,6 +212,7 @@ export function SettingsScreen({
         harnesses={harnesses}
         {...providers}
         addFor={section.addFor}
+        show={providersShow}
         onBack={back}
       />
     );
@@ -146,15 +242,31 @@ export function SettingsScreen({
       icon={icon}
       label={label}
       current={isDesktop && same(section, target)}
-      onClick={() => setPicked(target)}
+      onClick={() => goTo(target)}
     />
   );
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
+        ref={contentRef}
         fullscreenOnMobile
         className="flex gap-0 p-0 md:h-[min(90dvh,44rem)] md:max-w-3xl"
+        // Radix puts focus on the first control, the search box. Typing there
+        // is the point with a keyboard; on a phone it would open the keyboard
+        // on arrival, so focus lands on the dialog itself.
+        onOpenAutoFocus={(e) => {
+          if (canHover) return;
+          e.preventDefault();
+          (e.currentTarget as HTMLElement | null)?.focus();
+        }}
+        // Escape in a search with words in it clears them; the next one closes.
+        onEscapeKeyDown={(e) => {
+          if (searching && document.activeElement === searchRef.current) {
+            e.preventDefault();
+            setQuery("");
+          }
+        }}
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
@@ -177,18 +289,31 @@ export function SettingsScreen({
             >
               Settings
             </p>
-            <div className="flex flex-col gap-0.5">
-              {item(GENERAL, <SlidersHorizontalIcon />, "General")}
-              {item({ kind: "providers" }, <KeyRoundIcon />, "Providers")}
-              {item({ kind: "notifications" }, <BellIcon />, "Notifications")}
-            </div>
-            <p className="text-muted-foreground px-2.5 pt-4 pb-1 text-[11px] font-medium">
-              Projects
-            </p>
-            <div className="flex flex-col gap-0.5">
-              {projects.map((p) => item({ kind: "project", id: p.id }, <FolderIcon />, p.name))}
-              <NavItem icon={<PlusIcon />} label="New project" onClick={onAddProject} muted />
-            </div>
+            <SearchBox
+              ref={searchRef}
+              value={query}
+              onChange={setQuery}
+              onSubmit={() => results[0] && pick(results[0])}
+              onClear={clearSearch}
+            />
+            {searching ? (
+              <SearchResults results={results} onPick={pick} />
+            ) : (
+              <>
+                <div className="flex flex-col gap-0.5">
+                  {item(GENERAL, <SlidersHorizontalIcon />, "General")}
+                  {item({ kind: "providers" }, <KeyRoundIcon />, "Providers")}
+                  {item({ kind: "notifications" }, <BellIcon />, "Notifications")}
+                </div>
+                <p className="text-muted-foreground px-2.5 pt-4 pb-1 text-[11px] font-medium">
+                  Projects
+                </p>
+                <div className="flex flex-col gap-0.5">
+                  {projects.map((p) => item({ kind: "project", id: p.id }, <FolderIcon />, p.name))}
+                  <NavItem icon={<PlusIcon />} label="New project" onClick={onAddProject} muted />
+                </div>
+              </>
+            )}
           </nav>
         )}
 
@@ -226,5 +351,89 @@ function NavItem({
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {!muted && <ChevronRightIcon className="text-muted-foreground md:hidden" />}
     </button>
+  );
+}
+
+function SearchBox({
+  ref,
+  value,
+  onChange,
+  onSubmit,
+  onClear,
+}: {
+  ref: Ref<HTMLInputElement>;
+  value: string;
+  onChange: (v: string) => void;
+  /** Enter: open the first result. */
+  onSubmit: () => void;
+  /** The × button, which leaves focus in the box for the next search. */
+  onClear: () => void;
+}) {
+  return (
+    <div className="relative mb-2">
+      <SearchIcon
+        aria-hidden
+        className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2"
+      />
+      <Input
+        ref={ref}
+        type="search"
+        aria-label="Search settings"
+        placeholder="Search settings"
+        autoComplete="off"
+        spellCheck={false}
+        enterKeyHint="go"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            onSubmit();
+          }
+        }}
+        className="bg-background dark:bg-background pr-9 pl-8 md:h-8 md:text-[13px] [&::-webkit-search-cancel-button]:hidden"
+      />
+      {value && (
+        <button
+          type="button"
+          aria-label="Clear search"
+          onClick={onClear}
+          className="text-muted-foreground hover:text-foreground absolute top-1/2 right-0 flex size-11 -translate-y-1/2 items-center justify-center md:size-8 [&_svg]:size-3.5"
+        >
+          <XIcon />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** The matching settings, each with the section it is in. */
+function SearchResults({
+  results,
+  onPick,
+}: {
+  results: SettingEntry[];
+  onPick: (e: SettingEntry) => void;
+}) {
+  if (results.length === 0) {
+    return <p className="text-muted-foreground px-2.5 py-2 text-[13px]">No settings match.</p>;
+  }
+  return (
+    <ul aria-label="Matching settings" className="flex flex-col gap-0.5">
+      {results.map((e) => (
+        <li key={entryKey(e)}>
+          <button
+            type="button"
+            onClick={() => onPick(e)}
+            className="hover:bg-accent focus-visible:ring-ring flex min-h-11 w-full flex-col justify-center rounded-md px-2.5 py-1.5 text-left outline-none focus-visible:ring-2 md:min-h-8"
+          >
+            <span className="w-full truncate text-[14px] md:text-[13px]">{e.label}</span>
+            <span className="text-muted-foreground w-full truncate text-[12px] md:text-[11px]">
+              {e.where}
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }

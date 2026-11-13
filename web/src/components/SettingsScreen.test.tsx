@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, screen, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { HarnessMeta, Project } from "~/protocol";
+import { settingsIndex, type SettingEntry } from "~/lib/settingsSearch";
+import type { HarnessMeta, Project, UserConfig } from "~/protocol";
 import { render, viewport } from "~/test/harness";
 import { SettingsScreen, type SettingsSection } from "./SettingsScreen";
 
@@ -30,13 +31,15 @@ function open(
     at?: SettingsSection;
     projects?: Project[];
     harnesses?: HarnessMeta[];
+    hasElevenLabsKey?: boolean;
+    userConfig?: UserConfig | null;
     onAddProject?: () => void;
   } = {},
 ) {
   const props = {
     projects: [project("p1", "alpha"), project("p2", "beta")],
     harnesses: [] as HarnessMeta[],
-    userConfig: { version: 1 },
+    userConfig: { version: 1 } as UserConfig | null,
     threadCounts: {},
     onSaveUserConfig: vi.fn(async () => {}),
     hasElevenLabsKey: false,
@@ -128,4 +131,291 @@ it("hands New project to the caller", () => {
   open({ onAddProject });
   fireEvent.click(screen.getByRole("button", { name: "New project" }));
   expect(onAddProject).toHaveBeenCalled();
+});
+
+describe("searching", () => {
+  // The panes fetch voices and push devices on mount; none of that is under test.
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise(() => {})),
+    );
+  });
+
+  /** A mouse and trackpad: the hover query the harness otherwise answers false. */
+  const withMouse = () => {
+    const base = window.matchMedia;
+    vi.stubGlobal("matchMedia", (q: string) =>
+      /hover: hover/.test(q) ? { ...base(q), matches: true } : base(q),
+    );
+  };
+
+  const search = () => screen.getByRole("searchbox", { name: "Search settings" });
+  const type = (q: string) => fireEvent.change(search(), { target: { value: q } });
+  const results = () => screen.queryByRole("list", { name: "Matching settings" });
+  /** A result's button, by the setting's label and the section it is in. */
+  const result = (label: string, where: string) => {
+    const hit = within(results()!)
+      .getAllByRole("button")
+      .find((b) => b.textContent === label + where);
+    if (!hit) throw new Error(`no result "${label}" in "${where}"`);
+    return hit;
+  };
+  const target = (anchor: string) =>
+    [...document.querySelectorAll<HTMLElement>("[data-setting]")].find(
+      (e) => e.dataset.setting === anchor,
+    );
+  const found = () => [...document.querySelectorAll("[data-setting][data-found]")];
+
+  const gitProject = (id: string, name: string, paths: string[]): Project => ({
+    ...project(id, name),
+    folders: paths.map((path, i) => ({
+      ...project(id, name).folders[0],
+      id: `${id}-g${i}`,
+      path,
+      git: true,
+    })),
+  });
+
+  const codex: HarnessMeta = {
+    id: "codex",
+    name: "Codex",
+    accent: "#000",
+    models: [],
+    permissionModes: [],
+    availability: { state: "ready" } as HarnessMeta["availability"],
+    instances: [
+      {
+        id: "codex-work",
+        driver: "codex",
+        displayName: "Zephyr",
+        enabled: true,
+        availability: { state: "ready" } as HarnessMeta["availability"],
+      },
+    ],
+  };
+
+  it("replaces the section list with what matches, and brings it back when cleared", () => {
+    open();
+    type("branch");
+    expect(results()).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Notifications" })).toBeNull();
+
+    type("   ");
+    expect(results()).toBeNull();
+    expect(screen.getByRole("button", { name: "Notifications" })).toBeTruthy();
+  });
+
+  it("says so when nothing matches", () => {
+    open();
+    type("zzzqqq");
+    expect(results()).toBeNull();
+    expect(screen.getByText("No settings match.")).toBeTruthy();
+  });
+
+  it("clears with the clear button", () => {
+    open();
+    type("sound");
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect((search() as HTMLInputElement).value).toBe("");
+    expect(results()).toBeNull();
+  });
+
+  it("opens General on a General result and marks the setting", () => {
+    open({ at: { kind: "notifications" } });
+    type("branch names");
+    fireEvent.click(result("Branch names from issues", "General"));
+    expect(pane()?.getAttribute("aria-label")).toBe("General");
+    expect(target("branch-format")?.hasAttribute("data-found")).toBe(true);
+    expect(found()).toHaveLength(1);
+  });
+
+  it("opens the project a result belongs to", () => {
+    open({
+      projects: [gitProject("p1", "alpha", ["/a"]), gitProject("p2", "beta", ["/b"])],
+    });
+    type("beta base branch");
+    fireEvent.click(result("Base branch", "beta"));
+    expect(pane()?.getAttribute("aria-label")).toBe("beta");
+    expect(target("base-branch-p2-g0")?.hasAttribute("data-found")).toBe(true);
+  });
+
+  it("opens Notifications on a Notifications result", () => {
+    open();
+    type("chime");
+    fireEvent.click(result("Play a sound", "Notifications"));
+    expect(pane()?.getAttribute("aria-label")).toBe("Notifications");
+    expect(target("alert-sound")?.hasAttribute("data-found")).toBe(true);
+  });
+
+  it("starts Providers over on its list, where the result is, even from adding an account", () => {
+    open({ at: { kind: "providers", addFor: "codex" }, harnesses: [codex] });
+    expect(screen.getByText("New Codex account")).toBeTruthy();
+    expect(target("recheck")).toBeUndefined();
+
+    type("check again");
+    fireEvent.click(result("Check again", "Providers"));
+    expect(screen.queryByText("New Codex account")).toBeNull();
+    expect(target("recheck")?.hasAttribute("data-found")).toBe(true);
+  });
+
+  it("opens an account found by its name", () => {
+    open({ harnesses: [codex] });
+    type("zephyr");
+    fireEvent.click(result("Zephyr", "Providers · Zephyr"));
+    expect(pane()?.getAttribute("aria-label")).toBe("Providers");
+    expect(target("account")?.hasAttribute("data-found")).toBe(true);
+    expect(screen.getByLabelText("Display name")).toBeTruthy();
+  });
+
+  it("opens Providers on its list again once you leave the account a pick opened", () => {
+    open({ harnesses: [codex] });
+    type("zephyr");
+    fireEvent.click(result("Zephyr", "Providers · Zephyr"));
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    fireEvent.click(screen.getByRole("button", { name: "General" }));
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    expect(screen.queryByLabelText("Display name")).toBeNull();
+    expect(target("harness-codex")).toBeTruthy();
+  });
+
+  it("moves an open Providers screen to the picked account without losing its edits", () => {
+    open({ at: { kind: "providers" }, harnesses: [codex] });
+    type("display name");
+    fireEvent.click(result("Display name", "Providers · Zephyr"));
+    const name = screen.getByLabelText("Display name") as HTMLInputElement;
+    fireEvent.change(name, { target: { value: "Edited" } });
+
+    type("enabled");
+    fireEvent.click(result("Enabled", "Providers · Zephyr"));
+    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Edited");
+    expect(target("enabled")?.hasAttribute("data-found")).toBe(true);
+  });
+
+  it("drops a pick that has not landed once you move by hand", () => {
+    // General waits for the config, so a pick there cannot land yet.
+    open({
+      userConfig: null,
+      hasElevenLabsKey: true,
+      projects: [project("p1", "alpha")],
+    });
+    type("default voice");
+    fireEvent.click(result("Default voice", "General"));
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    fireEvent.click(screen.getByRole("button", { name: "alpha" }));
+    // The project has a "voice" setting of its own; the stale pick must not land on it.
+    expect(pane()?.getAttribute("aria-label")).toBe("alpha");
+    expect(target("voice")?.hasAttribute("data-found") ?? false).toBe(false);
+  });
+
+  it("never puts focus on a button inside a setting", () => {
+    withMouse();
+    open({ projects: [gitProject("p1", "alpha", ["/src/a", "/src/b"])] });
+    type("folders");
+    fireEvent.click(result("Folders", "alpha"));
+    expect(target("folders")?.hasAttribute("data-found")).toBe(true);
+    expect(document.activeElement?.closest("[data-setting='folders']")).toBeNull();
+  });
+
+  it("opens the first result on Enter, and does nothing when there is none", () => {
+    open({ at: { kind: "notifications" } });
+    type("default model");
+    fireEvent.keyDown(search(), { key: "Enter" });
+    expect(pane()?.getAttribute("aria-label")).toBe("General");
+    expect(target("default-model")?.hasAttribute("data-found")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    fireEvent.click(screen.getByRole("button", { name: "Notifications" }));
+    type("zzzqqq");
+    fireEvent.keyDown(search(), { key: "Enter" });
+    expect(pane()?.getAttribute("aria-label")).toBe("Notifications");
+  });
+
+  it("marks the setting again when it is picked again", () => {
+    open();
+    type("chime");
+    fireEvent.click(result("Play a sound", "Notifications"));
+    target("alert-sound")!.removeAttribute("data-found");
+    fireEvent.click(result("Play a sound", "Notifications"));
+    expect(target("alert-sound")?.hasAttribute("data-found")).toBe(true);
+  });
+
+  it("clears the search on Escape before it closes the dialog", () => {
+    const { props } = open();
+    type("sound");
+    search().focus();
+    fireEvent.keyDown(search(), { key: "Escape" });
+    expect((search() as HTMLInputElement).value).toBe("");
+    expect(props.onClose).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(search(), { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it("closes on Escape with an empty search", () => {
+    const { props } = open();
+    search().focus();
+    fireEvent.keyDown(search(), { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it("on a phone, opens the result's section and goes back to the results with the query kept", () => {
+    viewport("phone");
+    open();
+    type("chime");
+    fireEvent.click(result("Play a sound", "Notifications"));
+    expect(nav()).toBeNull();
+    expect(pane()?.getAttribute("aria-label")).toBe("Notifications");
+    expect(target("alert-sound")?.hasAttribute("data-found")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(pane()).toBeNull();
+    expect((search() as HTMLInputElement).value).toBe("chime");
+    expect(result("Play a sound", "Notifications")).toBeTruthy();
+  });
+
+  it("puts focus on the setting's control with a mouse", () => {
+    withMouse();
+    open();
+    type("projects folder");
+    fireEvent.click(result("Projects folder", "General"));
+    const control = target("projects-dir")!.querySelector("input");
+    expect(control).toBeTruthy();
+    expect(document.activeElement).toBe(control);
+  });
+
+  it("leaves focus alone on a touch screen, so no keyboard opens", () => {
+    open();
+    type("projects folder");
+    fireEvent.click(result("Projects folder", "General"));
+    expect(target("projects-dir")?.hasAttribute("data-found")).toBe(true);
+    expect(target("projects-dir")!.contains(document.activeElement)).toBe(false);
+  });
+
+  it("lands every setting the index offers somewhere on screen", { timeout: 30_000 }, () => {
+    const projects = [
+      gitProject("p1", "alpha", ["/src/alpha"]),
+      gitProject("p2", "duo", ["/src/duo/web", "/src/duo/api"]),
+      project("p3", "plain"),
+    ];
+    const harnesses = [codex];
+    const index = settingsIndex({
+      projects,
+      harnesses,
+      hasElevenLabsKey: true,
+    });
+    const sectionName = (e: SettingEntry) =>
+      e.place.kind === "project"
+        ? projects.find((p) => e.place.kind === "project" && p.id === e.place.id)!.name
+        : e.place.kind[0].toUpperCase() + e.place.kind.slice(1);
+
+    open({ projects, harnesses, hasElevenLabsKey: true });
+    for (const e of index) {
+      for (const el of found()) el.removeAttribute("data-found");
+      type(e.label);
+      fireEvent.click(result(e.label, e.where));
+      expect(pane()?.getAttribute("aria-label"), e.anchor).toBe(sectionName(e));
+      expect(target(e.anchor)?.hasAttribute("data-found"), `${e.where}: ${e.anchor}`).toBe(true);
+    }
+  });
 });
