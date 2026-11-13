@@ -21,3 +21,12 @@ export function fmtPct(p: number): string {
   const v = Math.max(0, p);
   return v < 10 ? `${Math.round(v * 10) / 10}%` : `${Math.round(v)}%`;
 }
+
+/** How long ago, in the one unit a glance needs: `now` · `5m` · `3h` · `2d`. */
+export function fmtAgo(ms: number, now: number): string {
+  const s = Math.max(0, Math.floor((now - ms) / 1000));
+  if (s < 60) return "now";
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}

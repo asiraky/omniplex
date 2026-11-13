@@ -314,6 +314,134 @@ describe("Sidebar", () => {
     });
   });
 
+  describe("hover card", () => {
+    const card = () => document.querySelector("[data-slot=thread-hover-card]");
+    const row = (id: string) => screen.getByRole("button", { name: new RegExp(`^Thread ${id}`) });
+    const long = thread("a", {
+      attention: "needs_permission",
+      branch: "issue/369-thread-hover-card-in-the-sidebar-with-a-long-name",
+      cwd: "/home/me/code/repo/.worktrees/issue-369",
+      model: "claude-opus-5-5",
+    });
+
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    /** A mouse comes to rest on the row and stays past the delay. */
+    const rest = (el: Element) => {
+      fireEvent.pointerMove(el, { pointerType: "mouse" });
+      act(() => vi.advanceTimersByTime(600));
+    };
+
+    it("opens on a resting mouse with what the row has no room for", () => {
+      pointerDesktop();
+      renderSidebar({ threads: [long] });
+      fireEvent.pointerMove(row("a"), { pointerType: "mouse" });
+      // A pointer passing over the list opens nothing.
+      act(() => vi.advanceTimersByTime(300));
+      expect(card()).toBeNull();
+      act(() => vi.advanceTimersByTime(300));
+
+      const c = card()!;
+      expect(c.textContent).toContain("Waiting for permission");
+      expect(c.textContent).toContain(long.branch);
+      // The project names the group; the path tells its worktrees apart.
+      expect(c.textContent).toContain("repo");
+      expect(c.textContent).toContain(long.cwd);
+    });
+
+    it("waits out the delay on every row, even straight after another's tooltip", () => {
+      pointerDesktop();
+      renderSidebar({ threads: [long, thread("b")] });
+      rest(row("a"));
+      expect(card()).not.toBeNull();
+      fireEvent.pointerLeave(row("a"), { pointerType: "mouse" });
+      act(() => vi.advanceTimersByTime(50));
+
+      fireEvent.pointerMove(row("b"), { pointerType: "mouse" });
+      act(() => vi.advanceTimersByTime(100));
+      expect(card()?.textContent ?? "").not.toContain("Thread b");
+    });
+
+    it("closes when the row is pressed, and the row still opens", () => {
+      pointerDesktop();
+      const props = renderSidebar({ threads: [long] });
+      rest(row("a"));
+      expect(card()).not.toBeNull();
+
+      fireEvent.pointerDown(row("a"), { button: 0, pointerType: "mouse" });
+      fireEvent.click(row("a"));
+      expect(card()).toBeNull();
+      expect(props.onSelect).toHaveBeenCalledWith("a");
+    });
+
+    it("opens for nothing but a pointer on the row: focus alone does not", () => {
+      pointerDesktop();
+      renderSidebar({ threads: [long] });
+      // The window regaining focus, or a menu handing it back, with the
+      // pointer somewhere else.
+      fireEvent.focus(row("a"));
+      act(() => vi.advanceTimersByTime(600));
+      expect(card()).toBeNull();
+    });
+
+    it("says new only for a thread that is not the one on screen", () => {
+      pointerDesktop();
+      const unreadStop = { attention: "needs_prompt" as const, headSeq: 9, lastViewedSeq: 4 };
+      renderSidebar({ threads: [thread("a", unreadStop), thread("b", unreadStop)], activeId: "a" });
+      rest(row("a"));
+      expect(card()!.textContent).not.toContain("new since");
+      fireEvent.pointerLeave(row("a"), { pointerType: "mouse" });
+      rest(row("b"));
+      expect(card()!.textContent).toContain("new since");
+    });
+
+    it("calls a failed workspace failed, not new, as its row does", () => {
+      pointerDesktop();
+      renderSidebar({
+        threads: [thread("a", { attention: "failed", headSeq: 9, lastViewedSeq: 4 })],
+      });
+      rest(row("a"));
+      expect(card()!.textContent).not.toContain("new since");
+    });
+
+    it("never renders on a screen without hover", () => {
+      viewport("phone");
+      renderSidebar({ threads: [long] });
+      rest(row("a"));
+      expect(card()).toBeNull();
+    });
+
+    it("never renders in a window too narrow to dock the sidebar, mouse or not", () => {
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches: /hover: hover/.test(query),
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }));
+      renderSidebar({ threads: [long] });
+      rest(row("a"));
+      expect(card()).toBeNull();
+    });
+
+    it("previews nothing in reorder mode", async () => {
+      pointerDesktop();
+      renderSidebar({ threads: [long] });
+      fireEvent.pointerDown(screen.getByRole("button", { name: /^Filter threads/ }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      act(() => vi.advanceTimersByTime(50));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Reorder threads" }));
+      rest(row("a"));
+      expect(card()).toBeNull();
+    });
+  });
+
   it("starts a project from the header", () => {
     const props = renderSidebar({ activeId: null });
     fireEvent.click(screen.getByRole("button", { name: "New project" }));

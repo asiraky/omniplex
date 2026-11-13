@@ -3,14 +3,14 @@ import { useEffect, useState } from "react";
 // Tailwind's `md` breakpoint. Layout is CSS-driven wherever possible, but a
 // few decisions genuinely need JS — whether the sidebar starts open, whether
 // to advertise a keyboard shortcut — and those must agree with the CSS.
-const DESKTOP = "(min-width: 768px)";
+export const DESKTOP = "(min-width: 768px)";
 // A pointer that cannot hover. Not the same question as screen size: a tablet
 // is wide and touch-only, a small window on a laptop is narrow and has a mouse.
 const COARSE = "(pointer: coarse)";
 // A mouse or trackpad: the device most likely to have a keyboard beside it,
 // so the one that gets shortcut hints. An iPad with a Magic Keyboard still
 // reports coarse; it loses the hints, not the shortcuts.
-const CAN_HOVER = "(hover: hover) and (pointer: fine)";
+export const CAN_HOVER = "(hover: hover) and (pointer: fine)";
 
 // Room for the transcript and a docked side panel both: below this the panel
 // is a full-screen sheet. A phone on its side clears `md` but not this.
