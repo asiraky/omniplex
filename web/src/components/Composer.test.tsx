@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { createRef } from "react";
+import { createRef, useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { stubExecCommand } from "~/test/execCommand";
 import { render, wrap } from "~/test/harness";
 import { Composer, type ComposerHandle } from "./Composer";
 import type { Attachment } from "~/lib/attachments";
@@ -548,6 +549,107 @@ describe("the command catalogue", () => {
     await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith(""));
     expect(onRunComposerAction).toHaveBeenCalledWith("compact", "now", "/compact now");
     expect(onSend).not.toHaveBeenCalled();
+  });
+});
+
+// Picks are typed in through execCommand so the browser can undo them.
+describe("typing a pick in where undo can take it back", () => {
+  const review = {
+    id: "skill:review",
+    name: "review",
+    kind: "skill" as const,
+    trigger: "/",
+    insertText: "/review",
+    origin: "project" as const,
+    behavior: "prompt" as const,
+  };
+  const exec = stubExecCommand();
+
+  // The draft has to follow onDraftChange, as it does in the app: a fixed
+  // draft prop would have React put the old value straight back.
+  function renderControlled(initial: string, over: Partial<React.ComponentProps<typeof Composer>> = {}) {
+    const onDraftChange = vi.fn();
+    const ref = createRef<ComposerHandle>();
+    function Host() {
+      const [draft, setDraft] = useState(initial);
+      return (
+        <Composer
+          ref={ref}
+          draft={draft}
+          onDraftChange={(next) => {
+            onDraftChange(next);
+            setDraft(next);
+          }}
+          disabled={false}
+          busy={false}
+          onSend={vi.fn()}
+          onCancel={vi.fn()}
+          catalogue={catalogue({ items: [compact, review] })}
+          {...over}
+        />
+      );
+    }
+    render(<Host />);
+    return { onDraftChange, ref };
+  }
+
+  it("types a picked command over the slash token", async () => {
+    const edit = exec.editing();
+    const { onDraftChange } = renderControlled("/rev");
+    fireEvent.focus(box());
+    fireEvent.click(await screen.findByText("/review"));
+
+    expect(edit).toHaveBeenCalledWith("insertText", false, "/review ");
+    expect(onDraftChange.mock.calls).toEqual([["/review "]]);
+    expect(box()).toHaveProperty("value", "/review ");
+  });
+
+  it("writes the pick into the draft when the browser cannot type it", async () => {
+    exec.absent();
+    const { onDraftChange } = renderControlled("/rev");
+    fireEvent.focus(box());
+    fireEvent.click(await screen.findByText("/review"));
+
+    expect(onDraftChange.mock.calls).toEqual([["/review "]]);
+  });
+
+  it("clears an adapter command that finishes after the textarea was left, without taking focus back", async () => {
+    const edit = exec.editing();
+    let finish = () => {};
+    const onRunComposerAction = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+    const { onDraftChange } = renderControlled("/comp", { onRunComposerAction });
+    fireEvent.focus(box());
+    fireEvent.click(await screen.findByText("/compact"));
+
+    const elsewhere = screen.getByRole("button", { name: "Send" });
+    elsewhere.focus();
+    await act(async () => finish());
+
+    expect(onDraftChange).toHaveBeenCalledWith("");
+    expect(edit).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  it("types at the end of the draft through the handle", () => {
+    const edit = exec.editing();
+    const { onDraftChange, ref } = renderControlled("fix the bug");
+
+    let typed = false;
+    act(() => {
+      typed = ref.current!.typeAtEnd(" /review ");
+    });
+
+    expect(typed).toBe(true);
+    expect(edit).toHaveBeenCalledWith("insertText", false, " /review ");
+    expect(onDraftChange.mock.calls).toEqual([["fix the bug /review "]]);
+  });
+
+  it("leaves the draft to the caller when the handle cannot type", () => {
+    exec.absent();
+    const { onDraftChange, ref } = renderControlled("fix the bug");
+
+    expect(ref.current!.typeAtEnd(" /review ")).toBe(false);
+    expect(onDraftChange).not.toHaveBeenCalled();
   });
 });
 
