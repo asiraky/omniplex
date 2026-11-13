@@ -75,11 +75,21 @@ export function navigate(path: string, { draft = false, replace = false } = {}) 
   // over here rather than unwound.
   live.length = 0;
   closed.clear();
-  whenLanded(() => {
+  const write = () => {
     const takeOver = depthOf() > 0 || isDraftEntry();
     const state = draft ? { [DRAFT]: true } : null;
     if (replace || takeOver) window.history.replaceState(state, "", path);
     else window.history.pushState(state, "", path);
+  };
+  whenLanded(() => {
+    // From a sheet opened over another (the palette over the phone's sidebar),
+    // only the bottom sheet's entry is taken over: the ones above it would be
+    // dead steps behind the new place.
+    const depth = depthOf();
+    if (depth <= 1) return write();
+    landing = 1;
+    afterLanding.push(write);
+    window.history.go(1 - depth);
   });
 }
 
@@ -137,13 +147,14 @@ function unwind() {
   }
 }
 
+const moves = new Set<() => void>();
+
 function onPopState(e: PopStateEvent) {
   if (landing !== null) {
     // The unwind arriving. Every sheet above it closed already; one open
     // since sits above it too but has no entry yet, so nothing closes here.
-    // Nor is it the user going anywhere, so the app's own listeners, which
-    // would read the URL a waiting navigate has yet to write, never see it.
-    e.stopImmediatePropagation();
+    // Nor is it the user going anywhere, so onMove's listeners, which would
+    // read the URL a waiting navigate has yet to write, never hear it.
     landing = null;
     // A queued unwind may set off another go; what is left waits for that.
     while (landing === null && afterLanding.length) afterLanding.shift()!();
@@ -156,14 +167,23 @@ function onPopState(e: PopStateEvent) {
     live.splice(i, 1);
     layer.close();
   }
+  for (const fn of moves) fn();
 }
 
 function listen() {
   if (listening) return;
   listening = true;
-  // Capturing, so it runs before the app's listeners and can hide an unwind
-  // from them.
-  window.addEventListener("popstate", onPopState, { capture: true });
+  window.addEventListener("popstate", onPopState);
+}
+
+/**
+ * Back or Forward, after any sheet it closed has closed. Unlike popstate,
+ * which a sheet's own unwinding fires too, this hears only the user moving.
+ */
+export function onMove(fn: () => void): () => void {
+  listen();
+  moves.add(fn);
+  return () => moves.delete(fn);
 }
 
 /**

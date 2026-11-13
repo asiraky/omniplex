@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { SettingsSection } from "~/components/SettingsScreen";
-import { useBackDismiss } from "~/lib/history";
+import { onMove, useBackDismiss } from "~/lib/history";
 import type { ToolsTab } from "~/lib/toolsTab";
 
 export const SETUP_PATH = "/setup";
@@ -45,9 +45,7 @@ export function useScreens() {
   // desktop app opens it by URL.
   const [setup, setSetup] = useState(() => window.location.pathname === SETUP_PATH);
   useEffect(() => {
-    const onPop = () => setSetup(window.location.pathname === SETUP_PATH);
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
+    return onMove(() => setSetup(window.location.pathname === SETUP_PATH));
   }, []);
   // Replaces rather than pushes: leaving setup is moving on, and Back landing
   // on it again would be a step backwards.

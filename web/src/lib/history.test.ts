@@ -4,7 +4,7 @@ import { createElement, StrictMode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { viewport } from "~/test/harness";
-import { isDraftEntry, navigate, useBackDismiss } from "./history";
+import { isDraftEntry, navigate, onMove, useBackDismiss } from "./history";
 
 // jsdom delivers popstate a task after history.go, as a browser does, and
 // under a loaded test run that task can come late: so a Back waits for its
@@ -177,14 +177,35 @@ describe("navigate", () => {
     expect(layerDepth()).toBe(0);
   });
 
-  it("waits for a sheet's unwind, which the app never hears", async () => {
+  it("from nested sheets, leaves no dead step behind the new thread", async () => {
     navigate("/thread/a");
-    const a = sheet();
-    mount(a);
+    const lower = sheet();
+    const upper = sheet();
+    mount(lower, upper);
+    expect(layerDepth()).toBe(2);
+
+    act(() => {
+      navigate("/", { draft: true });
+      lower.set(false);
+      upper.set(false);
+    });
+    await waitFor(() => expect(isDraftEntry()).toBe(true));
+    await settle();
+    expect(layerDepth()).toBe(0);
+
+    await back();
+    expect(window.location.pathname).toBe("/thread/a");
+    expect(layerDepth()).toBe(0);
+  });
+
+  it("waits for a sheet's unwind, which the app never hears", async () => {
+    // Listening from before any sheet opens, as the app does from mount.
     const heard: string[] = [];
-    const onPop = () => heard.push(window.location.pathname);
-    window.addEventListener("popstate", onPop);
+    const stop = onMove(() => heard.push(window.location.pathname));
     try {
+      navigate("/thread/a");
+      const a = sheet();
+      mount(a);
       act(() => a.set(false));
       await act(async () => {}); // the unwind is in flight
       navigate("/thread/b");
@@ -196,7 +217,7 @@ describe("navigate", () => {
       expect(window.location.pathname).toBe("/thread/a");
       expect(heard).toEqual(["/thread/a"]);
     } finally {
-      window.removeEventListener("popstate", onPop);
+      stop();
     }
   });
 

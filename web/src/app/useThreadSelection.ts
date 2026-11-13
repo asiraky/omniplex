@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { WorkspaceKind } from "~/components/threadDraft/shared";
-import { isDraftEntry, navigate } from "~/lib/history";
+import { isDraftEntry, navigate, onMove } from "~/lib/history";
 import { openThreadMessage, threadIdFromPath, threadPath } from "~/lib/threadLinks";
 import type { ThreadMeta } from "~/protocol";
 import { useLatest } from "~/useLatest";
@@ -310,8 +310,7 @@ export function useThreadSelection({
       }
       goHome();
     };
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
+    return onMove(onPop);
   }, [activeRef, creatingRef, dropResume, latest]);
 
   // The list caught up with a held link. The restore effect above runs first
