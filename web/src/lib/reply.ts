@@ -46,9 +46,18 @@ function between(prev: Element, next: Element | null): string {
   return prev.closest("li") && next?.closest("li") ? "\n" : "\n\n";
 }
 
+/** A list item's bullet or number, as it starts: not again for its second paragraph. */
+function marker(next: Element | null, prev: Element | null): string {
+  const item = next?.closest("li");
+  if (!item || item === prev?.closest("li")) return "";
+  if (item.parentElement?.tagName !== "OL") return "- ";
+  const start = Number(item.parentElement.getAttribute("start") ?? 1);
+  return `${start + Array.prototype.indexOf.call(item.parentElement.children, item)}. `;
+}
+
 /**
  * A selection in a rendered reply, as the text to quote: each paragraph, list
- * item and table row on its own line, paragraphs a blank line apart, and a
+ * item (bulleted or numbered) and table row on its own line, paragraphs a blank line apart, and a
  * code block fenced so it stays code. `Range.toString` would run them all into
  * one line.
  */
@@ -75,6 +84,7 @@ export function renderedText(range: Range): string {
       if (block && out) out += between(block, here);
       else if (out) out += "\n\n";
       if (here?.tagName === "PRE") out += `${FENCE}\n`;
+      out += marker(here, block);
       block = here;
     }
     out += text;

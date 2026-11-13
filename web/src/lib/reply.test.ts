@@ -56,7 +56,16 @@ describe("renderedText", () => {
       "alpha",
       "v2",
     );
-    expect(renderedText(r)).toBe("alpha\nbeta\n\nk | v\nk2 | v2");
+    expect(renderedText(r)).toBe("- alpha\n- beta\n\nk | v\nk2 | v2");
+  });
+
+  it("numbers an ordered list's items from where it starts, once per item", () => {
+    const r = selection(
+      '<div><ol start="3">\n<li><p>three</p>\n<p>more of three</p></li>\n<li>four</li>\n</ol></div>',
+      "three",
+      "four",
+    );
+    expect(renderedText(r)).toBe("3. three\nmore of three\n4. four");
   });
 
   it("fences a code block and leaves its header out", () => {
