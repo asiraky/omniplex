@@ -2114,6 +2114,121 @@ describe("sending while files upload", () => {
   });
 });
 
+describe("send and start a new thread", () => {
+  const ready = { state: "ready" } as const;
+  const claude = {
+    ...harness,
+    instances: [
+      {
+        ...harness.instances[0],
+        models: [
+          { id: "claude-basic", label: "Basic", default: true },
+          { id: "claude-advanced", label: "Advanced" },
+        ],
+        availability: ready,
+      },
+    ],
+  };
+  const boot = async (kind: "phone" | "desktop" = "desktop") => {
+    viewport(kind);
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([claude]);
+      events.onThreads([thread("a")]);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Thread a"));
+      events.onState("a", { ...state("a", "default"), model: "claude-advanced" });
+    });
+  };
+  const composer = () => screen.getByLabelText("Message") as HTMLTextAreaElement;
+  const type = (text: string) =>
+    act(async () => {
+      fireEvent.change(composer(), { target: { value: text } });
+    });
+  // The chord is the composer's only while it has the cursor.
+  const sendAndNew = () =>
+    act(async () => {
+      composer().focus();
+      fireEvent.keyDown(composer(), { key: "Enter", ctrlKey: true, shiftKey: true });
+    });
+  const picker = () => screen.getByRole("combobox", { name: "Harness and model" });
+
+  let uploads: { resolve: (v: unknown) => void }[];
+  beforeEach(() => {
+    uploads = [];
+    uploadStaged.mockReset();
+    uploadStaged.mockImplementation(() => new Promise((resolve) => uploads.push({ resolve })));
+    command.mockReset();
+    command.mockImplementation(async () => ({}) as any);
+  });
+
+  it("sends to the thread, then opens a draft on its model with the cursor in it", async () => {
+    await boot();
+    await type("first task");
+    await sendAndNew();
+
+    expect(promptsSent().map(([, args]) => args)).toEqual([{ threadId: "a", text: "first task" }]);
+    expect(detach).toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/");
+    expect(composer().value).toBe("");
+    expect(picker().textContent).toContain("Advanced");
+    await waitFor(() => expect(document.activeElement).toBe(composer()));
+  });
+
+  it("leaves the keyboard down on a phone", async () => {
+    await boot("phone");
+    await type("first task");
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More send options" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^Send and start a new thread/ }));
+
+    expect(promptsSent()).toHaveLength(1);
+    await waitFor(() => expect(picker().textContent).toContain("Advanced"));
+    expect(document.activeElement).not.toBe(composer());
+  });
+
+  it("puts a message that failed after leaving back in its thread", async () => {
+    command.mockImplementation(async (name: string) => {
+      if (name === "prompt") throw new Error("thread is busy");
+      return {} as any;
+    });
+    await boot();
+    await type("first task");
+    await sendAndNew();
+    expect(detach).toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Thread a"));
+      events.onState("a", state("a", "default"));
+    });
+
+    expect(composer().value).toBe("first task");
+    expect(screen.getByText(/thread is busy/)).toBeTruthy();
+  });
+
+  it("still sends a message waiting on its file once the file is up", async () => {
+    await boot();
+    await act(async () => {
+      fireEvent.change(document.querySelector('input[type="file"]')!, {
+        target: { files: [new File(["numbers"], "report.txt", { type: "text/plain" })] },
+      });
+    });
+    await type("read this");
+    await sendAndNew();
+    expect(promptsSent()).toHaveLength(0);
+
+    await act(async () => {
+      uploads[0]!.resolve({ kind: "file", status: "ready", artefactId: "art-1", progress: 1 });
+    });
+    expect(promptsSent().map(([, args]) => args)).toEqual([
+      expect.objectContaining({ threadId: "a", text: "read this" }),
+    ]);
+  });
+});
+
 describe("the setup page", () => {
   const setupReport = {
     platform: "darwin",

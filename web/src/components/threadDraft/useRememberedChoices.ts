@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 
-import { loadThreadPrefs, saveThreadPrefs, type HarnessPrefs } from "~/lib/threadPrefs";
+import {
+  loadThreadPrefs,
+  saveThreadPrefs,
+  type HarnessPrefs,
+  type ThreadPrefs,
+} from "~/lib/threadPrefs";
 
 const NO_PREFS: HarnessPrefs = {
   instance: "",
@@ -11,12 +16,24 @@ const NO_PREFS: HarnessPrefs = {
   fast: false,
 };
 
+/** Choices to open on in one project, over what it last used. */
+export interface ChoiceSeed {
+  projectId: string;
+  harness: string;
+  /** Its mode stands in only for a harness with nothing saved: the
+      permissions remembered are the person's, not what a thread ran. */
+  prefs: HarnessPrefs;
+}
+
 /**
  * The choices this browser made per project: which harness, and per harness
  * the model, mode and effort. Saved as they are picked, not on thread start.
+ *
+ * A seed is laid over what was read, as if it had been read: opening on it
+ * writes nothing, and a pick saves on top of it.
  */
-export function useRememberedChoices() {
-  const [loaded] = useState(loadThreadPrefs);
+export function useRememberedChoices(seed?: ChoiceSeed) {
+  const [loaded] = useState(() => withSeed(loadThreadPrefs(), seed));
   const [preferences, setPreferences] = useState(loaded);
 
   // Written after the pick lands rather than inside the updater, which React
@@ -64,3 +81,18 @@ export function useRememberedChoices() {
 }
 
 export type RememberedChoices = ReturnType<typeof useRememberedChoices>;
+
+function withSeed(saved: ThreadPrefs, seed: ChoiceSeed | undefined): ThreadPrefs {
+  if (!seed) return saved;
+  const { projectId, harness, prefs } = seed;
+  const project = saved[projectId];
+  const mode = project?.byHarness[harness]?.mode ?? prefs.mode;
+  return {
+    ...saved,
+    [projectId]: {
+      ...project,
+      harness,
+      byHarness: { ...project?.byHarness, [harness]: { ...prefs, mode } },
+    },
+  };
+}

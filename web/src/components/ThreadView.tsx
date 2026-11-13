@@ -11,6 +11,7 @@ import type { RecentSkills } from "~/app/useRecentSkills";
 import type { ScheduleEditor } from "~/app/useScheduleEditor";
 import type { ThreadCommands } from "~/app/useThreadCommands";
 import type { ThreadHarness } from "~/app/useThreadHarness";
+import type { DraftPreset } from "~/app/useThreadSelection";
 import type { ConnectionStatus } from "~/client";
 import type { ScrollPosition } from "~/components/transcript/scrollAnchor";
 import type { CardSignIn } from "~/lib/cards";
@@ -85,6 +86,7 @@ export function ThreadView({
   readAloud,
   status,
   turnStatus,
+  onSendAndNewThread,
 }: {
   activeId: string | null;
   meta: ThreadMeta | undefined;
@@ -110,6 +112,8 @@ export function ThreadView({
   status: ConnectionStatus;
   /** Why the running turn has gone quiet, while the harness says so. */
   turnStatus: TurnStatus | null;
+  /** A message just went: open a new draft on this thread's project and agent. */
+  onSendAndNewThread?: (preset: DraftPreset) => void;
 }) {
   const { layoutRef, overlayRef } = useOverlayHeight(activeId);
   const stateTitle = useThread(useThreadStore(), titleOf);
@@ -282,6 +286,7 @@ export function ThreadView({
           schedule={schedule}
           store={store}
           dictate={readAloud}
+          onSendAndNewThread={onSendAndNewThread}
         />
       </div>
     </div>
@@ -327,6 +332,7 @@ function ComposerDock({
   schedule,
   store,
   dictate,
+  onSendAndNewThread,
 }: {
   activeId: string | null;
   meta: ThreadMeta | undefined;
@@ -338,6 +344,7 @@ function ComposerDock({
   schedule: ScheduleEditor;
   store: ComposerDrafts;
   dictate: boolean;
+  onSendAndNewThread?: (preset: DraftPreset) => void;
 }) {
   const state = useThread(useThreadStore(), dockFields, shallow);
   // Paired with the state's own thread id, not activeId: for a render after a
@@ -432,6 +439,7 @@ function ComposerDock({
         store={store}
         workspace={workspace}
         dictate={dictate}
+        onSendAndNewThread={onSendAndNewThread}
       />
     </>
   );
@@ -452,6 +460,7 @@ function ThreadComposer({
   store,
   workspace,
   dictate,
+  onSendAndNewThread,
 }: {
   activeId: string | null;
   meta: ThreadMeta | undefined;
@@ -463,6 +472,7 @@ function ThreadComposer({
   store: ComposerDrafts;
   workspace: ReturnType<typeof workspaceStatus>;
   dictate: boolean;
+  onSendAndNewThread?: (preset: DraftPreset) => void;
 }) {
   const catalogue = useComposerItems(commands.loadComposerItems);
   // Subscribed here rather than read from the app, so a keystroke rerenders
@@ -501,6 +511,22 @@ function ThreadComposer({
       busy={state.phase === "turn"}
       steers={harnessSteers(harnesses, state.harness)}
       onSend={commands.send}
+      // The next thread takes this one's project and agent, as it is running
+      // now rather than as it started.
+      onSendAndNewThread={
+        onSendAndNewThread &&
+        (() =>
+          onSendAndNewThread({
+            projectId: meta?.projectId,
+            agent: {
+              harness: state.harness,
+              instance: meta?.providerInstance ?? "",
+              model: state.model,
+              effort: state.effort,
+              serviceTier: state.serviceTier,
+            },
+          }))
+      }
       onSchedule={() => activeId && schedule.openFromComposer(activeId)}
       onCancel={commands.cancel}
       attachments={activeId ? (store.attachments[activeId] ?? []) : []}

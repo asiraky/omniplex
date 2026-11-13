@@ -19,6 +19,12 @@ export interface DraftPreset {
   kind?: WorkspaceKind;
   /** With kind "attach": the existing worktree's path. */
   attachPath?: string;
+  /**
+   * The agent of the thread being left, as it was running: send-and-new-thread
+   * opens the next one on it rather than on what the project last remembered.
+   * Applies only in `projectId`.
+   */
+  agent?: { harness: string; instance: string; model: string; effort: string; serviceTier: string };
   /** Put the cursor in the draft's composer as it opens. */
   focus?: boolean;
 }

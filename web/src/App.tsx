@@ -410,6 +410,8 @@ export function App() {
               readAloud={wire.hasElevenLabsKey}
               status={wire.status}
               turnStatus={wire.turnStatus}
+              // Not on a phone: the cursor there would raise the keyboard over the new draft.
+              onSendAndNewThread={(preset) => startNew({ ...preset, focus: isDesktop })}
             />
           ) : nav.creating ? (
             <ThreadDraft
