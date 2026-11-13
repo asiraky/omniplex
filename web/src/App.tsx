@@ -4,6 +4,7 @@ import { NEW_THREAD } from "./app/threadKeys";
 import { ThreadStoreContext, useThread } from "./app/threadStore";
 import { useActivePR } from "./app/useActivePR";
 import { useAppKeybindings } from "./app/useAppKeybindings";
+import { useBackgroundAlerts } from "./app/useBackgroundAlerts";
 import { useComposerDrafts } from "./app/useComposerDrafts";
 import { useNewThread } from "./app/useNewThread";
 import { usePalette } from "./app/usePalette";
@@ -130,6 +131,13 @@ export function App() {
     screens.leaveAll();
     select(id);
   };
+  useBackgroundAlerts({
+    threads: wire.threads,
+    loaded: wire.threadsLoaded,
+    activeId,
+    covered: screens.covering || nav.covering,
+    open: openThread,
+  });
   const startNew = (preset?: DraftPreset) => {
     screens.leaveAll();
     nav.startNew(preset);
