@@ -6,7 +6,7 @@ import { HarnessBadge } from "~/components/HarnessBadge";
 import { fmtAgo } from "~/lib/format";
 import { cn } from "~/lib/utils";
 import type { ThreadMeta } from "~/protocol";
-import { attentionLabel, unread } from "~/threadStatus";
+import { attentionLabel } from "~/threadStatus";
 import { CAN_HOVER, DESKTOP } from "~/useMediaQuery";
 import { useNow } from "~/useNow";
 
@@ -15,8 +15,8 @@ const OPEN_DELAY_MS = 500;
 
 type CardProps = {
   s: ThreadMeta;
-  /** The thread on screen: it is being read, so it is never "new". */
-  active: boolean;
+  /** The row's own `new` badge: the card says it in words, never on its own reckoning. */
+  isNew: boolean;
   projectName: (id?: string) => string | undefined;
   accentOf: (harness: string) => string | undefined;
 };
@@ -45,14 +45,11 @@ function Line({ icon, children }: { icon: ReactNode; children: ReactNode }) {
  * The card itself. Everything on it is already in the sidebar's summary of
  * the thread: hovering never asks the server for anything.
  */
-function Card({ s, active, projectName, accentOf }: CardProps) {
+function Card({ s, isNew, projectName, accentOf }: CardProps) {
   const now = useNow();
   const status = attentionLabel(s);
   const project = projectName(s.projectId);
   const ago = fmtAgo(s.updatedAt, now);
-  // The row's own badge rule: a running thread is always unread, and the
-  // thread on screen is the one being read.
-  const fresh = !active && unread(s) && status?.tone !== "busy";
   return (
     <div className="flex flex-col gap-2">
       <div className="text-[13px] leading-snug font-medium [overflow-wrap:anywhere]">
@@ -71,7 +68,7 @@ function Card({ s, active, projectName, accentOf }: CardProps) {
             )}
           />
           <span>{status.label}</span>
-          {fresh && <span className="text-muted-foreground">· new since you last looked</span>}
+          {isNew && <span className="text-muted-foreground">· new since you last looked</span>}
         </div>
       )}
       <div className="text-muted-foreground grid gap-1 font-mono text-[11px]">

@@ -396,6 +396,15 @@ describe("Sidebar", () => {
       expect(card()!.textContent).toContain("new since");
     });
 
+    it("calls a failed workspace failed, not new, as its row does", () => {
+      pointerDesktop();
+      renderSidebar({
+        threads: [thread("a", { attention: "failed", headSeq: 9, lastViewedSeq: 4 })],
+      });
+      rest(row("a"));
+      expect(card()!.textContent).not.toContain("new since");
+    });
+
     it("never renders on a screen without hover", () => {
       viewport("phone");
       renderSidebar({ threads: [long] });

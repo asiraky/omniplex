@@ -481,7 +481,7 @@ export const ThreadRow = memo(function ThreadRow({
                     mode the row is something to move, so it previews nothing. */}
                 <ThreadHoverCard
                   s={s}
-                  active={active}
+                  isNew={badge === "new"}
                   projectName={projectName}
                   accentOf={accentOf}
                   disabled={reordering}
