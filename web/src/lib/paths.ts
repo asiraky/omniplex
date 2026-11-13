@@ -167,3 +167,42 @@ export function detectPath(raw: string): DetectedPath | null {
   }
   return null;
 }
+
+/**
+ * `path` as a shell sitting in directory `dir` means it: absolute, with `.` and
+ * `..` worked out, and `..` at the root staying there as it does in a shell. An
+ * absolute `path` ignores `dir`. A trailing slash, which marks a directory, is
+ * kept. `dir` must be absolute; a `:line` anchor is the caller's to split off.
+ */
+export function resolvePath(path: string, dir: string): string {
+  const parts: string[] = [];
+  for (const segment of (path.startsWith("/") ? path : `${dir}/${path}`).split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") parts.pop();
+    else parts.push(segment);
+  }
+  const out = "/" + parts.join("/");
+  return parts.length > 0 && path.endsWith("/") ? out + "/" : out;
+}
+
+/**
+ * `path` relative to the checkout, or null when it points somewhere the server
+ * will not serve: the home directory, above the checkout, or an absolute path
+ * outside it. `checkout` is the checkout's absolute path. A relative `path` is
+ * taken to be relative to the checkout already. The checkout itself comes
+ * back as "".
+ */
+export function pathInCheckout(path: string, checkout: string): string | null {
+  if (path.startsWith("~")) return null;
+  let rel = path;
+  if (path.startsWith("/")) {
+    const root = checkout.replace(/\/+$/, "") + "/";
+    if (!checkout || !(path + "/").startsWith(root)) return null;
+    rel = path.slice(root.length);
+  }
+  // A trailing slash is how `git status` marks a directory; the panel's
+  // routing matches directories by bare path, so it goes.
+  rel = rel.replace(/^(?:\.\/)+/, "").replace(/^\.$/, "").replace(/\/+$/, "");
+  if (rel === ".." || rel.startsWith("../") || rel.includes("/../")) return null;
+  return rel;
+}

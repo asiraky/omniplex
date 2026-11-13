@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { detectPath } from "./paths";
+import { detectPath, pathInCheckout, resolvePath } from "./paths";
 
 describe("detectPath", () => {
   it("accepts slashed paths", () => {
@@ -137,5 +137,76 @@ describe("detectPath", () => {
   it("does not treat a dotted hostname segment as an extension", () => {
     expect(detectPath("github.com/asiraky/omniplex")).toBeNull();
     expect(detectPath("api.example.com/system/init")).toBeNull();
+  });
+});
+
+describe("pathInCheckout", () => {
+  const checkout = "/work/repo";
+
+  it("passes paths in the checkout, without a leading ./", () => {
+    expect(pathInCheckout("src/a.ts", checkout)).toBe("src/a.ts");
+    expect(pathInCheckout("./src/a.ts", checkout)).toBe("src/a.ts");
+    expect(pathInCheckout("/work/repo/src/a.ts", checkout)).toBe("src/a.ts");
+    expect(pathInCheckout("/work/repo/src/a.ts", "/work/repo/")).toBe("src/a.ts");
+  });
+
+  it("refuses home, parent and outside absolute paths", () => {
+    expect(pathInCheckout("~/notes.md", checkout)).toBeNull();
+    expect(pathInCheckout("../other/a.ts", checkout)).toBeNull();
+    expect(pathInCheckout("src/../../a.ts", checkout)).toBeNull();
+    expect(pathInCheckout("/etc/hosts", checkout)).toBeNull();
+    expect(pathInCheckout("/work/repo/../x/a.ts", checkout)).toBeNull();
+    // A sibling whose name starts with the checkout's is still outside it.
+    expect(pathInCheckout("/work/repo-old/a.ts", checkout)).toBeNull();
+  });
+
+  it("drops a directory's trailing slash, as git status prints it", () => {
+    expect(pathInCheckout("web/", checkout)).toBe("web");
+    expect(pathInCheckout("/work/repo/web/src/", checkout)).toBe("web/src");
+  });
+
+  it("gives the checkout itself as the empty path", () => {
+    expect(pathInCheckout("/work/repo", checkout)).toBe("");
+    expect(pathInCheckout("/work/repo/", checkout)).toBe("");
+    expect(pathInCheckout(".", checkout)).toBe("");
+  });
+
+  it("refuses an absolute path when the checkout is not known", () => {
+    expect(pathInCheckout("/work/repo/a.ts", "")).toBeNull();
+  });
+});
+
+describe("resolvePath", () => {
+  it("joins a relative path onto the directory", () => {
+    expect(resolvePath("src/x.ts", "/r/web")).toBe("/r/web/src/x.ts");
+    expect(resolvePath("src/x.ts", "/r/web/")).toBe("/r/web/src/x.ts");
+  });
+
+  it("works out . and ..", () => {
+    expect(resolvePath("./a.ts", "/r/web")).toBe("/r/web/a.ts");
+    expect(resolvePath("../a.ts", "/r/web")).toBe("/r/a.ts");
+    expect(resolvePath("src/../../lib/./a.ts", "/r/web")).toBe("/r/lib/a.ts");
+    expect(resolvePath("..", "/r/web")).toBe("/r");
+    expect(resolvePath(".", "/r/web")).toBe("/r/web");
+  });
+
+  it("stays at the root when .. climbs past it", () => {
+    expect(resolvePath("../../../a.ts", "/r")).toBe("/a.ts");
+    expect(resolvePath("..", "/")).toBe("/");
+  });
+
+  it("keeps a directory's trailing slash", () => {
+    expect(resolvePath("web/", "/r")).toBe("/r/web/");
+    expect(resolvePath("./", "/r")).toBe("/r/");
+  });
+
+  it("takes an absolute path as it is, tidied", () => {
+    expect(resolvePath("/etc/hosts", "/r/web")).toBe("/etc/hosts");
+    expect(resolvePath("/r//web/./../a.ts", "/x")).toBe("/r/a.ts");
+  });
+
+  it("lands a parent-relative path inside the checkout when the shell is below its root", () => {
+    // The shell in /r/web prints ../go.mod: the checkout's own file.
+    expect(pathInCheckout(resolvePath("../go.mod", "/r/web"), "/r")).toBe("go.mod");
   });
 });

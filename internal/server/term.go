@@ -38,16 +38,21 @@ import (
 // since is the stream offset the client already holds.
 //
 // Wire format: the client sends text frames of JSON — {"type":"input","data"}
-// to type, {"type":"resize","cols","rows"} on layout change. The server first
-// sends {"type":"sync","offset":N}, N being the stream offset of the next
-// binary byte, then the pty's raw output as binary frames. It sends another
-// sync when the client has fallen so far behind that output was overwritten,
-// which is the client's cue that the screen has a gap. Close 4000 "exited"
-// means the process ended and its output was fully sent; 4404 "no such
-// terminal" answers an attach=1 for an id the server no longer has, and ends
-// a socket whose terminal was closed or revoked; 4400
-// "could not start" means a new terminal failed to spawn (no such thread, no
-// checkout, no pty) and retrying will not help.
+// to type, {"type":"resize","cols","rows"} on layout change, {"type":"cwd"} to
+// ask where the shell is now. The server first sends {"type":"sync","offset":N},
+// N being the stream offset of the next binary byte, then the pty's raw output
+// as binary frames. It sends another sync when the client has fallen so far
+// behind that output was overwritten, which is the client's cue that the
+// screen has a gap. It answers a cwd with {"type":"cwd","data":"<absolute
+// path>","root":"<absolute path>"}: data is where the shell is now, "" when it
+// cannot tell, and root is where it started, which for a thread is the
+// checkout root the panel's paths are relative to. A path the shell printed
+// after a cd resolves against data, and opens as a path under root. Close 4000
+// "exited" means the process ended and its output was fully sent; 4404 "no
+// such terminal" answers an attach=1 for an id the server no longer has, and
+// ends a socket whose terminal was closed or revoked; 4400 "could not start"
+// means a new terminal failed to spawn (no such thread, no checkout, no pty)
+// and retrying will not help.
 //
 // DELETE /api/term?id=<id> kills the terminal: closing a tab is an explicit
 // end, not a drop to wait out.
@@ -68,6 +73,12 @@ type termClientFrame struct {
 type termSyncFrame struct {
 	Type   string `json:"type"`
 	Offset int64  `json:"offset"`
+}
+
+type termCwdFrame struct {
+	Type string `json:"type"`
+	Data string `json:"data"`
+	Root string `json:"root"`
 }
 
 // validTermID keeps the id something that is safe to log and key on.
@@ -231,6 +242,16 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 		case "resize":
 			if f.Cols > 0 && f.Rows > 0 {
 				_ = pty.Setsize(sess.tty, &pty.Winsize{Cols: f.Cols, Rows: f.Rows})
+			}
+		case "cwd":
+			// Written from here while termStream writes too; the library
+			// serialises whole messages, so a reply cannot split a frame.
+			frame, _ := json.Marshal(termCwdFrame{Type: "cwd", Data: sess.cwd(ctx), Root: sess.cmd.Dir})
+			wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)
+			err := ws.Write(wctx, websocket.MessageText, frame)
+			wcancel()
+			if err != nil {
+				return
 			}
 		}
 	}

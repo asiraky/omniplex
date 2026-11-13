@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -93,6 +94,18 @@ func (sess *termSession) isKilled() bool {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	return sess.killed
+}
+
+// cwd is the shell's working directory now, "" once it has ended: its pid may
+// already belong to something else.
+func (sess *termSession) cwd(ctx context.Context) string {
+	sess.mu.Lock()
+	ended := sess.ended
+	sess.mu.Unlock()
+	if ended {
+		return ""
+	}
+	return processCwd(ctx, sess.cmd.Process.Pid)
 }
 
 // termAttach finds the device's terminal by id and counts a new attachment on

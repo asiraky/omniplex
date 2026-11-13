@@ -3,9 +3,15 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
 
+import type { OpenPath } from "~/lib/openPath";
+import { bufferRows, lastTerminalLines, quoteTerminalOutput } from "~/lib/terminalQuote";
 import { openTermSocket, type TermEnd, type TermSocket, type TermStatus, type TerminalTarget } from "~/lib/termSocket";
+import { toast } from "~/lib/toast";
 import { cn } from "~/lib/utils";
 import { useLatest } from "~/useLatest";
+
+import { attachTerminalLinks } from "./attachTerminalLinks";
+import { TerminalActions } from "./TerminalActions";
 
 const SHELL_ENDED: Record<TermEnd, string> = {
   exited: "The shell exited.",
@@ -32,6 +38,8 @@ export function TerminalSurface({
   termId,
   target,
   onEnded,
+  onAddToChat,
+  onOpenPath,
 }: {
   /**
    * Which shell. Must be stable across remounts: StrictMode's double mount and
@@ -41,12 +49,26 @@ export function TerminalSurface({
   target: TerminalTarget;
   /** The process ended, the server no longer has it, or it could not start. */
   onEnded?: () => void;
+  /**
+   * Output quoted for the composer, already fenced. Given, the terminal offers
+   * "Add to chat" on a selection and "send the last lines".
+   */
+  onAddToChat?: (quoted: string) => void;
+  /**
+   * A file path clicked in the output: relative to the shell's start
+   * directory when under it, else absolute, or as printed when the shell
+   * cannot say where it is. Without it only URLs are links.
+   */
+  onOpenPath?: OpenPath;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<TermSocket | null>(null);
+  const termRef = useRef<Terminal | null>(null);
   const [status, setStatus] = useState<TermStatus>("connecting");
   const [ended, setEnded] = useState<TermEnd | null>(null);
+  const [selected, setSelected] = useState(false);
   const onEndedRef = useLatest(onEnded);
+  const onOpenPathRef = useLatest(onOpenPath);
   const targetKey = "thread" in target ? `thread:${target.thread}` : `login:${target.login}`;
   const login = "login" in target;
 
@@ -66,11 +88,18 @@ export function TerminalSurface({
       convertEol: false,
       theme: { background: "#00000000" },
       allowTransparency: true,
+      // OSC 8 hyperlinks, the ones a program marks up itself (gh, cargo,
+      // compilers), keep xterm's default handler, which shows the real target
+      // in a confirm() before opening it: the text printed for one need not be
+      // where it goes.
     });
+    termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
     fit.fit();
+
+    const selection = term.onSelectionChange(() => setSelected(term.hasSelection()));
 
     const socket = openTermSocket(termId, target, {
       onData: (bytes) => term.write(bytes),
@@ -84,6 +113,11 @@ export function TerminalSurface({
     socketRef.current = socket;
     socket.resize(term.cols, term.rows);
 
+    const links = attachTerminalLinks(term, host, {
+      openPath: () => onOpenPathRef.current,
+      where: () => socket.where(),
+    });
+
     const data = term.onData((d) => socket.send(d));
     const resize = term.onResize(({ cols, rows }) => socket.resize(cols, rows));
 
@@ -94,10 +128,14 @@ export function TerminalSurface({
 
     return () => {
       ro.disconnect();
+      links.dispose();
+      selection.dispose();
       data.dispose();
       resize.dispose();
       socket.dispose();
       socketRef.current = null;
+      termRef.current = null;
+      setSelected(false);
       term.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- a target is an identity, not a fresh object per render
@@ -108,20 +146,39 @@ export function TerminalSurface({
     socketRef.current?.restart();
   };
 
+  const addSelection = () => {
+    const term = termRef.current;
+    if (!term) return;
+    const quoted = quoteTerminalOutput(term.getSelection());
+    if (!quoted) {
+      toast.info("Nothing in the selection to add");
+      return;
+    }
+    term.clearSelection();
+    onAddToChat?.(quoted);
+  };
+
+  const sendLast = (n: number) => {
+    const term = termRef.current;
+    if (!term) return false;
+    const quoted = quoteTerminalOutput(lastTerminalLines(bufferRows(term.buffer.active), n));
+    if (!quoted) {
+      toast.info("Nothing in the terminal to send");
+      return false;
+    }
+    onAddToChat?.(quoted);
+    return true;
+  };
+
   return (
-    <div className="relative h-full min-h-0 bg-black/90 p-1.5">
+    <div className="group/terminal relative h-full min-h-0 bg-black/90 p-1.5">
       <div ref={hostRef} className="h-full min-h-0 [&_.xterm]:h-full" />
-      {/* The output stays up while the socket is away: the shell is still
-          running, and what it printed meanwhile replays on reconnect. */}
-      {status === "reconnecting" && !ended && (
-        <div
-          role="status"
-          className="pointer-events-none absolute top-2 right-2 flex items-center gap-1.5 rounded-full bg-black/75 px-2 py-0.5 text-[11px] text-white/80 ring-1 ring-white/15"
-        >
-          <span className="size-1.5 animate-pulse rounded-full bg-amber-400" />
-          Reconnecting…
-        </div>
-      )}
+      <TerminalActions
+        reconnecting={status === "reconnecting" && !ended}
+        selected={selected}
+        quote={onAddToChat && !ended ? { addSelection, sendLast } : undefined}
+        onRefocus={() => termRef.current?.focus()}
+      />
       {/* A finished sign-in leaves its last words on screen — "logged in as…",
           or the error — so the notice sits below rather than over them. */}
       {ended && (

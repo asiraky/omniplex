@@ -3,6 +3,9 @@ import { lazy, Suspense, useCallback, type RefObject } from "react";
 import { useThread, useThreadStore } from "~/app/threadStore";
 import type { PanelControls } from "~/app/usePanel";
 import type { Client } from "~/client";
+import type { OpenPath } from "~/lib/openPath";
+import { pathInCheckout } from "~/lib/paths";
+import { toast } from "~/lib/toast";
 import type {
   DiffComparison,
   FileContent,
@@ -24,12 +27,17 @@ export function ThreadPanel({
   threadId,
   panel,
   pr,
+  onAddToChat,
 }: {
   clientRef: RefObject<Client | null>;
   threadId: string;
   panel: PanelControls;
   pr: PullRequest | null;
+  /** Terminal output quoted for the composer. */
+  onAddToChat: (quoted: string) => void;
 }) {
+  const threadStore = useThreadStore();
+
   const command = useCallback(
     (cmd: string, args: unknown) => clientRef.current!.command(cmd, args),
     [clientRef],
@@ -88,8 +96,28 @@ export function ThreadPanel({
     [clientRef],
   );
 
+  // A path a terminal printed. The terminal hands over one under the shell's
+  // start directory, the checkout root, already relative to it; anything else
+  // is absolute, or as printed when the shell could not say where it was. The
+  // panel can only show the checkout, and a shell wanders: `~/.zshrc`,
+  // `/etc/hosts` and `../other-repo` get a word rather than a file surface
+  // that fails to load. An absolute path is tried against the thread's own
+  // working directory: right when the shell could not answer and the thread
+  // sits at the root, and it catches a path spelled through a symlink the
+  // shell's answer resolved. Read at the click, so the callback stays the same
+  // across frames.
+  const { openPath } = panel;
+  const openTerminalPath = useCallback<OpenPath>(
+    (path, line) => {
+      const rel = pathInCheckout(path, threadStore.get()?.cwd ?? "");
+      if (rel === null) toast.info("That file is outside this thread's checkout");
+      else openPath(rel, line);
+    },
+    [threadStore, openPath],
+  );
+
   // All this reads of the thread, so the frames of a turn leave it alone.
-  const inTurn = useThread(useThreadStore(), isInTurn);
+  const inTurn = useThread(threadStore, isInTurn);
 
   if (!panel.loaded) return null;
   return (
@@ -111,7 +139,10 @@ export function ThreadPanel({
         loadTree={loadTree}
         loadFile={loadFile}
         request={panel.request}
+        onRequestRouted={panel.requestRouted}
         pr={pr}
+        onAddToChat={onAddToChat}
+        onOpenPath={openTerminalPath}
       />
     </Suspense>
   );

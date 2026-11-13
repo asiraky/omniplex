@@ -5,9 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Panel, type PanelProps, type PanelRequest } from "~/components/panel/Panel";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "~/components/ui/dropdown-menu";
+import { createThreadStore } from "~/app/threadStore";
+import { usePanel, type PanelControls } from "~/app/usePanel";
 import { savePanel } from "~/lib/panel";
 import type { ThreadChanges } from "~/protocol";
-import { render, wrap } from "~/test/harness";
+import { render, viewport, wrap } from "~/test/harness";
 
 function renderPanel(onClose: () => void) {
   const never = () => new Promise<never>(() => {});
@@ -23,6 +25,7 @@ function renderPanel(onClose: () => void) {
         loadDiff={never}
         loadTree={never}
         loadFile={never}
+        onRequestRouted={() => {}}
       />
       <DropdownMenu>
         <DropdownMenuTrigger>Menu</DropdownMenuTrigger>
@@ -81,6 +84,7 @@ function props(overrides: Partial<PanelProps> = {}): PanelProps {
     loadDiff: never,
     loadTree: never,
     loadFile: never,
+    onRequestRouted: () => {},
     ...overrides,
   };
 }
@@ -139,6 +143,68 @@ describe("Panel requests", () => {
     await screen.findByRole("button", { name: "Hide gitignored files" });
 
     expect(loadTree.mock.calls).toEqual([[true]]);
+  });
+});
+
+describe("Panel requests across remounts", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    Element.prototype.scrollIntoView = vi.fn();
+    // Below the docking width the panel is a sheet, whose body unmounts
+    // when it closes.
+    viewport("phone");
+  });
+
+  // The panel as the app wires it: usePanel owns the request, the panel
+  // mounts and unmounts under it.
+  function renderOwned() {
+    let controls!: PanelControls;
+    const threadStore = createThreadStore(null);
+    function Host() {
+      const panel = usePanel(threadStore);
+      controls = panel;
+      return (
+        <Panel
+          {...props({ loadChanges: () => Promise.resolve(changesWith()) })}
+          open={panel.open}
+          onClose={panel.close}
+          request={panel.request}
+          onRequestRouted={panel.requestRouted}
+        />
+      );
+    }
+    render(<Host />);
+    return () => controls;
+  }
+
+  it("routes a request made while the panel is unmounted on the mount it opens", async () => {
+    savePanel("s1", { surfaces: [{ id: "jobs", kind: "jobs" }], active: "jobs" });
+    const panel = renderOwned();
+    expect(screen.queryByRole("tablist")).toBeNull();
+
+    act(() => panel().openPath("src/b.ts"));
+    await waitFor(() => expect(selectedTab()?.textContent).toBe("b.ts"));
+  });
+
+  it("does not reopen a closed file tab when the panel remounts, and still routes the next request", async () => {
+    savePanel("s1", { surfaces: [{ id: "jobs", kind: "jobs" }], active: "jobs" });
+    const panel = renderOwned();
+    act(() => panel().openPath("src/b.ts"));
+    await waitFor(() => expect(selectedTab()?.textContent).toBe("b.ts"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Close b.ts" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close the panel" }));
+    await waitFor(() => expect(screen.queryByRole("tablist")).toBeNull());
+    act(() => panel().show());
+
+    await screen.findByRole("tablist");
+    // Give a replayed path request the change list it waits for.
+    await act(async () => {});
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Jobs"]);
+
+    // Asking for the same file again is a new request, and is routed.
+    act(() => panel().openPath("src/b.ts"));
+    await waitFor(() => expect(selectedTab()?.textContent).toBe("b.ts"));
   });
 });
 
