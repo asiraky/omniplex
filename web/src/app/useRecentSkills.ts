@@ -74,13 +74,16 @@ export function useRecentSkills({
   // the user's to decide. Desktop takes the cursor with it, because the next
   // keystroke almost always belongs in the input. A phone deliberately does
   // not: focusing raises the keyboard over the very button just tapped, and
-  // submit is one tap away without it.
+  // submit is one tap away without it. Desktop types the token in, so undo can
+  // take it back out; the phone, never focusing, writes the draft directly.
   const pick = useCallback(
     (item: ComposerItem) => {
       if (!activeId) return;
       const current = getDraft(activeId);
-      const prefix = current && !/\s$/.test(current) ? `${current} ` : current;
-      const next = `${prefix}${item.insertText} `;
+      const gap = current && !/\s$/.test(current) ? " " : "";
+      const text = `${gap}${item.insertText} `;
+      if (isDesktop && composerRef.current?.typeAtEnd(text)) return;
+      const next = `${current}${text}`;
       setDraft(activeId, next);
       if (isDesktop) composerRef.current?.focusEnd(next.length);
     },
