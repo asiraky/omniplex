@@ -309,6 +309,12 @@ type Turn struct {
 	// is measured here rather than in any presenter.
 	StartedAt  int64 `json:"startedAt,omitempty"`
 	FinishedAt int64 `json:"finishedAt,omitempty"`
+	// HarnessRef is the adapter's anchor for this turn, from turn.finished.
+	// It is kept in stored state and snapshots, and stripped from every wire
+	// copy, where Rewindable stands in for it.
+	HarnessRef string `json:"harnessRef,omitempty"`
+	// Rewindable is set on wire copies only: the turn carries a HarnessRef.
+	Rewindable bool `json:"rewindable,omitempty"`
 }
 
 // QueuedPrompt is a prompt waiting for the running turn to finish. It lives in
@@ -1600,4 +1606,38 @@ func (s *State) cloneRest() *State {
 	copy(out.Queued, s.Queued)
 
 	return &out
+}
+
+// TurnIndex is the position of turn id in Turns, or -1.
+func (s *State) TurnIndex(id string) int {
+	for i := range s.Turns {
+		if s.Turns[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// CanRewindTo reports whether the thread can be cut back to before Turns[i].
+// The turn needs its own anchor, and so does the one before it: a harness that
+// forks rather than truncates resumes from the kept turn's last entry, and a
+// turn with no anchor (one from before anchors existed, or one the server
+// closed itself after a crash) leaves nothing to resume from.
+func (s *State) CanRewindTo(i int) bool {
+	if i < 0 || i >= len(s.Turns) || s.Turns[i].HarnessRef == "" {
+		return false
+	}
+	return i == 0 || s.Turns[i-1].HarnessRef != ""
+}
+
+// RewindAt is the index in Items of the first item turn id owns — its opening
+// prompt — or -1. A settings notice written just before that prompt is not the
+// turn's: the switch it records still happened, so it stays.
+func (s *State) RewindAt(turnID string) int {
+	for i := range s.Items {
+		if s.Items[i].TurnID == turnID {
+			return i
+		}
+	}
+	return -1
 }

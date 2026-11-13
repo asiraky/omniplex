@@ -211,6 +211,9 @@ type HarnessMeta struct {
 	// mid-turn can reach the running turn. A UI offers steer or queue only
 	// when there is a choice to make.
 	Steers bool `json:"steers,omitempty"`
+	// Rewinds says the harness's sessions are Rewinders, so a UI may offer to
+	// cut a thread back to before an earlier turn.
+	Rewinds bool `json:"rewinds,omitempty"`
 }
 
 // ModelMeta is a selectable model, as the harness itself describes it.
@@ -444,6 +447,25 @@ type EffortSwitcher interface {
 // model's FastTier, or "" for standard speed.
 type ServiceTierSwitcher interface {
 	SetServiceTier(ctx context.Context, tier string) error
+}
+
+// RewindTarget names where a rewind cuts the conversation: Turn is the
+// HarnessRef of the first turn to forget, Previous the HarnessRef of the turn
+// just before it ("" when Turn is the thread's first turn). Both are the
+// adapter's own values from TurnFinishedPayload.HarnessRef.
+type RewindTarget struct {
+	Turn     string
+	Previous string
+}
+
+// Rewinder is a Session whose harness can forget the end of its conversation:
+// after Rewind returns nil, the harness's own history holds everything before
+// Turn and nothing from it on, and the next prompt continues from there. It is
+// only called between turns. It never touches files. An adapter whose harness
+// moves to a new session id to do this reports it with thread.config_changed
+// before Rewind returns, and that id must resume to the rewound conversation.
+type Rewinder interface {
+	Rewind(ctx context.Context, target RewindTarget) error
 }
 
 // JobStopper is implemented by sessions whose harness can stop one running
