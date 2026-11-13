@@ -8,6 +8,7 @@ import { cn } from "~/lib/utils";
 import type { Item } from "~/protocol";
 
 import { ReplyButton } from "./ReplyButton";
+import { RewindButton } from "./RewindButton";
 
 const PlayButton = lazy(() => import("./PlayButton"));
 
@@ -37,17 +38,22 @@ const footerButton =
  *
  * `replyable` marks an agent's reply, which can be quoted into the composer to
  * answer it; a prompt cannot. It needs `speakRef` too, to find a selection in.
+ *
+ * `editable` marks a prompt, which may offer "Edit from here" (RewindButton
+ * decides whether this one does).
  */
 export function MessageMeta({
   item,
   speakRef,
   rawMarkdown = false,
   replyable = false,
+  editable = false,
 }: {
   item: Item;
   speakRef?: RefObject<HTMLElement | null>;
   rawMarkdown?: boolean;
   replyable?: boolean;
+  editable?: boolean;
 }) {
   const { copied, copy } = useCopy();
   const readAloud = useReadAloud();
@@ -87,6 +93,7 @@ export function MessageMeta({
           className={footerButton}
         />
       )}
+      {editable && <RewindButton item={item} className={footerButton} />}
       {canSpeak && (
         <Suspense fallback={null}>
           <PlayButton

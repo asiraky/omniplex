@@ -395,6 +395,7 @@ export function App() {
             <ThreadView
               activeId={activeId}
               meta={meta}
+              threads={threads}
               harnesses={harnesses}
               scroll={scroll}
               commands={commands}

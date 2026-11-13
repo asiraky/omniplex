@@ -981,3 +981,87 @@ describe("extension statuses", () => {
     expect(s.extensionStatuses).toEqual([{ key: "git", text: "main" }]);
   });
 });
+
+// Mirrors the rewind cases in internal/projection/state_test.go.
+describe("a rewind", () => {
+  const turn = (seq: number, id: string) => ev(seq, "turn.started", { turnId: id, prompt: `ask ${id}` }, seq * 1000);
+  const finish = (seq: number, id: string, extra: Record<string, unknown> = {}) =>
+    ev(seq, "turn.finished", { turnId: id, stopReason: "end_turn", ...extra });
+  const reply = (seq: number, id: string) =>
+    ev(seq, "message.chunk", { turnId: id, blockId: `m-${id}`, role: "agent", kind: "text", delta: `answer ${id}` });
+  const replay = (...events: Event[]) => events.reduce(applyEvent, emptyState("s1"));
+  const ids = (s: ThreadState) => s.items.map((it) => it.id);
+
+  // t1 on opus; a switch to sonnet; t2, t3. The switch notice sits just above t2's prompt.
+  const threeTurns = () =>
+    replay(
+      ev(1, "thread.created", { model: "opus" }),
+      turn(2, "t1"),
+      reply(3, "t1"),
+      finish(4, "t1", { rewindable: true }),
+      ev(5, "thread.config_changed", { model: "sonnet" }),
+      turn(6, "t2"),
+      reply(7, "t2"),
+      finish(8, "t2", { rewindable: true }),
+      turn(9, "t3"),
+      reply(10, "t3"),
+      finish(11, "t3", { rewindable: true }),
+    );
+
+  it("marks a turn whose finish carried an anchor, and a later anchorless finish keeps it", () => {
+    let s = replay(turn(1, "t1"), finish(2, "t1", { rewindable: true }), turn(3, "t2"), finish(4, "t2"));
+    expect(s.turns.map((t) => !!t.rewindable)).toEqual([true, false]);
+    s = applyEvent(s, finish(5, "t1"));
+    expect(s.turns[0].rewindable).toBe(true);
+  });
+
+  it("cuts the window at the turn's prompt, keeping the settings notice above it", () => {
+    const s0 = threeTurns();
+    expect(ids(s0)).toContain("model:6");
+    const s = applyEvent(s0, ev(12, "thread.rewound", { turnId: "t2", at: 3 }));
+    expect(ids(s)).toEqual(["prompt:t1", "m-t1", "model:6"]);
+    expect(s.turns.map((t) => t.id)).toEqual(["t1"]);
+    expect(s.itemsBefore).toBeUndefined();
+  });
+
+  it("finds the cut by the prompt, not by `at`, when the window is not a contiguous copy", () => {
+    // The server holds items the window left out (a settled parent's
+    // children), so its index runs ahead of the window's.
+    const s0 = { ...threeTurns(), itemsBefore: 0 };
+    const s = applyEvent(s0, ev(12, "thread.rewound", { turnId: "t3", at: 40 }));
+    expect(ids(s)).toEqual(["prompt:t1", "m-t1", "model:6", "prompt:t2", "m-t2"]);
+    expect(s.turns.map((t) => t.id)).toEqual(["t1", "t2"]);
+  });
+
+  it("clears a window that starts below the cut, and pages on from `at`", () => {
+    // Only t3's items are loaded; t2 starts above the window.
+    const full = threeTurns();
+    const s0: ThreadState = { ...full, items: full.items.filter((it) => it.turnId === "t3"), itemsBefore: 5 };
+    const s = applyEvent(s0, ev(12, "thread.rewound", { turnId: "t2", at: 2 }));
+    expect(s.items).toEqual([]);
+    expect(s.itemsBefore).toBe(2);
+    expect(s.turns.map((t) => t.id)).toEqual(["t1"]);
+  });
+
+  it("drops the jobs the removed turns spawned and keeps the rest", () => {
+    const s0: ThreadState = {
+      ...threeTurns(),
+      jobs: [
+        { id: "j1", turnId: "t1", depth: 0, kind: "agent", status: "completed", usage: {} },
+        { id: "j2", turnId: "t2", depth: 0, kind: "agent", status: "completed", usage: {} },
+        { id: "j3", turnId: "t3", depth: 0, kind: "shell", status: "completed", usage: {} },
+        { id: "j4", depth: 0, kind: "monitor", status: "completed", usage: {} },
+      ] as ThreadState["jobs"],
+    };
+    const s = applyEvent(s0, ev(12, "thread.rewound", { turnId: "t2", at: 3 }));
+    expect(s.jobs.map((j) => j.id)).toEqual(["j1", "j4"]);
+  });
+
+  it("leaves the queued prompts alone", () => {
+    const s0 = applyEvent(threeTurns(), ev(12, "prompt.queued", { queueId: "q1", prompt: "later", held: true }));
+    const s = applyEvent(s0, ev(13, "thread.rewound", { turnId: "t1", at: 0 }));
+    expect(s.items).toEqual([]);
+    expect(s.turns).toEqual([]);
+    expect(s.queuedPrompts.map((q) => q.queueId)).toEqual(["q1"]);
+  });
+});
