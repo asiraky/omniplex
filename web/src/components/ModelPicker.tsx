@@ -571,8 +571,9 @@ function ListStandIn({
   onHeldChange,
 }: ModelListProps & { failed: boolean; onHeldChange: (held: boolean) => void }) {
   return (
-    <div className="flex flex-col">
-      <div className="flex h-9 items-center gap-2 border-b px-3">
+    // Fills the sheet as the real list does, so the footer does not jump.
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b px-3">
         <SearchIcon className="size-4 shrink-0 opacity-50" />
         <input
           ref={searchRef}
@@ -592,7 +593,7 @@ function ListStandIn({
           className="placeholder:text-muted-foreground flex h-full w-full rounded-md bg-transparent text-sm outline-hidden"
         />
       </div>
-      <ChunkFallback failed={failed} className="p-3 text-[12px]" />
+      <ChunkFallback failed={failed} className="flex-1 p-3 text-[12px]" />
     </div>
   );
 }
