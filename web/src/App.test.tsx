@@ -15,6 +15,7 @@ const command = vi.fn(async (_name: string, _args: unknown, _commandId?: string)
 // Every prompt the app sent, each under the outbox's command id.
 const promptsSent = () => command.mock.calls.filter(([name]) => name === "prompt");
 const attach = vi.fn();
+const connect = vi.fn();
 const detach = vi.fn();
 const prime = vi.fn();
 const setPresence = vi.fn();
@@ -71,6 +72,7 @@ vi.mock("./client", () => ({
       events = e;
     }
     connect() {
+      connect();
       events.onStatus("online");
     }
     closed = false;
@@ -136,6 +138,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
   command.mockClear();
   attach.mockClear();
+  connect.mockClear();
   detach.mockClear();
   prime.mockClear();
   setPresence.mockClear();
@@ -490,10 +493,16 @@ describe("landing on a phone", () => {
     localStorage.setItem("omniplex.lastThread", "gone");
     viewport("phone");
     render(<App />);
+    // Fetched at boot, before anything could say it was gone.
+    expect(attach).toHaveBeenCalledWith("gone");
     await act(async () => events.onThreads([thread("a")]));
 
-    expect(attach).not.toHaveBeenCalled();
+    expect(detach).toHaveBeenCalled();
+    expect(attach).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(sidebarShowing()).toBe(true));
+    expect(window.location.pathname).toBe("/");
+    // So the next boot does not fetch it again.
+    expect(localStorage.getItem("omniplex.lastThread")).toBeNull();
   });
 
   it("says nothing while it is still deciding", async () => {
@@ -505,6 +514,45 @@ describe("landing on a phone", () => {
     expect(screen.queryByText("All caught up")).toBeNull();
     expect(screen.queryByText("Nothing open")).toBeNull();
     expect(screen.getByText("Reopening your last thread…")).toBeTruthy();
+  });
+});
+
+describe("booting cold, with no resume cache", () => {
+  it("fetches the last thread before the socket connects, and once only", async () => {
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    expect(attach).toHaveBeenCalledWith("a");
+    expect(attach.mock.invocationCallOrder[0]).toBeLessThan(connect.mock.invocationCallOrder[0]);
+
+    await act(async () => events.onThreads([thread("a")]));
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(detach).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/thread/a");
+  });
+
+  it("paints the snapshot as soon as it lands, before the list", async () => {
+    localStorage.setItem("omniplex.lastThread", "a");
+    viewport("phone");
+    render(<App />);
+    await act(async () => events.onState("a", state("a", "default")));
+    expect(screen.getByText("Thread a")).toBeTruthy();
+    expect(sidebarShowing()).toBe(false);
+  });
+
+  it("fetches nothing with nothing to restore", () => {
+    render(<App />);
+    expect(attach).not.toHaveBeenCalled();
+  });
+
+  it("leaves a resumed page to the cache", () => {
+    localStorage.setItem("omniplex.lastThread", "a");
+    sessionStorage.setItem(
+      "omniplex.resume",
+      JSON.stringify({ build: "dev", state: state("a", "default"), position: { top: 0, atBottom: true } }),
+    );
+    render(<App />);
+    expect(prime).toHaveBeenCalled();
+    expect(attach).not.toHaveBeenCalled();
   });
 });
 
@@ -533,10 +581,15 @@ describe("opening a thread from a notification", () => {
     // About to open a thread, so the phone's list must not flash open.
     expect(sidebarShowing()).toBe(false);
 
-    await act(async () => events.onThreads([thread("a"), thread("b")]));
+    // Fetched at boot, ahead of the socket.
     expect(attach).toHaveBeenCalledWith("b");
+    expect(attach.mock.invocationCallOrder[0]).toBeLessThan(connect.mock.invocationCallOrder[0]);
+
+    await act(async () => events.onThreads([thread("a"), thread("b")]));
+    expect(attach).toHaveBeenCalledTimes(1);
     expect(attach).not.toHaveBeenCalledWith("a");
     expect(window.location.pathname).toBe("/thread/b");
+    expect(localStorage.getItem("omniplex.lastThread")).toBe("b");
     expect(sidebarShowing()).toBe(false);
   });
 
@@ -552,12 +605,15 @@ describe("opening a thread from a notification", () => {
   });
 
   it("falls back to the last thread when the linked one is gone", async () => {
-    window.history.replaceState(null, "", "/thread/gone");
+    window.history.replaceState(null, "", "/thread/gone#themes");
     localStorage.setItem("omniplex.lastThread", "a");
     render(<App />);
+    expect(attach).toHaveBeenCalledWith("gone");
     await act(async () => events.onThreads([thread("a")]));
-    expect(attach).toHaveBeenCalledWith("a");
-    expect(window.location.pathname).toBe("/thread/a");
+    expect(detach).toHaveBeenCalled();
+    expect(attach).toHaveBeenLastCalledWith("a");
+    expect(window.location.pathname + window.location.hash).toBe("/thread/a#themes");
+    expect(localStorage.getItem("omniplex.lastThread")).toBe("a");
   });
 
   it("switches thread when the worker names one in an open window", async () => {
@@ -622,6 +678,7 @@ describe("opening a thread from a notification", () => {
   it("holds a tap that lands before the list, and opens it once the list arrives", async () => {
     localStorage.setItem("omniplex.lastThread", "a");
     render(<App />);
+    attach.mockClear();
     tap("b");
     expect(attach).not.toHaveBeenCalled();
 
@@ -669,7 +726,8 @@ describe("presence", () => {
   it("reports the open thread, and again when the page is hidden and shown", async () => {
     localStorage.setItem("omniplex.lastThread", "a");
     render(<App />);
-    expect(last()).toEqual([true, ""]);
+    // Attached at boot, so already the thread on screen.
+    expect(last()).toEqual([true, "a"]);
 
     await act(async () => events.onThreads([thread("a"), thread("b")]));
     expect(last()).toEqual([true, "a"]);
@@ -1545,9 +1603,10 @@ describe("resuming after a tab discard", () => {
     );
     render(<App />);
     expect(prime).not.toHaveBeenCalled();
-    // The cold path instead: restore once the list arrives.
-    await act(async () => events.onThreads([thread("a")]));
+    // The cold path instead: fetched at boot, kept once the list has it.
     expect(attach).toHaveBeenCalledWith("a");
+    await act(async () => events.onThreads([thread("a")]));
+    expect(attach).toHaveBeenCalledTimes(1);
   });
 });
 

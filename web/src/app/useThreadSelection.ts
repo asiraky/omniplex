@@ -63,7 +63,9 @@ export function useThreadSelection({
   onOpenLink: () => void;
 }) {
   const { clientRef, activeRef, threads, threadsLoaded, threadStore, dropResume } = wire;
-  const [activeId, setActiveId] = useState<string | null>(wire.resume?.state.threadId ?? null);
+  // The boot thread (useWire) is already attached, so the restore below
+  // starts from it rather than selecting it again.
+  const [activeId, setActiveId] = useState<string | null>(wire.bootThread);
   useEffect(() => {
     activeRef.current = activeId;
   }, [activeRef, activeId]);
@@ -73,19 +75,9 @@ export function useThreadSelection({
   const [creating, setCreating] = useState<(DraftPreset & { nonce: number }) | null>(null);
   const nonce = useRef(0);
 
-  // Whether the last-thread key was set at boot. Read once, before anything
-  // can write it, because it decides what the very first frame shows. Storage
-  // can be denied outright (Safari with cookies blocked), and a throw here
-  // would take the whole mount with it.
-  // A /thread/<id> link counts the same: it is about to open a thread.
-  const [hadLastThread] = useState(() => {
-    if (wire.link) return true;
-    try {
-      return localStorage.getItem(LAST_THREAD) !== null;
-    } catch {
-      return false;
-    }
-  });
+  // Whether the page booted into a thread (a link or the last thread), which
+  // decides what the very first frame shows.
+  const hadLastThread = wire.bootThread !== null;
   const restoreAttempted = useRef(false);
   // A thread a link asked for that the list does not have yet. Before the
   // first list: the page's /thread/<id> URL or an early "open-thread" message
@@ -187,6 +179,8 @@ export function useThreadSelection({
   // Letting go of the attached thread because it is gone. On a phone that
   // leaves nothing behind the sidebar, so it comes back.
   const release = useCallback(() => {
+    // Nor does the next boot go fetching it.
+    if (localStorage.getItem(LAST_THREAD) === activeRef.current) localStorage.removeItem(LAST_THREAD);
     // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: letting go detaches the socket, and only the thread list arriving can say the thread is gone
     setActiveId(null);
     threadStore.set(null);
@@ -195,8 +189,8 @@ export function useThreadSelection({
     // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: letting go detaches the socket, and only the thread list arriving can say the thread is gone
     if (!isDesktop) setSidebarOpen(true);
     // Its entry no longer names it, so Back and a reload don't go looking.
-    if (threadIdFromPath(window.location.pathname)) navigate("/", { replace: true });
-  }, [clientRef, dropResume, isDesktop, threadStore]);
+    if (threadIdFromPath(window.location.pathname)) writeRestoredUrl(null);
+  }, [activeRef, clientRef, dropResume, isDesktop, threadStore]);
 
   // Restore the last thread once the list arrives. This runs once: after it,
   // "no thread selected" is a state the user chose, not one we have yet to
@@ -212,23 +206,28 @@ export function useThreadSelection({
     pendingLink.current = null;
     if (link) {
       if (openable(threads, link)) {
+        // A link the page loaded at is the boot thread, already attached; one
+        // the service worker named since is not.
         if (link !== activeId) {
           dropResume();
           select(link, { history: false });
         }
+        localStorage.setItem(LAST_THREAD, link);
         writeRestoredUrl(link);
         return;
       }
       // Gone or closed: carry on as if there had been no link.
     }
     if (activeId) {
-      // Hydrated from the resume cache before the list could say whether the
-      // thread still exists. It usually does; when it doesn't (deleted or
-      // closed from elsewhere while the page was dead) let go the same way
-      // a live delete would. The seenActive effect below can't: it only acts
-      // on threads it saw in a list first.
-      // It was hydrated at /, from a cache that does not know the URL.
+      // Attached at boot (the resume cache, the link, or the last thread)
+      // before the list could say whether the thread still exists. It usually
+      // does; when it doesn't (deleted or closed from elsewhere while the page
+      // was dead) let go the same way a live delete would. The seenActive
+      // effect below can't: it only acts on threads it saw in a list first.
+      // A cache hydrates at /, not knowing the URL; a link is the last thread
+      // from here on, as a pick would make it.
       if (openable(threads, activeId)) {
+        localStorage.setItem(LAST_THREAD, activeId);
         writeRestoredUrl(activeId);
         return;
       }
@@ -237,7 +236,8 @@ export function useThreadSelection({
       // react-doctor-disable-next-line react-doctor/no-pass-live-state-to-parent -- not live state: the scroll memory must drop a thread the list says is gone, which only this list arriving can tell
       onForget(activeId);
       release();
-      return;
+      // A dead link still leaves the last thread to fall back on. Otherwise
+      // the last thread was the one just let go, and release forgot it.
     }
     const last = localStorage.getItem(LAST_THREAD);
     if (last && openable(threads, last)) {

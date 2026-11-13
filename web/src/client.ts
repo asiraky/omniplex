@@ -187,6 +187,9 @@ export class Client {
     this.retryTimer = null;
     // Their deadlines would only fail them into a page that has moved on.
     for (const [, p] of this.pending) window.clearTimeout(p.timer);
+    // Nor may a snapshot land in it.
+    this.snapshotRequest?.abort();
+    this.snapshotRequest = null;
     this.ws?.close();
   }
 
@@ -335,6 +338,12 @@ export class Client {
    * other is fetched over HTTP first. Never called for the thread already
    * attached (see useThreadSelection's select): a primed page's attach is
    * already on the way, and a second would replay the gap twice.
+   *
+   * Safe before connect(): the fetch needs nothing from the socket, which is
+   * how a page boots (useWire) with the snapshot and the handshake in flight
+   * together. Whichever lands second sends the attach: the socket's open
+   * waits out a pending fetch, and a fetch that beats the socket leaves the
+   * attach to its open.
    */
   attach(threadId: string) {
     this.leave();

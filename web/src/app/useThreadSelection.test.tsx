@@ -22,6 +22,7 @@ function setup({ loaded = false, list = threads } = {}) {
     dropResume: vi.fn(),
     resume: null,
     link: null,
+    bootThread: null,
   } as unknown as Wire;
   const hook = renderHook((w: Wire) =>
     useThreadSelection({
@@ -232,5 +233,6 @@ describe("history", () => {
     land([two[1]]);
     expect(result.current.activeId).toBeNull();
     expect(window.location.pathname).toBe("/");
+    expect(localStorage.getItem("omniplex.lastThread")).toBeNull();
   });
 });
