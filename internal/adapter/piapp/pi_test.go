@@ -47,9 +47,12 @@ while IFS= read -r line; do
   case "$line" in
     *'"type":"get_state"'*)
       streaming=false; [ -f "$DIR/streaming" ] && streaming=true
-      printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"get_state\",\"success\":true,\"data\":{\"isStreaming\":$streaming,\"sessionId\":\"harness-123\",\"thinkingLevel\":\"medium\",\"model\":{\"provider\":\"anthropic\",\"id\":\"claude-x\",\"contextWindow\":200000}}}"
+      sid=harness-123; [ -f "$DIR/session_id" ] && sid=$(cat "$DIR/session_id")
+      printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"get_state\",\"success\":true,\"data\":{\"isStreaming\":$streaming,\"sessionId\":\"$sid\",\"thinkingLevel\":\"medium\",\"model\":{\"provider\":\"anthropic\",\"id\":\"claude-x\",\"contextWindow\":200000}}}"
       ;;
     *'"type":"prompt"'*)
+      # The prompt's user message joins pi's history.
+      [ -f "$DIR/fork_messages_next" ] && mv "$DIR/fork_messages_next" "$DIR/fork_messages"
       if [ -f "$DIR/ack_gate" ]; then
         # Pi's preflight: the ack waits, but the loop keeps reading stdin.
         ( while [ ! -f "$DIR/ack_open" ]; do sleep 0.02; done
@@ -72,6 +75,26 @@ while IFS= read -r line; do
       ;;
     *'"type":"set_model"'*)
       printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"set_model\",\"success\":true,\"data\":{\"provider\":\"openai\",\"id\":\"gpt-x\",\"contextWindow\":400000}}"
+      ;;
+    *'"type":"get_fork_messages"'*)
+      # fork_messages holds the JSON list of user entries; a hang file
+      # leaves the request unanswered, a fail file refuses it.
+      if [ -f "$DIR/fork_messages_hang" ]; then :
+      elif [ -f "$DIR/fork_messages_fail" ]; then
+        printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"get_fork_messages\",\"success\":false,\"error\":\"boom\"}"
+      else
+        msgs='[]'; [ -f "$DIR/fork_messages" ] && msgs=$(cat "$DIR/fork_messages")
+        printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"get_fork_messages\",\"success\":true,\"data\":{\"messages\":$msgs}}"
+      fi
+      ;;
+    *'"type":"fork"'*)
+      # Pi moves to a new session file; get_state reports its id from here on.
+      if [ -f "$DIR/fork_refuse" ]; then
+        printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"fork\",\"success\":false,\"error\":\"Invalid entry ID for forking\"}"
+      else
+        printf 'harness-forked' > "$DIR/session_id"
+        printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"fork\",\"success\":true,\"data\":{\"text\":\"hi\",\"cancelled\":false}}"
+      fi
       ;;
     *'"type":"set_thinking_level"'*)
       printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"set_thinking_level\",\"success\":true}"
