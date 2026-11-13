@@ -110,8 +110,9 @@ export const elicitationDrafts = {
     void drafts.set(requestId, { threadId, draft }),
   /** Drops the thread's drafts for requests it no longer has pending. */
   keepOnly(threadId: string, pending: readonly string[]) {
+    const live = new Set(pending);
     for (const [requestId, entry] of drafts) {
-      if (entry.threadId === threadId && !pending.includes(requestId)) drafts.delete(requestId);
+      if (entry.threadId === threadId && !live.has(requestId)) drafts.delete(requestId);
     }
   },
 };

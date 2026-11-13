@@ -51,7 +51,7 @@ export function ElicitationPrompt({ threadId, request, onResolve }: Props) {
   const last = q.step >= keys.length - 1;
 
   useDigitKeys((n) => {
-    const step = q.settle();
+    const step = q.questionForKey();
     const field = properties[keys[step]];
     if (!field) return false;
     const options = optionsOf(field);
@@ -77,9 +77,10 @@ export function ElicitationPrompt({ threadId, request, onResolve }: Props) {
         aria-label="Input requested"
         className="attention-in bg-card ring-attention/25 flex max-h-[60dvh] flex-col rounded-2xl border shadow-lg ring-1"
       >
-        {/* The question scrolls; the actions do not, so Next and Continue
-            are always in reach however long the option list runs. */}
-        <div className="overflow-y-auto overscroll-contain p-4">
+        {/* Only the question scrolls. The header keeps "2 of 3" in sight and
+            the actions keep Next and Continue in reach, however long the
+            option list runs. */}
+        <div className="px-4 pt-4">
           <AttentionLabel label="input needed">
             {keys.length > 1 && (
               <span className="text-muted-foreground ml-auto font-mono text-[10px] tabular-nums">
@@ -87,7 +88,9 @@ export function ElicitationPrompt({ threadId, request, onResolve }: Props) {
               </span>
             )}
           </AttentionLabel>
-          <p className="mt-2.5 mb-3 text-[13px]">{request.prompt || "Input requested"}</p>
+        </div>
+        <div className="overflow-y-auto overscroll-contain px-4 pt-2.5 pb-4">
+          <p className="mb-3 text-[13px]">{request.prompt || "Input requested"}</p>
 
           {request.schema?.["x-url"] && (
             <a
@@ -110,7 +113,7 @@ export function ElicitationPrompt({ threadId, request, onResolve }: Props) {
               field={field}
               required={Boolean(request.schema?.required?.includes(key))}
               draft={q.draft.fields[key]}
-              focus={q.moved}
+              focus={q.focus}
               onPick={(option) => q.pick(q.step, option)}
               onOther={() => q.other(q.step)}
               onChange={(update) => q.update(q.step, update)}
@@ -157,10 +160,12 @@ function useQuestions(
     setDraftState(next);
   };
 
-  // Set once the human moves between questions, so the next question's text
-  // box takes focus. Not on first show: that would steal focus from the
-  // composer and, on a phone, throw up the keyboard over the thread.
-  const [moved, setMoved] = useState(false);
+  // Which text box takes focus as it appears. A question's own box once the
+  // human moves to it, and the "Other" box once they choose Other; never on
+  // first show, which would steal focus from the composer and, on a phone,
+  // throw up the keyboard over the thread. Not an "Other" box already open
+  // on the question moved to: digits would type into it rather than pick.
+  const [focus, setFocus] = useState<"none" | "field" | "other">("none");
 
   // The step a single-select pick is about to move on to, while it waits.
   const advancing = useRef<{ to: number; timer: number } | null>(null);
@@ -172,7 +177,7 @@ function useQuestions(
 
   const goTo = (step: number) => {
     cancelAdvance();
-    setMoved(true);
+    setFocus("field");
     save({ ...latest.current, step: Math.min(Math.max(step, 0), lastStep) });
   };
 
@@ -186,7 +191,7 @@ function useQuestions(
   return {
     draft,
     step: Math.min(draft.step, lastStep),
-    moved,
+    focus,
     goTo,
     update,
     answers: () => answersOf(properties, latest.current),
@@ -195,7 +200,7 @@ function useQuestions(
      * move it makes, that is the next question already: two digits typed
      * fast answer two questions, not the first one twice.
      */
-    settle() {
+    questionForKey() {
       if (advancing.current) goTo(advancing.current.to);
       return Math.min(latest.current.step, lastStep);
     },
@@ -215,7 +220,7 @@ function useQuestions(
       const field = properties[keys[step]];
       if (!field) return;
       cancelAdvance();
-      setMoved(true);
+      setFocus("other");
       update(step, (d) => pickOther(field, d));
     },
   };
@@ -260,8 +265,8 @@ function Question({
   field: ElicitationField;
   required: boolean;
   draft: FieldDraft;
-  /** Take focus on show: the human moved here, rather than it appearing. */
-  focus: boolean;
+  /** Which of its text boxes takes focus as it appears, if any. */
+  focus: "none" | "field" | "other";
   onPick(option: string): void;
   onOther(): void;
   onChange(update: (d: FieldDraft) => FieldDraft): void;
@@ -289,7 +294,7 @@ function Question({
           labelId={labelId}
           field={field}
           draft={draft}
-          focusOther={focus}
+          focusOther={focus === "other"}
           onPick={onPick}
           onOther={onOther}
           onOtherText={(otherText) => onChange((d) => ({ ...d, otherText }))}
@@ -305,7 +310,7 @@ function Question({
       ) : (
         <Input
           id={id}
-          autoFocus={focus}
+          autoFocus={focus === "field"}
           type={field.format === "password" ? "password" : numeric ? "number" : "text"}
           required={required}
           value={String(draft.value ?? "")}
@@ -348,7 +353,8 @@ function Choices({
   const options = optionsOf(field);
   const descriptions = (field["x-optionDescriptions"] ?? {}) as Record<string, string>;
   const multi = isMultiSelect(field);
-  const other = allowsOther(field);
+  const hasOther = allowsOther(field);
+  const picked = new Set(draft.picked);
   const role = multi ? "checkbox" : "radio";
 
   return (
@@ -365,7 +371,7 @@ function Choices({
             key={option}
             role={role}
             n={i + 1}
-            checked={draft.picked.includes(option)}
+            checked={picked.has(option)}
             onClick={() => onPick(option)}
           >
             {option}
@@ -376,13 +382,13 @@ function Choices({
             )}
           </ChoiceRow>
         ))}
-        {other && (
+        {hasOther && (
           <ChoiceRow role={role} n={options.length + 1} checked={draft.otherOn} onClick={onOther}>
             Other
           </ChoiceRow>
         )}
       </div>
-      {other && draft.otherOn && (
+      {hasOther && draft.otherOn && (
         <Input
           aria-label="Other answer"
           placeholder="Your answer"

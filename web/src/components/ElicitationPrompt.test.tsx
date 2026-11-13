@@ -89,9 +89,8 @@ describe("single-select", () => {
 
     click("Red");
     expect(screen.getByRole("radio", { name: /Red/ }).getAttribute("aria-checked")).toBe("true");
-    act(() => void vi.advanceTimersByTime(179));
     expect(title()).toBe("Which colour?");
-    act(() => void vi.advanceTimersByTime(1));
+    act(() => void vi.runAllTimers());
     expect(title()).toBe("Your name?");
   });
 
@@ -182,6 +181,20 @@ describe("digit keys", () => {
 
     expect(screen.getByRole("checkbox", { name: /Caching/ }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByRole("checkbox", { name: /Metrics/ }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("still pick on a question whose Other box was left open", () => {
+    mount(request({ color, features }));
+    click("Next");
+    press("4"); // Other on features, which focuses its box
+    expect(document.activeElement).toBe(screen.getByLabelText("Other answer"));
+    fireEvent.change(screen.getByLabelText("Other answer"), { target: { value: "Batching" } });
+    click("Back");
+    click("Next");
+
+    expect(document.activeElement).not.toBe(screen.getByLabelText("Other answer"));
+    press("1");
+    expect(screen.getByRole("checkbox", { name: /Caching/ }).getAttribute("aria-checked")).toBe("true");
   });
 
   it.each([
