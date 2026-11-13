@@ -40,3 +40,8 @@ export function suggestionShown(suggestion: string | null, composer: ComposerEmp
   if (!suggestion || !composer.empty || composer.staged || composer.sending) return null;
   return suggestion;
 }
+
+/** The turn the thread's suggestion follows, or null. */
+export function suggestionTurn(state: ThreadState | null): string | null {
+  return state?.suggestion?.turnId ?? null;
+}

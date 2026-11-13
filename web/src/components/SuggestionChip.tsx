@@ -4,7 +4,7 @@ import { useCallback, useState, useSyncExternalStore } from "react";
 import type { DraftStore } from "~/app/draftStore";
 import type { Outbox } from "~/app/outbox";
 import { useThread, useThreadStore } from "~/app/threadStore";
-import { suggestionShown, threadSuggestion } from "~/lib/suggestion";
+import { suggestionShown, suggestionTurn, threadSuggestion } from "~/lib/suggestion";
 
 import { IconButton } from "./IconButton";
 
@@ -27,7 +27,9 @@ export function SuggestionChip({
   onEdit: (text: string) => void;
   onSend: (text: string) => void;
 }) {
-  const suggestion = useThread(useThreadStore(), threadSuggestion);
+  const store = useThreadStore();
+  const suggestion = useThread(store, threadSuggestion);
+  const suggestedFor = useThread(store, suggestionTurn);
   // Booleans, not the draft: a keystroke rerenders this only when the
   // composer goes from empty to not or back.
   const emptyDraft = useCallback(
@@ -43,7 +45,9 @@ export function SuggestionChip({
   // A send spends the suggestion on screen. Its ack and the turn.started that
   // clears the suggestion travel separately, and the ack can win: without
   // this the chip would come back for a moment, one tap from sending twice.
-  const offered = threadId && suggestion ? `${threadId}\n${suggestion}` : null;
+  // Keyed by the turn, not the text: "continue" again after the next turn is
+  // a fresh offer.
+  const offered = threadId && suggestion && suggestedFor ? `${threadId}\n${suggestedFor}` : null;
   const [spent, setSpent] = useState<string | null>(null);
   if (sending && offered && spent !== offered) setSpent(offered);
   const text = offered === spent ? null : suggestionShown(suggestion, { empty, staged, sending });

@@ -47,28 +47,29 @@ func (s *session) suggestNext(turn, serverTurn string) {
 	var res struct {
 		Text *string `json:"text"`
 	}
-	if err := s.conn.Call(ctx, "thread/sample", map[string]any{
+	err := s.conn.Call(ctx, "thread/sample", map[string]any{
 		"threadId":       s.threadID,
 		"expectedTurnId": serverTurn,
 		"prompt":         suggestPrompt,
 		"effort":         "low",
-	}, &res); err != nil {
-		s.host.Logf("codex suggestion dropped: %v", err)
-		return
-	}
-	if res.Text == nil || declined(*res.Text) {
-		return
-	}
-	p, ok := proto.Suggested(turn, *res.Text)
-	if !ok {
-		return
-	}
-	// A turn that started while the sample ran owns the composer now.
+	}, &res)
+	// A turn that started while the sample ran owns the composer now. That is
+	// also the usual reason codex refuses one, so a refusal then is expected
+	// and not worth a log line.
 	s.mu.Lock()
 	stale := s.turnID != "" || s.lastTurn != turn
 	s.mu.Unlock()
 	if stale {
 		return
 	}
-	s.emit(proto.Emit(proto.TurnSuggested, p))
+	if err != nil {
+		s.host.Logf("codex suggestion dropped: %v", err)
+		return
+	}
+	if res.Text == nil || declined(*res.Text) {
+		return
+	}
+	if p, ok := proto.Suggested(turn, *res.Text); ok {
+		s.emit(proto.Emit(proto.TurnSuggested, p))
+	}
 }

@@ -29,8 +29,9 @@ describe("SuggestionChip", () => {
     const outbox = createOutbox();
     const onEdit = vi.fn();
     const onSend = vi.fn();
+    const threads = createThreadStore(after());
     render(
-      <ThreadStoreContext.Provider value={createThreadStore(after())}>
+      <ThreadStoreContext.Provider value={threads}>
         <SuggestionChip
           threadId="t"
           draftStore={draftStore}
@@ -41,7 +42,7 @@ describe("SuggestionChip", () => {
         />
       </ThreadStoreContext.Provider>,
     );
-    return { draftStore, outbox, onEdit, onSend };
+    return { draftStore, outbox, threads, onEdit, onSend };
   }
 
   it("hands the text to the composer when tapped", () => {
@@ -72,5 +73,18 @@ describe("SuggestionChip", () => {
     expect(screen.queryByRole("button", { name: "Send suggestion" })).toBeNull();
     act(() => void outbox.ack("c"));
     expect(screen.queryByRole("button", { name: "Send suggestion" })).toBeNull();
+  });
+
+  it("offers the same text again after the next turn", () => {
+    const { outbox, threads } = mount();
+    act(() => outbox.add({ commandId: "c", threadId: "t", text: "run the tests", attachments: [] }));
+    act(() => void outbox.ack("c"));
+    act(() => {
+      let s = threads.get()!;
+      s = applyEvent(s, ev(4, "turn.started", { turnId: "u2", prompt: "run the tests" }));
+      s = applyEvent(s, ev(5, "turn.finished", { turnId: "u2", stopReason: "end_turn" }));
+      threads.set(applyEvent(s, ev(6, "turn.suggested", { turnId: "u2", text: "run the tests" })));
+    });
+    expect(screen.getByRole("button", { name: "Send suggestion" })).toBeTruthy();
   });
 });
