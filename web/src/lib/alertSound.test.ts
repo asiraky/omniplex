@@ -46,12 +46,17 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 // A fresh module each test: the context and the dedupe clock are module state.
 // The gesture listeners it registers on load come off again after the test, so
 // an earlier test's module never answers a later test's tap.
-let registered: [string, EventListenerOrEventListenerObject, boolean | AddEventListenerOptions?][];
+let registered: {
+  type: string;
+  fn: EventListenerOrEventListenerObject;
+  opts: boolean | AddEventListenerOptions | undefined;
+}[];
 async function load(): Promise<Mod> {
   vi.resetModules();
   const add = window.addEventListener.bind(window);
   const spy = vi.spyOn(window, "addEventListener").mockImplementation((type, fn, opts) => {
-    registered.push([type, fn, opts]);
+    if (!fn) return;
+    registered.push({ type, fn, opts });
     add(type, fn, opts);
   });
   const mod = await import("./alertSound");
@@ -69,7 +74,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const [type, fn, opts] of registered) window.removeEventListener(type, fn, opts);
+  for (const { type, fn, opts } of registered) window.removeEventListener(type, fn, opts);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
