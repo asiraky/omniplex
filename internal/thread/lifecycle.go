@@ -317,7 +317,7 @@ func isCompatibilityHook(path, kind string) bool {
 // baseRefFor is the base a thread asked for: its own choice where it made
 // one, and the folder default otherwise. It is a request, not a ref Git is
 // guaranteed to know — resolveBaseRef turns it into one, and reads empty as
-// HEAD.
+// the repository's default branch.
 func baseRefFor(meta store.ThreadMeta, f project.Folder) string {
 	if base := strings.TrimSpace(meta.BaseRef); base != "" {
 		return base
@@ -551,7 +551,10 @@ func (m *Manager) createWorktreeFrom(ctx context.Context, meta store.ThreadMeta,
 	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookStarted, proto.WorkspaceHookStartedPayload{RunID: uuid.NewString(), Hook: "provision", Command: "git worktree add " + path}))
 	args := []string{"worktree", "add", path, branch}
 	if create {
-		args = []string{"worktree", "add", path, "-b", branch, res.Ref}
+		// The base is where the branch begins, not where it pushes: a thread
+		// branch started from origin/main must not track it, or a bare push
+		// under push.default=upstream lands the thread's work on main.
+		args = []string{"worktree", "add", "--no-track", path, "-b", branch, res.Ref}
 	}
 	b, err := gitCmd(ctx, f.Path, args...).CombinedOutput()
 	if len(b) > 0 && a != nil {

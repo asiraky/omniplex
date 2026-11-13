@@ -141,14 +141,20 @@ func originFirst(names []string) []string {
 // fetching it first if the clone has never seen it — and a base that exists
 // nowhere at all falls back to the repository's default branch with a note,
 // because a thread the user cannot start is worse than a thread that started
-// from the wrong place and says so.
+// from the wrong place and says so. An empty base names the repository's
+// default branch and is resolved exactly as if it had been written out; it is
+// HEAD only when the repository has no default branch to name.
 func resolveBaseRef(ctx context.Context, root, base string) (baseResolution, error) {
 	base = strings.TrimSpace(base)
-	res := baseResolution{Requested: base}
 	if base == "" {
-		res.Ref = "HEAD"
-		return res, nil
+		// "Default" means the default branch, not whatever the user's checkout
+		// happens to be on, so it is freshened like any named base. Only a
+		// repository with no default branch to name starts from HEAD.
+		if base = defaultBranch(ctx, root); base == "HEAD" {
+			return baseResolution{Ref: "HEAD"}, nil
+		}
 	}
+	res := baseResolution{Requested: base}
 	// A ref that looks like a flag would be read as one by `git worktree add`,
 	// so it never reaches git. It is still not worth failing a thread over:
 	// the default branch and a note say more than a refusal does.
@@ -320,12 +326,18 @@ func defaultBranch(ctx context.Context, root string) string {
 			continue
 		}
 		short := strings.TrimPrefix(head, "refs/remotes/")
+		// origin/HEAD outlives the branch it names when upstream renames its
+		// default and the old ref is pruned. Such a HEAD names neither a ref
+		// the worktree add could use nor a local branch worth trusting — the
+		// leftover local copy of a renamed default is exactly the stale base
+		// this exists to avoid — so it is passed over entirely.
+		if short == "" || !hasRemoteRef(ctx, root, short) {
+			continue
+		}
 		if name := strings.TrimPrefix(short, remote+"/"); name != "" && hasLocalBranch(ctx, root, name) {
 			return name
 		}
-		if short != "" {
-			return short
-		}
+		return short
 	}
 	for _, name := range []string{"main", "master"} {
 		if hasLocalBranch(ctx, root, name) {
