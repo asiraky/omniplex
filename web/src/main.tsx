@@ -6,6 +6,7 @@ import { App } from "./App";
 import { ThemeProvider } from "./components/ThemeProvider";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { registerServiceWorker } from "./lib/threadLinks";
+import { guardFileDrops } from "./useFileDrop";
 
 // Toasts only ever report something that happened after load, so the Toaster
 // arrives after first paint; see lib/toast.ts. With no error boundary above it,
@@ -21,6 +22,9 @@ const Toaster = lazy(() =>
 // Push notifications need a worker registered before Settings can subscribe,
 // and a tapped notification is routed by it.
 registerServiceWorker();
+
+// A file dropped where nothing takes it would otherwise replace the app.
+guardFileDrops(window);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

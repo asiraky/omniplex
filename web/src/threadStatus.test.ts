@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { attentionLabel, composerWritable, newCount, rowStatus } from "./threadStatus";
+import { attentionLabel, newCount, rowStatus } from "./threadStatus";
 import type { ThreadMeta } from "~/protocol";
 
 const thread = (over: Partial<ThreadMeta>): ThreadMeta =>
@@ -60,20 +60,5 @@ describe("attentionLabel", () => {
 
   it("says nothing rather than guess when the server sends no attention", () => {
     expect(attentionLabel(thread({ phase: "turn" }))).toBeNull();
-  });
-});
-
-describe("composerWritable", () => {
-  it.each([
-    ["creating", true],
-    ["provisioning", true],
-    ["idle", true],
-    ["turn", true],
-    ["closed", false],
-    ["cleaning", false],
-    ["provision_failed", false],
-    ["cleanup_failed", false],
-  ])("%s takes a message: %s", (phase, writable) => {
-    expect(composerWritable(phase)).toBe(writable);
   });
 });

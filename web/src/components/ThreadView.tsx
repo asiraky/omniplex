@@ -23,7 +23,7 @@ import { ReadAloudContext } from "~/lib/readAloud";
 import { quoteInto, ReplyContext } from "~/lib/reply";
 import { threadTitle } from "~/lib/threadTitle";
 import { toast } from "~/lib/toast";
-import { composerWritable } from "~/threadStatus";
+import { phaseTakesMessages } from "~/threadStatus";
 import { useLatest } from "~/useLatest";
 import type {
   HarnessMeta,
@@ -135,7 +135,7 @@ export function ThreadView({
   // A reply's "reply" quotes it into this thread's draft and takes the cursor
   // there, since what comes next is typing the answer. While the composer is
   // locked (thread closed, workspace going away or broken), replies offer nothing.
-  const writable = useThread(useThreadStore(), writableOf);
+  const writable = useThread(useThreadStore(), composerWritable);
   const { getDraft, setDraft } = store;
   const { composerRef } = recents;
   const reply = useCallback(
@@ -523,7 +523,7 @@ function ThreadComposer({
       ref={recents.composerRef}
       draft={draft}
       onDraftChange={(text) => activeId && store.setDraft(activeId, text)}
-      disabled={!writableOf(state)}
+      disabled={!composerWritable(state)}
       disabledPlaceholder={workspace.placeholder}
       busy={state.phase === "turn"}
       steers={harnessSteers(harnesses, state.harness)}
@@ -590,8 +590,8 @@ function ThreadComposer({
 const titleOf = (state: ThreadState | null) => state?.title;
 const NO_HISTORY: string[] = [];
 const historyOf = (state: ThreadState | null) => (state ? promptHistory(state.items, state.turns) : NO_HISTORY);
-const writableOf = (state: Pick<ThreadState, "closed" | "phase"> | null) =>
-  !!state && !state.closed && composerWritable(state.phase);
+const composerWritable = (state: Pick<ThreadState, "closed" | "phase"> | null) =>
+  !!state && !state.closed && phaseTakesMessages(state.phase);
 const harnessOf = (state: ThreadState | null) => state?.harness;
 
 // What the dock draws. Not jobs: the strip selects those itself, so a job's

@@ -44,7 +44,7 @@ export function rowStatus(s: ThreadMeta): RowStatus {
  * it has closed, nor while its workspace is being cleaned away or has failed.
  * A workspace still being prepared does; only the send waits for it.
  */
-export function composerWritable(phase: string) {
+export function phaseTakesMessages(phase: string) {
   return !["closed", "cleaning", "provision_failed", "cleanup_failed"].includes(phase);
 }
 

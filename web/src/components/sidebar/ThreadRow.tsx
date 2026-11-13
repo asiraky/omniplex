@@ -7,7 +7,7 @@ import {
   PinOffIcon,
   XIcon,
 } from "lucide-react";
-import { memo, useRef, useState, type DragEvent } from "react";
+import { memo, useRef, useState } from "react";
 
 import { HarnessBadge } from "~/components/HarnessBadge";
 import { TitleEditor } from "~/components/TitleEditor";
@@ -20,12 +20,11 @@ import {
 } from "~/components/ui/context-menu";
 import { KbdChord } from "~/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
-import { dragHasFiles } from "~/lib/attachments";
 import { fmtAgo } from "~/lib/format";
 import type { CommandId } from "~/lib/keybindings";
 import { cn } from "~/lib/utils";
 import type { ThreadMeta } from "~/protocol";
-import { composerWritable, rowStatus, unread, type RowStatus } from "~/threadStatus";
+import { phaseTakesMessages, rowStatus, unread, type RowStatus } from "~/threadStatus";
 import { useFileDrop } from "~/useFileDrop";
 import { useShortcut } from "~/useShortcuts";
 import { useNow } from "~/useNow";
@@ -337,22 +336,6 @@ function DeleteControl({ s, onDelete }: { s: ThreadMeta; onDelete: (s: ThreadMet
   );
 }
 
-/**
- * A row that cannot take files still takes the drop, and does nothing with
- * it: left alone, a file let go over the row is the browser's to open, and it
- * opens it in place of the app. The cursor says no while it is over the row.
- */
-const refuseFiles = {
-  onDragOver: (e: DragEvent) => {
-    if (!dragHasFiles(e.dataTransfer)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "none";
-  },
-  onDrop: (e: DragEvent) => {
-    if (dragHasFiles(e.dataTransfer)) e.preventDefault();
-  },
-};
-
 // The row carries its actions as overlaid buttons rather than click handlers
 // on the container — a button cannot legally nest inside another button. The
 // delete X and the pin beside it overlay the timestamp's corner instead of
@@ -422,12 +405,12 @@ export const ThreadRow = memo(function ThreadRow({
   const recede = !active && badge === null;
   // Files dragged from the OS, never a row: a reorder is pointer events, and
   // the drop handlers answer only a drag that carries files. A thread whose
-  // composer would refuse them refuses them here too, and so does a row that
-  // is moving or going.
-  const drop = useFileDrop((files) => {
-    if (files.length > 0) onDropFiles(s.id, files);
-  });
-  const takesFiles = !reordering && !going && !leaving && composerWritable(s.phase);
+  // composer would refuse them refuses them here too, and so does a row in
+  // reorder mode. A row on its way out takes no events at all.
+  const drop = useFileDrop(
+    (files) => onDropFiles(s.id, files),
+    !reordering && phaseTakesMessages(s.phase),
+  );
   return (
     // The row leaves from wherever it stands: it fades and slides out
     // while its own height folds shut under it, so the rows below close
@@ -477,11 +460,9 @@ export const ThreadRow = memo(function ThreadRow({
               going && "pointer-events-none opacity-60",
               // Last, so a receded row comes up to full strength under the
               // drag the way it does under the pointer.
-              takesFiles &&
-                drop.dragging &&
-                "bg-primary/10 ring-primary opacity-100 ring-2 ring-inset",
+              drop.dragging && "bg-primary/10 ring-primary opacity-100 ring-2 ring-inset",
             )}
-            {...(takesFiles ? drop.handlers : refuseFiles)}
+            {...drop.handlers}
           >
             {renaming ? (
               // The same box as the button below, so the row keeps its

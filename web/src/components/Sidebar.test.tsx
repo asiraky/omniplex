@@ -351,16 +351,15 @@ describe("Sidebar", () => {
       expect(props.onDropFiles).not.toHaveBeenCalled();
     });
 
+    // The window's guard refuses what a row does not take (useFileDrop), so
+    // a refusing row leaves the drag uncancelled for it.
     it.each(["closed", "cleaning", "provision_failed", "cleanup_failed"])(
-      "refuses files on a %s thread, but keeps the browser from opening them",
+      "refuses files on a %s thread",
       (phase) => {
         const props = renderSidebar({
           threads: [thread("a"), thread("b", { phase: phase as ThreadMeta["phase"] })],
         });
-        const init = files([one]);
-        expect(fireEvent.dragOver(over("b"), init)).toBe(false);
-        expect(init.dataTransfer.dropEffect).toBe("none");
-        expect(fireEvent.drop(over("b"), init)).toBe(false);
+        expect(dropOn("b", files([one]))).toBe(true);
         expect(props.onDropFiles).not.toHaveBeenCalled();
       },
     );
@@ -383,7 +382,7 @@ describe("Sidebar", () => {
       });
       fireEvent.click(await screen.findByRole("menuitem", { name: "Reorder threads" }));
 
-      expect(dropOn("b", files([one]))).toBe(false);
+      expect(dropOn("b", files([one]))).toBe(true);
       expect(props.onDropFiles).not.toHaveBeenCalled();
 
       fireEvent.click(screen.getByRole("button", { name: "Done" }));
