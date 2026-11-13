@@ -300,7 +300,7 @@ function ExpandedItems({ threadId, items }: { threadId: string; items: Item[] })
 // the fix this design carries: nothing at the tail of a working transcript
 // disappears out from under the reader.
 export function ToolRun({ threadId, items, live }: { threadId: string; items: Item[]; live: boolean }) {
-  const [open, setOpen] = useRevealOpen((id) => items.some((i) => i.id === id));
+  const [open, setOpen] = useState(false);
   const active = items.filter(running).pop() ?? items[items.length - 1];
   const failed = items.some((i) => i.status === "failed");
   const declined = items.some((i) => i.status === "declined");

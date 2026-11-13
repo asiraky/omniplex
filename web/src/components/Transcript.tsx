@@ -216,15 +216,20 @@ function useFindJump(
   const itemsBefore = useLatest(state.itemsBefore ?? 0);
   const loadTo = useLatest(find?.loadTo);
 
+  // Resolves false when the match's page could not be loaded (a failed fetch,
+  // or a page dropped as stale after a resync), so the bar can say so. A jump
+  // superseded by a newer one or a clear is not a failure.
   const onJump = useCallback(
-    async (match: ThreadMatch, q: string) => {
+    async (match: ThreadMatch, q: string): Promise<boolean> => {
       const mine = ++seq.current;
       if (match.index < itemsBefore.current) {
         const loaded = await loadTo.current?.(match.index);
-        if (mine !== seq.current || !loaded) return;
+        if (mine !== seq.current) return true;
+        if (!loaded) return false;
       }
       query.current = q;
       setReveal({ id: match.id });
+      return true;
     },
     [itemsBefore, loadTo],
   );

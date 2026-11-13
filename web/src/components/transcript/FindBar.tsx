@@ -1,5 +1,5 @@
 import { ChevronDownIcon, ChevronUpIcon, XIcon } from "lucide-react";
-import { useEffect, useRef, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { IconButton } from "~/components/IconButton";
 import { Input } from "~/components/ui/input";
@@ -11,8 +11,9 @@ import { useThreadFind, type ThreadFind } from "./useThreadFind";
 
 // Nothing while there is nothing to count. A re-run (stepping past the newest
 // match) keeps the old count up, dimmed, rather than blinking it out.
-function counter(f: ThreadFind): string {
+function counter(f: ThreadFind, jumpFailed: boolean): string {
   if (f.status === "error") return "Search failed";
+  if (jumpFailed) return "Couldn't load match";
   if (f.status === "loading") return f.current ? `${f.ordinal} of ${f.total}` : "…";
   if (f.status !== "ready") return "";
   if (f.total === 0) return "No matches";
@@ -26,7 +27,7 @@ function counter(f: ThreadFind): string {
  * throws the query away.
  *
  * `onJump` hears every (re)selection of a match, with the query to paint in
- * it; `onClear` hears that whatever was painted is stale (the query changed,
+ * it, and resolves false when the match could not be loaded; `onClear` hears that whatever was painted is stale (the query changed,
  * or the bar closed).
  */
 export function ThreadFindBar({
@@ -35,13 +36,23 @@ export function ThreadFindBar({
   onClear,
 }: {
   controls: ThreadFindControls;
-  onJump: (match: ThreadMatch, query: string) => void;
+  onJump: (match: ThreadMatch, query: string) => Promise<boolean>;
   onClear: () => void;
 }) {
   const f = useThreadFind(controls.search);
   const inputRef = useRef<HTMLInputElement>(null);
   const onJumpRef = useLatest(onJump);
   const onClearRef = useLatest(onClear);
+  const [jumpFailed, setJumpFailed] = useState(false);
+
+  // Focus goes back where it was when the bar closes, not to the page body.
+  useEffect(() => {
+    const before = document.activeElement;
+    return () => {
+      const lost = !document.activeElement || document.activeElement === document.body;
+      if (lost && before instanceof HTMLElement && before.isConnected) before.focus();
+    };
+  }, []);
 
   // On open, and again on every repeat ask to open, so a second Ctrl/Cmd+F
   // lands back in the field with its text ready to type over.
@@ -55,6 +66,7 @@ export function ThreadFindBar({
   // The painted occurrences belong to the query that found them.
   useEffect(() => {
     onClearRef.current();
+    setJumpFailed(false);
   }, [f.query, onClearRef]);
   useEffect(() => () => onClearRef.current(), [onClearRef]);
 
@@ -63,18 +75,27 @@ export function ThreadFindBar({
   const current = f.current;
   const query = f.query;
   useEffect(() => {
-    if (current) onJumpRef.current(current, query);
+    if (!current) return;
+    setJumpFailed(false);
+    let live = true;
+    void onJumpRef.current(current, query).then((ok) => live && !ok && setJumpFailed(true));
+    return () => {
+      live = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [f.step]);
 
   const stepping = f.status === "ready" && f.total > 0;
-  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      if (f.status === "error") f.rerun();
-      else if (e.shiftKey) f.prev();
-      else f.next();
-    } else if (e.key === "Escape") {
+  const onInputKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (f.status === "error") f.rerun();
+    else if (e.shiftKey) f.prev();
+    else f.next();
+  };
+  // On the whole bar, so Escape closes it from the step buttons too.
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Escape") {
       // Escape elsewhere can mean "close the panel" or "stop the turn"; here
       // it means this bar and nothing else.
       e.preventDefault();
@@ -84,7 +105,10 @@ export function ThreadFindBar({
   };
 
   return (
-    <div className="bg-background flex shrink-0 items-center gap-1 border-b px-2 py-1 md:px-3">
+    <div
+      onKeyDown={onKeyDown}
+      className="bg-background flex shrink-0 items-center gap-1 border-b px-2 py-1 md:px-3"
+    >
       <Input
         ref={inputRef}
         type="search"
@@ -92,7 +116,7 @@ export function ThreadFindBar({
         placeholder="Find in thread"
         value={f.query}
         onChange={(e) => f.setQuery(e.target.value)}
-        onKeyDown={onKeyDown}
+        onKeyDown={onInputKeyDown}
         enterKeyHint="search"
         autoComplete="off"
         className="h-11 min-w-0 flex-1 text-[13px] md:h-8"
@@ -101,11 +125,11 @@ export function ThreadFindBar({
         aria-live="polite"
         className={cn(
           "shrink-0 px-1 text-center text-[11px] whitespace-nowrap tabular-nums",
-          f.status === "error" ? "text-destructive" : "text-muted-foreground",
+          f.status === "error" || jumpFailed ? "text-destructive" : "text-muted-foreground",
           f.status === "loading" && "opacity-60",
         )}
       >
-        {counter(f)}
+        {counter(f, jumpFailed)}
       </span>
       <IconButton label="Previous match" disabled={!stepping} onClick={() => f.prev()}>
         <ChevronUpIcon />

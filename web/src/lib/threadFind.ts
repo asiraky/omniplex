@@ -5,12 +5,9 @@
     (the same index space as `itemsBefore`). */
 export type ThreadMatch = { id: string; index: number };
 
-/** `GET /api/threads/{id}/search?q=`: the newest matches (at most
-    SEARCH_MATCH_CAP), oldest first, and the true count. */
+/** `GET /api/threads/{id}/search?q=`: the newest matches (the server caps
+    them at 500), oldest first, and the true count. */
 export type ThreadSearchResult = { matches: ThreadMatch[]; total: number };
-
-/** Server-side cap on matches returned; `total` still counts every one. */
-export const SEARCH_MATCH_CAP = 500;
 
 /** Shortest query the server runs. */
 export const SEARCH_MIN_LENGTH = 2;

@@ -40,6 +40,13 @@ type Found = {
 
 const NONE: Found = { status: "idle", matches: [], total: 0, idx: -1, step: 0 };
 
+// Counted in code points, as the server counts runes: one emoji is two UTF-16
+// units but a single character, and too short. All-blank text would match
+// nearly every message, so it waits for something to look for.
+function searchable(q: string): boolean {
+  return [...q].length >= SEARCH_MIN_LENGTH && q.trim() !== "";
+}
+
 /**
  * Find in a thread over a server-side search. The result is a snapshot of
  * when the query ran: typing re-runs it, and so does stepping past the newest
@@ -104,7 +111,7 @@ export function useThreadFind(search: SearchThread): ThreadFind {
       queryRef.current = q;
       setQueryState(q);
       cancel();
-      if (q.length < SEARCH_MIN_LENGTH) {
+      if (!searchable(q)) {
         update((f) => ({ ...NONE, status: q ? "short" : "idle", step: f.step }));
         return;
       }
@@ -140,7 +147,7 @@ export function useThreadFind(search: SearchThread): ThreadFind {
   }, [select]);
 
   const rerun = useCallback(() => {
-    if (queryRef.current.length >= SEARCH_MIN_LENGTH) run(queryRef.current);
+    if (searchable(queryRef.current)) run(queryRef.current);
   }, [run]);
 
   useEffect(() => cancel, [cancel]);

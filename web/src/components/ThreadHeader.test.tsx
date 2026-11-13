@@ -88,9 +88,11 @@ describe("ThreadHeader: find in thread", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Find in thread" }));
     expect(onFind).toHaveBeenCalledOnce();
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
-    // The menu returns focus a tick after it closes; the find field keeps it.
+    // The menu returns focus a tick after it closes; instead it asks again,
+    // so the bar puts focus back in its field.
     await act(() => new Promise((r) => setTimeout(r, 10)));
     expect(document.activeElement).not.toBe(trigger);
+    expect(onFind).toHaveBeenCalledTimes(2);
   });
 
   it("still returns focus to the trigger after any other item", async () => {

@@ -42,6 +42,9 @@ export interface KeyContext {
   threadOpen: boolean;
   turnRunning: boolean;
   panelOpen: boolean;
+  /** The open thread's transcript is on screen, not covered by a full-page
+      screen (usage, tools) whose page the browser's own find should search. */
+  transcriptShown: boolean;
   /** Focus is in a terminal, whose own Ctrl/⌘+F is left to the browser. */
   terminalFocus: boolean;
   /** Focus is in the diff panel, whose find takes Ctrl/⌘+F. */
@@ -162,7 +165,7 @@ export const COMMANDS = {
     group: "Threads",
     app: [mod("f")],
     browser: [mod("f")],
-    guard: (ctx) => ctx.threadOpen && !ctx.terminalFocus && !ctx.diffFocus,
+    guard: (ctx) => ctx.transcriptShown && !ctx.terminalFocus && !ctx.diffFocus,
   },
   copyTranscript: {
     label: "Copy transcript",

@@ -199,6 +199,7 @@ export function App() {
       paletteOpen: palette.open,
       helpOpen: palette.helpOpen,
       threadOpen: attached,
+      transcriptShown: attached && !screens.fullPage,
       turnRunning,
       panelOpen: panel.open,
     },

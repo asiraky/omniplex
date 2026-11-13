@@ -35,6 +35,7 @@ const ctx = (over: Partial<KeyContext> = {}): KeyContext => ({
   helpOpen: false,
   modelPickerOpen: false,
   threadOpen: true,
+  transcriptShown: true,
   turnRunning: false,
   panelOpen: false,
   terminalFocus: false,
@@ -213,7 +214,9 @@ describe("resolveCommand", () => {
     expect(early(f, ctx({ diffFocus: true, dialogOpen: true }))).toBe("findInDiff");
     // Nothing claims it, so the browser's own find runs.
     expect(early(f, ctx({ terminalFocus: true }))).toBeNull();
-    expect(early(f, ctx({ threadOpen: false }))).toBeNull();
+    expect(early(f, ctx({ threadOpen: false, transcriptShown: false }))).toBeNull();
+    // A full-page screen over the thread: the browser finds in that page.
+    expect(early(f, ctx({ transcriptShown: false }))).toBeNull();
     expect(early(f, ctx({ dialogOpen: true }))).toBeNull();
     expect(early(ev("f", "KeyF", { ctrlKey: true }), ctx(), "other")).toBe("findInThread");
     expect(early(ev("f", "KeyF"), ctx())).toBeNull();

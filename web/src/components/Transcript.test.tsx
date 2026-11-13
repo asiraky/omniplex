@@ -1252,6 +1252,28 @@ describe("find in thread", () => {
     await waitFor(() => expect(scrolledTo()).toContain("old"));
   });
 
+  it("says so when a match's page cannot be loaded", async () => {
+    const loadTo = vi.fn(async (_: number) => false);
+    attach(
+      finished([], 3),
+      <Transcript
+        {...view().props}
+        find={controls({ loadTo, search: async () => ({ matches: [{ id: "old", index: 0 }], total: 1 }) })}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Find in thread"), { target: { value: "needle" } });
+    await waitFor(() => expect(screen.getByText("Couldn't load match")).toBeTruthy());
+    expect(scrolledTo()).not.toContain("old");
+  });
+
+  it("closes on Escape from the step buttons too", () => {
+    const close = vi.fn();
+    attach(finished(), <Transcript {...view().props} find={controls({ close })} />);
+    fireEvent.keyDown(screen.getByRole("button", { name: "Close find" }), { key: "Escape" });
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("closes on Escape", () => {
     const close = vi.fn();
     attach(finished(), <Transcript {...view().props} find={controls({ close })} />);

@@ -301,11 +301,14 @@ function PhoneActions({ actions }: { actions: Actions }) {
         align="end"
         className="min-w-48"
         onCloseAutoFocus={(e) => {
-          // The menu hands focus back to its trigger as it closes, which would
-          // take it out of the find field and drop the keyboard it raised.
+          // The menu traps focus while open, so the field the bar focused on
+          // opening lost it straight back; and closing would hand it to the
+          // trigger. Ask again now the menu has let go: the bar refocuses its
+          // field on every ask.
           if (!finding.current) return;
           finding.current = false;
           e.preventDefault();
+          onFind();
         }}
       >
         <DropdownMenuItem

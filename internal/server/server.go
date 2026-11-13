@@ -320,7 +320,7 @@ func (s *Server) Handler() http.Handler {
 		from := -1
 		if v := r.URL.Query().Get("from"); v != "" {
 			if from, err = strconv.Atoi(v); err != nil || from < 0 {
-				writeError(w, http.StatusBadRequest, "from must be a non-negative integer")
+				http.Error(w, "from must be a non-negative integer", http.StatusBadRequest)
 				return
 			}
 		}

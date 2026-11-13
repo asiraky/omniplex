@@ -10,6 +10,7 @@ const APP: AppKeyState = {
   paletteOpen: false,
   helpOpen: false,
   threadOpen: true,
+  transcriptShown: true,
   turnRunning: true,
   panelOpen: false,
 };
@@ -219,6 +220,21 @@ describe("useKeybindings", () => {
       mount(h);
 
       press(button, ctrlF);
+
+      expect(h.findInDiff).toHaveBeenCalledOnce();
+      expect(h.findInThread).not.toHaveBeenCalled();
+    });
+
+    it("finds in the diff from the phone's panel sheet, which holds focus itself", () => {
+      const sheet = add("div", { role: "dialog", tabindex: "-1" });
+      const surface = document.createElement("div");
+      surface.setAttribute("data-diff-surface", "");
+      sheet.append(surface);
+      sheet.focus();
+      const h = handlers();
+      mount(h);
+
+      press(sheet, ctrlF);
 
       expect(h.findInDiff).toHaveBeenCalledOnce();
       expect(h.findInThread).not.toHaveBeenCalled();

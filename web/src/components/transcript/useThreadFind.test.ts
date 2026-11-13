@@ -67,6 +67,18 @@ describe("useThreadFind", () => {
     expect(find().status).toBe("idle");
   });
 
+  it("counts characters, not UTF-16 units, and waits on blank text", () => {
+    const { calls, find, type, wait } = setup();
+    // One emoji: two units, one character.
+    type("🦓");
+    wait(FIND_DEBOUNCE_MS * 4);
+    expect(find().status).toBe("short");
+    type("   ");
+    wait(FIND_DEBOUNCE_MS * 4);
+    expect(find().status).toBe("short");
+    expect(calls).toHaveLength(0);
+  });
+
   it("opens on the newest match, counted against the true total", async () => {
     const { find, searchFor } = setup();
     await searchFor("hello", { matches: at(3, 7, 9), total: 12 });
