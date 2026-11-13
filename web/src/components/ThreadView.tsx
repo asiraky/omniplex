@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 
 import { useDraft } from "~/app/draftStore";
+import { useStash } from "~/app/stashStore";
 import { useFailedSend, useWaitingSend } from "~/app/outbox";
 import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import type { ComposerDrafts } from "~/app/useComposerDrafts";
@@ -14,6 +15,7 @@ import type { ConnectionStatus } from "~/client";
 import type { ScrollPosition } from "~/components/transcript/scrollAnchor";
 import type { CardSignIn } from "~/lib/cards";
 import { describeSettings, pickerInstances, resolveInstance } from "~/lib/models";
+import { promptHistory, sameHistory } from "~/lib/promptHistory";
 import { OpenPathContext } from "~/lib/openPath";
 import { ReadAloudContext } from "~/lib/readAloud";
 import { quoteInto, ReplyContext } from "~/lib/reply";
@@ -456,6 +458,23 @@ function ThreadComposer({
   // The one part of the thread view that draws usage (the context meter), so
   // the one that rerenders on a usage tick.
   const state = useThread(useThreadStore(), composerFields, shallow);
+  // The thread's prompts as strings, so a streamed reply, which changes the
+  // items but not what was asked, does not rerender the composer.
+  const history = useThread(useThreadStore(), historyOf, sameHistory);
+  const stashed = useStash(store.stashStore, activeId);
+  const { stashDraft, unstash, dropStash } = store;
+  const stash = useMemo(
+    () =>
+      activeId
+        ? {
+            entries: stashed,
+            save: () => stashDraft(activeId),
+            take: (id: string) => unstash(activeId, id),
+            drop: (id: string) => dropStash(activeId, id),
+          }
+        : undefined,
+    [activeId, stashed, stashDraft, unstash, dropStash],
+  );
   if (!state) return null;
   return (
     <Composer
@@ -492,6 +511,8 @@ function ThreadComposer({
       onRunComposerAction={commands.runComposerAction}
       onCommandUsed={recents.noteUsed}
       dictation={dictate && activeId ? { thread: activeId } : undefined}
+      history={history}
+      stash={stash}
       failure={
         failed && {
           reason: failed.reason,
@@ -507,6 +528,8 @@ function ThreadComposer({
 }
 
 const titleOf = (state: ThreadState | null) => state?.title;
+const NO_HISTORY: string[] = [];
+const historyOf = (state: ThreadState | null) => (state ? promptHistory(state.items) : NO_HISTORY);
 const composerWritable = (state: Pick<ThreadState, "closed" | "phase"> | null) => {
   if (!state || state.closed) return false;
   const workspace = workspaceStatus(state.phase);

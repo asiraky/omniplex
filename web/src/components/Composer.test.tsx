@@ -5,7 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { stubExecCommand } from "~/test/execCommand";
 import { render, wrap } from "~/test/harness";
-import { Composer, type ComposerHandle } from "./Composer";
+import { Composer, type ComposerHandle, type ComposerStash } from "./Composer";
 import type { Attachment } from "~/lib/attachments";
 import type { HarnessMeta } from "~/protocol";
 import type { ComposerCatalogue } from "./composer/useComposerItems";
@@ -950,5 +950,163 @@ describe("fitting the toolbar to the composer's width", () => {
     const trigger = mountAt(0);
     expect(trigger.textContent).toContain("High");
     expect(screen.getByRole("button", { name: "tool in row" })).toBeTruthy();
+  });
+});
+
+describe("earlier prompts and stashed drafts", () => {
+  const exec = stubExecCommand();
+  const history = ["first ask", "second ask", "third ask"];
+
+  function renderControlled(initial: string, over: Partial<React.ComponentProps<typeof Composer>> = {}) {
+    const onDraftChange = vi.fn();
+    function Host() {
+      const [draft, setDraft] = useState(initial);
+      return (
+        <Composer
+          draft={draft}
+          onDraftChange={(next) => {
+            onDraftChange(next);
+            setDraft(next);
+          }}
+          disabled={false}
+          busy={false}
+          onSend={vi.fn()}
+          onCancel={vi.fn()}
+          history={history}
+          {...over}
+        />
+      );
+    }
+    render(<Host />);
+    return { onDraftChange };
+  }
+
+  const up = () => fireEvent.keyDown(box(), { key: "ArrowUp" });
+  const down = () => fireEvent.keyDown(box(), { key: "ArrowDown" });
+  const value = () => (box() as HTMLTextAreaElement).value;
+
+  it("walks back through the thread's prompts from an empty composer, and forward to empty again", () => {
+    const edit = exec.editing();
+    renderControlled("");
+    up();
+    expect(value()).toBe("third ask");
+    up();
+    up();
+    expect(value()).toBe("first ask");
+    up();
+    expect(value()).toBe("first ask");
+    down();
+    expect(value()).toBe("second ask");
+    down();
+    down();
+    expect(value()).toBe("");
+    // Typed in, so undo can take each step back.
+    expect(edit).toHaveBeenCalledWith("insertText", false, "third ask");
+  });
+
+  it("leaves a draft alone, and a recall once it is edited", () => {
+    exec.editing();
+    renderControlled("my own words");
+    up();
+    expect(value()).toBe("my own words");
+
+    fireEvent.change(box(), { target: { value: "" } });
+    up();
+    fireEvent.change(box(), { target: { value: "third ask, edited" } });
+    up();
+    expect(value()).toBe("third ask, edited");
+  });
+
+  it("moves the caret through a prompt of several lines before stepping past it", () => {
+    exec.editing();
+    renderControlled("", { history: ["one", "line a\nline b"] });
+    up();
+    expect(value()).toBe("line a\nline b");
+    // The caret ends after "line b", on the last line, so ArrowUp is the caret's.
+    const caretMove = fireEvent.keyDown(box(), { key: "ArrowUp" });
+    expect(caretMove).toBe(true);
+    expect(value()).toBe("line a\nline b");
+    (box() as HTMLTextAreaElement).setSelectionRange(2, 2);
+    up();
+    expect(value()).toBe("one");
+  });
+
+  it("writes the recall when the browser cannot type it", () => {
+    exec.absent();
+    const { onDraftChange } = renderControlled("");
+    up();
+    expect(onDraftChange.mock.calls).toEqual([["third ask"]]);
+  });
+
+  const stash = (over: Partial<ComposerStash> = {}) => ({
+    entries: [] as ComposerStash["entries"],
+    save: vi.fn(() => true),
+    take: vi.fn(),
+    drop: vi.fn(),
+    ...over,
+  });
+  const openMenu = () =>
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Stash and recent prompts" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+  it("has no menu without a stash", () => {
+    renderControlled("");
+    expect(screen.queryByRole("button", { name: "Stash and recent prompts" })).toBeNull();
+  });
+
+  it("stashes the draft, and only once there is something to stash", async () => {
+    const s = stash();
+    const { rerender } = mount({ draft: "", stash: s });
+    openMenu();
+    expect((await screen.findByRole("menuitem", { name: "Stash draft" })).getAttribute("data-disabled")).toBe("");
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+
+    rerender({ draft: "half a thought" });
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Stash draft" }));
+    expect(s.save).toHaveBeenCalled();
+  });
+
+  it("puts a stashed draft back, and removes one without putting it back", async () => {
+    const entries = [
+      { id: "a", text: "parked one", attachments: [], at: 1 },
+      { id: "b", text: "parked two", attachments: [staged()], at: 0 },
+    ];
+    const s = stash({ entries });
+    mount({ stash: s });
+    openMenu();
+    const two = await screen.findByRole("menuitem", { name: /parked two/ });
+    expect(two.textContent).toContain("1 attachment");
+    fireEvent.click(within(two).getByRole("button", { name: "Remove stashed draft" }));
+    expect(s.drop).toHaveBeenCalledWith("b");
+    expect(s.take).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: /parked one/ }));
+    expect(s.take).toHaveBeenCalledWith("a");
+  });
+
+  it("recalls a recent prompt from the menu, newest first, parking the draft it replaces", async () => {
+    exec.editing();
+    const s = stash();
+    const { onDraftChange } = renderControlled("unsent words", { stash: s });
+    openMenu();
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual(["Stash draft", "third ask", "second ask", "first ask"]);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "first ask" }));
+    expect(s.save).toHaveBeenCalled();
+    expect(onDraftChange).toHaveBeenLastCalledWith("first ask");
+  });
+
+  it("recalls into an empty composer without parking anything", async () => {
+    exec.editing();
+    const s = stash();
+    const { onDraftChange } = renderControlled("", { stash: s });
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "second ask" }));
+    expect(s.save).not.toHaveBeenCalled();
+    expect(onDraftChange).toHaveBeenLastCalledWith("second ask");
   });
 });
