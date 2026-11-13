@@ -114,6 +114,12 @@ describe("a files restore", () => {
     expect(restoreBlocker(me, [other("/wt/feature/")])).toBe("shared");
   });
 
+  it("does not count the project checkout or a borrowed worktree around it", () => {
+    expect(restoreBlocker(me, [{ ...other("/wt"), workspaceMode: "local" }])).toBeNull();
+    expect(restoreBlocker(me, [{ ...other("/wt"), workspaceMode: "borrowed" }])).toBeNull();
+    expect(restoreBlocker(me, [{ ...other("/wt/feature"), workspaceMode: "local" }])).toBe("shared");
+  });
+
   it("does not count a closed thread", () => {
     expect(restoreBlocker(me, [other("/wt/feature", "closed")])).toBeNull();
   });

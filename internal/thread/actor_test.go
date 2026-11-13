@@ -35,11 +35,11 @@ type fakeAdapter struct {
 	rewindErr  error
 	rewindGate <-chan struct{}
 	onRewind   func()
-	mu        sync.Mutex
-	last      *fakeThread
-	live      []adapter.ModelMeta
-	liveErr   error
-	listCalls int
+	mu         sync.Mutex
+	last       *fakeThread
+	live       []adapter.ModelMeta
+	liveErr    error
+	listCalls  int
 	// listGate, when set, holds the listing open so a test can prove the
 	// caller did not wait for it.
 	listGate      chan struct{}

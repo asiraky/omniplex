@@ -491,7 +491,8 @@ func TestRestoreBlockedByASharedCheckout(t *testing.T) {
 	}{
 		{"the same folder", self, store.ThreadMeta{ID: "o", Cwd: wt, Phase: "idle"}, true},
 		{"a folder inside it", self, store.ThreadMeta{ID: "o", Cwd: filepath.Join(wt, "pkg"), Phase: "turn"}, true},
-		{"a folder holding it", self, store.ThreadMeta{ID: "o", Cwd: filepath.Join(base, "project"), Phase: "idle"}, true},
+		{"a plain folder holding it", self, store.ThreadMeta{ID: "o", Cwd: base, Phase: "idle"}, true},
+		{"the project checkout holding it", self, store.ThreadMeta{ID: "o", Cwd: filepath.Join(base, "project"), WorkspaceMode: "local", Phase: "idle"}, false},
 		{"a closed thread", self, store.ThreadMeta{ID: "o", Cwd: wt, Phase: "closed"}, false},
 		{"an unrelated folder", self, store.ThreadMeta{ID: "o", Cwd: filepath.Join(base, "project", ".worktrees", "minefield"), Phase: "idle"}, false},
 		{"a managed thread still being made", self, store.ThreadMeta{ID: "o", Cwd: filepath.Join(base, "project"), WorkspaceMode: "managed", Phase: "provisioning"}, false},
@@ -504,7 +505,18 @@ func TestRestoreBlockedByASharedCheckout(t *testing.T) {
 			if tc.other.ID != "" {
 				threads = append(threads, tc.other)
 			}
-			err := restoreBlocked(tc.self, wt, threads)
+			// The project folder and the worktree are each a checkout of
+			// their own; the folder above both is not one.
+			checkoutOf := func(dir string) string {
+				switch {
+				case dir == wt || within(dir, wt):
+					return wt
+				case dir == filepath.Join(base, "project") || within(dir, filepath.Join(base, "project")):
+					return filepath.Join(base, "project")
+				}
+				return ""
+			}
+			err := restoreBlocked(tc.self, wt, threads, checkoutOf)
 			if (err != nil) != tc.blocked {
 				t.Fatalf("restoreBlocked = %v, want blocked %v", err, tc.blocked)
 			}

@@ -83,23 +83,26 @@ function inside(path: string, dir: string): boolean {
  * Whether a rewind may also put the files back: only in a worktree Omniplex
  * made for this thread, and only while no other open thread works in the same
  * folder, inside it, or around it — a restore would rewrite that thread's
- * files under it. Mirrors the server, which has the last word.
+ * files under it. A thread in the project folder or a borrowed worktree holds
+ * worktrees on disk without working in them (it is a checkout of its own), so
+ * it does not count when it is around this one. Mirrors the server, which has
+ * the last word.
  */
 export function restoreBlocker(
   thread: Pick<ThreadMeta, "id" | "cwd" | "workspaceMode">,
-  threads: Pick<ThreadMeta, "id" | "cwd" | "phase" | "attention">[],
+  threads: Pick<ThreadMeta, "id" | "cwd" | "phase" | "attention" | "workspaceMode">[],
 ): RestoreBlocker | null {
   if (thread.workspaceMode === "local") return "project";
   if (thread.workspaceMode !== "managed" || !thread.cwd) return "unmanaged";
   const cwd = thread.cwd.replace(/\/+$/, "");
-  const shared = threads.some(
-    (o) =>
-      o.id !== thread.id &&
-      o.phase !== "closed" &&
-      o.attention !== "closed" &&
-      !!o.cwd &&
-      (inside(o.cwd, cwd) || inside(cwd, o.cwd)),
-  );
+  const ownCheckout = (o: Pick<ThreadMeta, "workspaceMode">) =>
+    o.workspaceMode === "local" || o.workspaceMode === "borrowed";
+  const shared = threads.some((o) => {
+    if (o.id === thread.id || o.phase === "closed" || o.attention === "closed" || !o.cwd) return false;
+    const theirs = o.cwd.replace(/\/+$/, "");
+    if (inside(theirs, cwd)) return true;
+    return inside(cwd, theirs) && !ownCheckout(o);
+  });
   return shared ? "shared" : null;
 }
 
@@ -120,7 +123,7 @@ export function rewindTarget(
   s: ThreadState,
   item: Item,
   meta: Pick<ThreadMeta, "id" | "cwd" | "workspaceMode"> | undefined,
-  threads: Pick<ThreadMeta, "id" | "cwd" | "phase" | "attention">[],
+  threads: Pick<ThreadMeta, "id" | "cwd" | "phase" | "attention" | "workspaceMode">[],
 ): RewindTarget | null {
   const turnId = item.turnId;
   const i = turnId ? s.turns.findIndex((t) => t.id === turnId) : -1;

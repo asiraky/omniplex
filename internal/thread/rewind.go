@@ -215,7 +215,8 @@ func (a *Actor) restoreRefusal(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return restoreBlocked(self, a.checkpoints.root, threads)
+	checkoutOf := func(dir string) string { return repoRoot(ctx, dir) }
+	return restoreBlocked(self, a.checkpoints.root, threads, checkoutOf)
 }
 
 // restoreBlocked is the rule for offering a files restore, which the web
@@ -224,12 +225,13 @@ func (a *Actor) restoreRefusal(ctx context.Context) error {
 // only while no other open thread works in that folder, inside it, or in a
 // folder that holds it: a restore writes and deletes files under whoever else
 // is there. root is the checkout the snapshots are of, which holds the
-// thread's folder; both are checked.
-func restoreBlocked(self store.ThreadMeta, root string, threads []store.ThreadMeta) error {
+// thread's folder; both are checked. checkoutOf answers the top of the git
+// checkout a folder is in, or "".
+func restoreBlocked(self store.ThreadMeta, root string, threads []store.ThreadMeta, checkoutOf func(string) string) error {
 	if self.WorkspaceMode != "managed" {
 		return errors.New("files are only restored in a worktree omniplex made for this thread")
 	}
-	if other, ok := sharedCheckout(self.ID, []string{self.Cwd, root}, threads); ok {
+	if other, ok := sharedCheckout(self.ID, root, []string{self.Cwd, root}, threads, checkoutOf); ok {
 		title := other.Title
 		if title == "" {
 			title = "untitled thread"
@@ -243,7 +245,20 @@ func restoreBlocked(self store.ThreadMeta, root string, threads []store.ThreadMe
 // dirs, inside one, or holds one. A closed thread has released its folder. A
 // managed thread still being made has the project root as a placeholder, not
 // a folder it works in (see ListWorkspaces).
-func sharedCheckout(self string, dirs []string, threads []store.ThreadMeta) (store.ThreadMeta, bool) {
+//
+// A thread whose folder holds one of dirs only counts when it is not in a git
+// checkout of its own. Worktrees live under the project folder, so a thread
+// working in the project checkout holds every one of them on disk, but its
+// harness works in that checkout, where the worktree is only an ignored
+// folder. A plain folder that holds the worktree is another matter: nothing
+// keeps an agent there out of these files.
+func sharedCheckout(self, root string, dirs []string, threads []store.ThreadMeta, checkoutOf func(string) string) (store.ThreadMeta, bool) {
+	ownCheckout := ""
+	if root != "" {
+		if abs, err := filepath.Abs(root); err == nil {
+			ownCheckout = canonicalPath(abs)
+		}
+	}
 	var mine []string
 	for _, d := range dirs {
 		if d == "" {
@@ -266,10 +281,25 @@ func sharedCheckout(self string, dirs []string, threads []store.ThreadMeta) (sto
 		}
 		theirs := canonicalPath(abs)
 		for _, d := range mine {
-			if theirs == d || within(theirs, d) || within(d, theirs) {
+			if theirs == d || within(theirs, d) {
+				return t, true
+			}
+			if within(d, theirs) && !inOtherCheckout(theirs, ownCheckout, checkoutOf) {
 				return t, true
 			}
 		}
 	}
 	return store.ThreadMeta{}, false
+}
+
+// inOtherCheckout reports whether dir is inside a git checkout other than own.
+func inOtherCheckout(dir, own string, checkoutOf func(string) string) bool {
+	co := checkoutOf(dir)
+	if co == "" {
+		return false
+	}
+	if abs, err := filepath.Abs(co); err == nil {
+		co = canonicalPath(abs)
+	}
+	return co != own
 }
