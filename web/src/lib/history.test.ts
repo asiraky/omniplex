@@ -280,34 +280,42 @@ describe("navigate", () => {
     expect(window.location.pathname).toBe("/thread/a");
   });
 
-  it("closes the sheets over the old place", async () => {
+  it("leaves a sheet it did not come from open, with an entry over the new place", async () => {
+    // A delete confirm whose delete moves the app off the thread.
     navigate("/thread/a");
     const a = sheet();
     mount(a);
-
-    act(() => navigate("/thread/b"));
-    expect(a.open).toBe(false);
-    await settle();
-
-    await back();
-    expect(window.location.pathname).toBe("/thread/a");
-  });
-
-  it("puts back the entry of a sheet that will not close for it", async () => {
-    navigate("/thread/a");
-    const a = sheet();
-    mount(a);
-    a.busy = true;
 
     act(() => navigate("/thread/b"));
     expect(a.open).toBe(true);
     await landsAt(1);
     expect(window.location.pathname).toBe("/thread/b");
 
-    a.busy = false;
     await back();
     expect(a.open).toBe(false);
     expect(window.location.pathname).toBe("/thread/b");
+
+    await back();
+    expect(window.location.pathname).toBe("/thread/a");
+  });
+
+  it("after a rename under a sheet, keeps the renamed place behind the new one", async () => {
+    // Cold start on a phone: the sidebar is up before the restore settles.
+    navigate("/");
+    const a = sheet();
+    mount(a);
+    navigate("/thread/a", { replace: true });
+
+    act(() => {
+      navigate("/thread/b");
+      a.set(false);
+    });
+    await waitFor(() => expect(window.location.pathname).toBe("/thread/b"));
+    await settle();
+    expect(layerDepth()).toBe(0);
+
+    await back();
+    expect(window.location.pathname).toBe("/thread/a");
   });
 
   it("from sheets over a draft, replaces the draft", async () => {
@@ -317,7 +325,11 @@ describe("navigate", () => {
     const upper = sheet();
     mount(lower, upper);
 
-    act(() => navigate("/thread/b"));
+    act(() => {
+      navigate("/thread/b");
+      lower.set(false);
+      upper.set(false);
+    });
     await waitFor(() => expect(window.location.pathname).toBe("/thread/b"));
     await settle();
     expect(layerDepth()).toBe(0);

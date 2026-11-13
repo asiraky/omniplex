@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { DeleteThreadDialog, useDeleteThread } from "./DeleteThreadDialog";
 import { loadDeleteThreadDialog } from "./loadDeleteThreadDialog";
-import { render, wrap } from "~/test/harness";
+import { render, viewport, wrap } from "~/test/harness";
 import type { ThreadMeta } from "~/protocol";
 
 // The dialog loads after the first paint in the app; here it is on hand from
@@ -138,6 +138,24 @@ describe("the delete confirmation, opened from outside the sidebar", () => {
 
     // The thread has not left the list, so the dialog is still honest about
     // what is happening — exactly as it behaves from the sidebar.
+    expect(screen.getByText("Deleting worktree…")).toBeTruthy();
+  });
+
+  it("holds against a phone's Back while the delete runs", async () => {
+    viewport("phone");
+    const threads = [thread("a", { workspaceMode: "managed", cwd: "/tmp/repo/.worktrees/a" })];
+    render(
+      <Standalone threads={threads} target={threads[0]} onDelete={() => new Promise(() => {})} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Finish" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await act(async () => {
+      const popped = new Promise((r) => window.addEventListener("popstate", r, { once: true }));
+      window.history.back();
+      await popped;
+    });
+
     expect(screen.getByText("Deleting worktree…")).toBeTruthy();
   });
 });

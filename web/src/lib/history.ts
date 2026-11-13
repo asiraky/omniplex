@@ -32,7 +32,10 @@ const DRAFT = "omniplexDraft";
 
 interface Layer {
   depth: number;
+  // Back reached the entry under it.
   close: () => void;
+  // A navigate took its entry over for the new place.
+  lost: () => void;
 }
 
 // The sheets whose entries are in history, bottom first.
@@ -76,10 +79,12 @@ export function isDraftEntry(state: unknown = window.history.state): boolean {
 
 /**
  * Go to a thread's path, or to / for a draft or for nothing. Pushes, unless
- * told to replace or the current entry is a sheet's or a draft's: the sheet
- * closes as the app moves on, and its entry becomes the new place, so Back
- * from there skips the sheet and the abandoned draft both. A replace with
- * sheets open renames the place under them and leaves them open.
+ * told to replace or the current entry is a sheet's or a draft's: that entry
+ * becomes the new place, so Back from there skips the sheet and the abandoned
+ * draft both. A sheet still open once the app has moved on (one that did not
+ * close on the pick, or one the move did not come from) gets a new entry over
+ * the new place. A replace with sheets open renames the place under them and
+ * leaves them open.
  */
 export function navigate(path: string, { draft = false, replace = false } = {}) {
   const state = draft ? { [DRAFT]: true } : null;
@@ -88,13 +93,13 @@ export function navigate(path: string, { draft = false, replace = false } = {}) 
     whenLanded(rename);
     return;
   }
-  renamed = null;
-  // Moving on: whatever covers the old place goes, and its entries are taken
-  // over below rather than unwound. A sheet that will not close yet puts one
-  // back over the new place.
+  if (replace) renamed = null;
+  // The sheets' entries are taken over below rather than unwound. Nothing is
+  // closed here: a pick closes the sheet it came from itself, and a dialog
+  // mid-delete must not lose its window just because the app moved on.
   const covering = live.splice(0);
   closed.clear();
-  for (const layer of covering.reverse()) layer.close();
+  for (const layer of covering) layer.lost();
   const write = () => {
     const takeOver = depthOf() > 0 || isDraftEntry();
     if (replace || takeOver) window.history.replaceState(state, "", path);
@@ -104,10 +109,15 @@ export function navigate(path: string, { draft = false, replace = false } = {}) 
     // From a sheet opened over another (the palette over the phone's sidebar),
     // only the bottom sheet's entry is taken over: the ones above it would be
     // dead steps behind the new place. Over a draft, the draft's own entry is,
-    // as it would be with no sheet open.
+    // as it would be with no sheet open. Over a place still waiting on a
+    // rename, the place's own entry takes the name first and the new place
+    // goes after it, or Back would skip the place the user was on.
     const depth = depthOf();
-    const to = isDraftEntry() ? 0 : Math.min(depth, 1);
-    if (depth === to) return write();
+    const to = renamed || isDraftEntry() ? 0 : Math.min(depth, 1);
+    if (depth === to) {
+      rename();
+      return write();
+    }
     afterLanding.push(write);
     goBack(depth, to);
   });
@@ -136,7 +146,7 @@ function rename() {
 }
 
 /** Put an entry under a sheet that just opened; Back calls `close`. */
-function pushLayer(close: () => void): Layer {
+function pushLayer(close: () => void, lost: () => void): Layer {
   listen();
   const depth = currentDepth();
   // A sheet that closed and opened again before its entry was unwound (React
@@ -144,11 +154,11 @@ function pushLayer(close: () => void): Layer {
   // rather than leaving it behind as a dead step.
   if (closed.has(depth) && !live.some((l) => l.depth === depth)) {
     closed.delete(depth);
-    const layer = { depth, close };
+    const layer = { depth, close, lost };
     live.push(layer);
     return layer;
   }
-  const layer = { depth: depth + 1, close };
+  const layer = { depth: depth + 1, close, lost };
   live.push(layer);
   whenLanded(() => {
     // Closed again, or taken over by a navigate, while it waited.
@@ -241,18 +251,19 @@ export function useBackDismiss(open: boolean, close: () => void) {
   useEffect(() => {
     if (!active) return;
     let done = false;
+    // Still open a moment after losing its entry (to a Back it refused while
+    // busy saving, or to a navigate it outlived), the next Back would change
+    // thread: put one back. One that did close is cleaned up by then; if React
+    // is slower than that, the entry put back is unwound when it does.
+    const keep = () =>
+      setTimeout(() => {
+        if (!done) layer = put();
+      }, REFUSED_MS);
     const put = (): Layer =>
       pushLayer(() => {
         closeRef.current();
-        // One that will not close yet (busy saving) has lost its entry all
-        // the same, to Back or to a navigate, and the next Back would change
-        // thread: put it back. One
-        // that did close is cleaned up by then; if React is slower than
-        // that, the entry put back is unwound when it does.
-        setTimeout(() => {
-          if (!done) layer = put();
-        }, REFUSED_MS);
-      });
+        keep();
+      }, keep);
     let layer = put();
     return () => {
       done = true;

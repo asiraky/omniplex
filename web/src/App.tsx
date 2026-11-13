@@ -351,7 +351,7 @@ export function App() {
           onReorder={moveThread}
           // Only with a thread or a draft behind the drawer: otherwise it is
           // the landing screen, and Back closing it would show nothing.
-          backCloses={!!activeId || !!nav.creating}
+          backDismiss={!!activeId || !!nav.creating}
         />
 
         <DeleteThreadDialog flow={deletion.deleteFlow} />

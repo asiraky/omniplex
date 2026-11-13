@@ -118,7 +118,7 @@ interface SidebarProps {
    * drawer is the landing screen and there is nothing behind it, so Back has
    * to leave it alone and do whatever Back did before.
    */
-  backCloses: boolean;
+  backDismiss: boolean;
   /**
    * Moves a thread to a new place in the user's order. `threads` must already
    * be in that order, and must show the move at once: the row the user just
@@ -575,7 +575,7 @@ export const Sidebar = memo(function Sidebar(props: SidebarProps) {
   if (!isDesktop) {
     return (
       <>
-        <Sheet open={props.open} onOpenChange={props.onOpenChange} backDismiss={props.backCloses}>
+        <Sheet open={props.open} onOpenChange={props.onOpenChange} backDismiss={props.backDismiss}>
           <SheetContent
             // A dialog to Radix, but the app's own chrome to the user: the
             // shortcuts keep working while it is open.

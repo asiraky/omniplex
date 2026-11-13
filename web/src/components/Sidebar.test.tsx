@@ -81,7 +81,7 @@ function renderSidebar(over: Partial<Props> = {}) {
     onRename: vi.fn(),
     onCopyLink: vi.fn(),
     onReorder: vi.fn(),
-    backCloses: false,
+    backDismiss: false,
     ...over,
   };
   render(<WithView {...props} />);
@@ -120,7 +120,7 @@ function renderLive(threads: ThreadMeta[], over: Partial<Props> = {}) {
     onRename: vi.fn(),
     onCopyLink: vi.fn(),
     onReorder: vi.fn(),
-    backCloses: false,
+    backDismiss: false,
     ...over,
   };
   let setOpen: (open: boolean) => void = () => {};
@@ -197,7 +197,7 @@ describe("Sidebar", () => {
 
   it("closes on Back on a phone when there is something behind it", () => {
     viewport("phone");
-    const props = renderSidebar({ activeId: "a", backCloses: true });
+    const props = renderSidebar({ activeId: "a", backDismiss: true });
     act(() => {
       window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
     });
@@ -206,7 +206,7 @@ describe("Sidebar", () => {
 
   it("stays open on Back on a phone when it is the landing screen", () => {
     viewport("phone");
-    const props = renderSidebar({ activeId: null, backCloses: false });
+    const props = renderSidebar({ activeId: null, backDismiss: false });
     act(() => {
       window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
     });
