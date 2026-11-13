@@ -43,10 +43,10 @@ describe("ChangedFiles", () => {
     render(<ChangedFiles diff={diff} turnNumber={2} latest onOpenDiff={onOpenDiff} />);
 
     fireEvent.click(fileButton("internal/server/run.go")!);
-    expect(onOpenDiff).toHaveBeenLastCalledWith("internal/server/run.go", { id: "t2", number: 2 });
+    expect(onOpenDiff).toHaveBeenLastCalledWith("internal/server/run.go", expect.objectContaining({ id: "t2", number: 2 }));
 
     fireEvent.click(screen.getByRole("button", { name: "Open diff" }));
-    expect(onOpenDiff).toHaveBeenLastCalledWith("web/src/app.ts", { id: "t2", number: 2 });
+    expect(onOpenDiff).toHaveBeenLastCalledWith("web/src/app.ts", expect.objectContaining({ id: "t2", number: 2 }));
   });
 
   it("collapses the newest card to its preview chips, which still open this turn", () => {
@@ -59,7 +59,7 @@ describe("ChangedFiles", () => {
     expect(fileButton("README.md")).toBeNull();
 
     fireEvent.click(fileButton("docs/notes.md")!);
-    expect(onOpenDiff).toHaveBeenLastCalledWith("docs/notes.md", { id: "t2", number: 2 });
+    expect(onOpenDiff).toHaveBeenLastCalledWith("docs/notes.md", expect.objectContaining({ id: "t2", number: 2 }));
 
     fireEvent.click(screen.getByRole("button", { name: "Show all 4 files" }));
     expect(summary().getAttribute("aria-expanded")).toBe("true");

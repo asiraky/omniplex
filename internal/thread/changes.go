@@ -167,7 +167,10 @@ func (m *Manager) ThreadFileDiff(ctx context.Context, threadID, path, mode, turn
 	if target == nil {
 		return FileDiff{}, fmt.Errorf("%q is not one of this thread's changed files", path)
 	}
-	if changes.Base != base || changes.Head != head {
+	// A turn's snapshots never move, so a read from the list its card seeded,
+	// which has no commit range yet, names the same commits the server does.
+	seededTurn := mode == DiffTurn && base == "" && head == ""
+	if !seededTurn && (changes.Base != base || changes.Head != head) {
 		return FileDiff{}, errors.New("the comparison changed; refresh the diff")
 	}
 
@@ -321,8 +324,8 @@ func turnScope(ctx context.Context, scope diffScope, threadID, turnID string) di
 	return scope
 }
 
-// validTurnID admits only what a turn id is made of. Turn ids are UUIDs, so
-// anything else did not come from a turn.
+// validTurnID admits only characters a ref name can carry unescaped, since
+// the id becomes part of one. Real turn ids are UUIDs, well inside that.
 func validTurnID(turnID string) error {
 	if turnID == "" {
 		return errors.New("a turn comparison needs a turn id")

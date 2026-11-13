@@ -272,7 +272,7 @@ export function ChangedFiles({
   const files = diff.files;
   // The panel opens on what this turn changed, not on the checkout as it
   // stands: a file the next turn touched again would otherwise show both.
-  const open = (path?: string) => onOpenDiff(path, { id: diff.turnId, number: turnNumber });
+  const openTurnDiff = (path?: string) => onOpenDiff(path, { id: diff.turnId, number: turnNumber, diff });
   const tree = useMemo(
     () => buildTree(files.map((f) => ({ path: f.path, file: f, additions: f.additions, deletions: f.deletions }))),
     [files],
@@ -336,7 +336,7 @@ export function ChangedFiles({
             {allOpen ? <ChevronsDownUpIcon /> : <ChevronsUpDownIcon />}
           </Button>
         )}
-        <Button variant="ghost" size="sm" className="shrink-0 gap-1.5" onClick={() => open(files[0]?.path)}>
+        <Button variant="ghost" size="sm" className="shrink-0 gap-1.5" aria-label="Open diff" onClick={() => openTurnDiff(files[0]?.path)}>
           <FileDiffIcon className="size-3.5" />
           <span className="hidden text-[12px] sm:inline">Open diff</span>
         </Button>
@@ -358,7 +358,7 @@ export function ChangedFiles({
                   return next;
                 })
               }
-              onOpen={open}
+              onOpen={openTurnDiff}
             />
           ))}
           {diff.truncated && (
@@ -380,7 +380,7 @@ export function ChangedFiles({
                 key={file.path}
                 type="button"
                 title={file.path}
-                onClick={() => open(file.path)}
+                onClick={() => openTurnDiff(file.path)}
                 className="hover:bg-accent/60 focus-visible:ring-ring hit-44 relative flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] transition-colors outline-none focus-visible:ring-2"
               >
                 <span className={cn(STATUS_TONE[file.status])}>{STATUS_LABEL[file.status] ?? "M"}</span>

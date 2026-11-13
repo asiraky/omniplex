@@ -1101,8 +1101,8 @@ describe("a turn's changed-files card", () => {
 
     const [first, last] = screen.getAllByRole("button", { name: "Open diff" });
     fireEvent.click(first);
-    expect(onOpenDiff).toHaveBeenLastCalledWith("a.ts", { id: "t1", number: 1 });
+    expect(onOpenDiff).toHaveBeenLastCalledWith("a.ts", expect.objectContaining({ id: "t1", number: 1 }));
     fireEvent.click(last);
-    expect(onOpenDiff).toHaveBeenLastCalledWith("c.ts", { id: "t3", number: 3 });
+    expect(onOpenDiff).toHaveBeenLastCalledWith("c.ts", expect.objectContaining({ id: "t3", number: 3 }));
   });
 });

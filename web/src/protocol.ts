@@ -162,6 +162,11 @@ export type DiffComparison = "uncommitted" | "branch" | "pull_request" | "turn";
 export interface DiffTurn {
   id: string;
   number: number;
+  /**
+   * What the turn's card measured, from the same snapshots. The panel lists it
+   * at once, so the files are on screen before the server's answer arrives.
+   */
+  diff?: TurnDiff;
 }
 
 /** Every path under a thread's checkout, relative to its root. */

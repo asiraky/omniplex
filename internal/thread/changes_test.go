@@ -333,6 +333,15 @@ func TestTurnFileDiffReadsTheSnapshotRange(t *testing.T) {
 	if _, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffTurn, turn, changes.Head, changes.Base); err == nil {
 		t.Fatal("a range that is not the turn's must be refused")
 	}
+
+	// The list a card seeds carries no range yet; the snapshots supply it.
+	seeded, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffTurn, turn, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seeded.Patch != diff.Patch {
+		t.Fatalf("a seeded read must name the same range: %q", seeded.Patch)
+	}
 }
 
 func TestTurnChangesExplainMissingSnapshots(t *testing.T) {

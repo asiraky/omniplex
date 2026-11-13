@@ -129,6 +129,16 @@ interface Route {
 }
 
 /**
+ * The list a turn's card already holds, shown while the server's copy is read:
+ * on a phone that read is the seconds the panel would otherwise sit empty.
+ */
+function turnSeed(turn: DiffTurn): ThreadChanges | null {
+  if (!turn.diff || turn.diff.error) return null;
+  const { files, additions, deletions, truncated } = turn.diff;
+  return { root: "", mode: "turn", turnId: turn.id, files, additions, deletions, truncated };
+}
+
+/**
  * Where a request lands, or null while it cannot be judged yet. A path request
  * routes on the change list, so it waits for the list to settle rather than
  * judging against the empty one a fresh mount holds.
@@ -247,21 +257,32 @@ function PanelBody({
     }
   }, [comparison, turnId, loadChangesRef]);
 
+  // Every switch starts the list afresh, and reads it even when the
+  // comparison is the one already showing: that is how a failed read is
+  // retried by asking for the same turn again.
+  const [reads, setReads] = useState(0);
+  const showComparison = useCallback((next: DiffComparison, nextTurn: DiffTurn | null) => {
+    setChanges(next === "turn" && nextTurn ? turnSeed(nextTurn) : null);
+    setChangesError("");
+    setComparison(next);
+    setReads((n) => n + 1);
+  }, []);
+
   const changeComparison = useCallback((next: DiffComparison) => {
     // A turn is a look back at one moment, not a way of working: the next
     // mount opens on the last comparison the user chose for themselves.
     if (next !== "turn") localStorage.setItem(`omniplex.diffComparison:${threadId}`, next);
-    setChanges(null);
-    setChangesError("");
-    setComparison(next);
-  }, [threadId]);
+    showComparison(next, turn);
+  }, [threadId, turn, showComparison]);
 
   // Opening reads the worktree, and so does the end of a turn: the agent has
   // just stopped writing, which is exactly when the data is worth re-reading.
-  // A hidden panel (kept mounted so its terminals survive) reads nothing.
+  // A turn's snapshots never move, so the end of a later one changes nothing
+  // in it. A hidden panel (kept mounted so its terminals survive) reads nothing.
+  const listRevision = comparison === "turn" ? "" : revision;
   useEffect(() => {
     if (open) void refreshChanges();
-  }, [open, revision, refreshChanges]);
+  }, [open, listRevision, reads, refreshChanges]);
 
   // ---- the worktree tree, shared by the files and file surfaces ----
   const [tree, setTree] = useState<FileTree | null>(null);
@@ -327,11 +348,9 @@ function PanelBody({
       if (route.file) setFileLine(route.file.line);
       // In this same pass, so the reveal waits for the turn's list rather
       // than firing on whatever list was on screen before.
-      if (route.turn && (comparison !== "turn" || turn?.id !== route.turn.id)) {
+      if (route.turn && (comparison !== "turn" || turn?.id !== route.turn.id || changesError)) {
         setTurn(route.turn);
-        setChanges(null);
-        setChangesError("");
-        setComparison("turn");
+        showComparison("turn", route.turn);
       }
     }
   }
