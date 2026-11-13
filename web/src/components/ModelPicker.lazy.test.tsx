@@ -66,6 +66,7 @@ const ready = { state: "ready" };
 const claude: HarnessMeta = {
   id: "claude",
   name: "Claude Code",
+  accent: "oklch(0.72 0.13 48)",
   permissionModes: [],
   availability: ready,
   models: [],
