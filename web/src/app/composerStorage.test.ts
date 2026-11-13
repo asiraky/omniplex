@@ -9,13 +9,16 @@ import {
   loadAttachments,
   loadDrafts,
   loadOutbox,
+  loadStashes,
   persistDrafts,
   persistOutbox,
+  persistStashes,
   saveAttachments,
   UPLOAD_LAPSED_REASON,
 } from "./composerStorage";
 import { createDraftStore } from "./draftStore";
 import { createOutbox, type OutboxSend } from "./outbox";
+import { createStashStore, pushStash, takeStash, type StashEntry } from "./stashStore";
 
 beforeEach(() => {
   localStorage.clear();
@@ -164,6 +167,89 @@ describe("attachments", () => {
 
     saveAttachments({ t1: list }, { t1: [{ ...list[0], progress: 0.5 }] });
     expect(setItem).not.toHaveBeenCalled();
+  });
+});
+
+describe("stashes", () => {
+  const stash = (id: string, over: Partial<StashEntry> = {}): StashEntry => ({
+    id,
+    text: id,
+    attachments: [],
+    at: 1,
+    ...over,
+  });
+
+  it("survive a reload newest first, keeping only the ready files", () => {
+    const store = createStashStore();
+    const dispose = persistStashes(store);
+    const files = [ready(), ready({ key: "k2", status: "uploading", id: undefined }), ready({ key: "k3", id: undefined })];
+    store.update((all) => pushStash(all, "t1", stash("old", { at: 1 })).next);
+    store.update((all) => pushStash(all, "t1", stash("new", { at: 2, attachments: files })).next);
+    store.update((all) => pushStash(all, "t2", stash("other")).next);
+
+    expect(loadStashes()).toEqual({
+      t1: [
+        {
+          id: "new",
+          text: "new",
+          at: 2,
+          attachments: [{ key: "k1", name: "shot.png", status: "ready", id: "att1", mediaType: "image/png", size: 10, previewUrl: attachmentUrl("t1", "att1") }],
+        },
+        stash("old", { at: 1 }),
+      ],
+      t2: [stash("other")],
+    });
+    dispose();
+  });
+
+  it("forget a thread whose stash empties or that goes", () => {
+    const store = createStashStore();
+    const dispose = persistStashes(store);
+    store.update(() => ({ a: [stash("x")], b: [stash("y")] }));
+
+    store.update((all) => takeStash(all, "a", "x").next);
+    expect(Object.keys(loadStashes())).toEqual(["b"]);
+    store.update(() => ({ b: [] }));
+    expect(loadStashes()).toEqual({});
+    dispose();
+  });
+
+  it("write only the thread that changed", () => {
+    const store = createStashStore();
+    const dispose = persistStashes(store);
+    store.update(() => ({ a: [stash("x")] }));
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+
+    store.update((all) => pushStash(all, "b", stash("y")).next);
+    expect(setItem).toHaveBeenCalledTimes(1);
+    expect(setItem).toHaveBeenCalledWith("omniplex.stash.v1:b", expect.any(String));
+    dispose();
+  });
+
+  it("drop invalid entries rather than fail on them, and rewrite the list clean", () => {
+    localStorage.setItem("omniplex.stash.v1:t1", "{not json");
+    localStorage.setItem("omniplex.stash.v1:t2", JSON.stringify({ id: "x" }));
+    localStorage.setItem(
+      "omniplex.stash.v1:t3",
+      JSON.stringify([
+        "x",
+        { id: 1, text: "t", at: 1 },
+        { id: "no-at", text: "t" },
+        { id: "no-text", at: 1 },
+        // Its only file was never uploaded, so nothing is left of it.
+        { id: "empty", text: " ", at: 1, attachments: [{ key: "k", name: "n", status: "uploading" }] },
+        { id: "ok", text: "kept", at: 1, attachments: "bad" },
+      ]),
+    );
+
+    const loaded = loadStashes();
+    expect(loaded).toEqual({ t3: [stash("ok", { text: "kept" })] });
+
+    const dispose = persistStashes(createStashStore(loaded));
+    expect(localStorage.getItem("omniplex.stash.v1:t1")).toBeNull();
+    expect(localStorage.getItem("omniplex.stash.v1:t2")).toBeNull();
+    expect(JSON.parse(localStorage.getItem("omniplex.stash.v1:t3")!)).toEqual([stash("ok", { text: "kept" })]);
+    dispose();
   });
 });
 
@@ -404,6 +490,11 @@ describe("what storage holds", () => {
     expect(loadDrafts()).toEqual({});
     expect(loadAttachments()).toEqual({});
     expect(loadOutbox().entries).toEqual([]);
+    expect(loadStashes()).toEqual({});
+
+    const stashes = createStashStore();
+    persistStashes(stashes);
+    expect(() => stashes.update(() => ({ a: [{ id: "x", text: "x", attachments: [], at: 1 }] }))).not.toThrow();
 
     const store = createDraftStore();
     const dispose = persistDrafts(store);

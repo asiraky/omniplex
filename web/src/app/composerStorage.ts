@@ -15,10 +15,12 @@ import type { Delivery } from "~/protocol";
 
 import type { DraftStore } from "./draftStore";
 import type { FailedSend, Outbox, OutboxEntry } from "./outbox";
+import { MAX_STASH, type StashEntry, type Stashes, type StashStore } from "./stashStore";
 
 const DRAFT_PREFIX = "omniplex.draft.v1:";
 const ATTACHMENTS_PREFIX = "omniplex.attachments.v1:";
 const OUTBOX_PREFIX = "omniplex.outbox.v1:";
+const STASH_PREFIX = "omniplex.stash.v1:";
 const TAB_KEY = "omniplex.tab.v1";
 
 /** Long enough to skip the writes between keystrokes, short enough that a
@@ -244,6 +246,79 @@ export function saveAttachments(
   for (const threadId of Object.keys(prev)) {
     if (!(threadId in next)) remove(ATTACHMENTS_PREFIX + threadId);
   }
+}
+
+// Stashes
+
+function reviveStash(threadId: string, v: unknown): StashEntry | undefined {
+  if (!isRecord(v)) return undefined;
+  const { id, text, at, attachments } = v;
+  if (typeof id !== "string" || typeof text !== "string") return undefined;
+  if (typeof at !== "number" || !Number.isFinite(at)) return undefined;
+  const files = reviveAll(threadId, attachments);
+  // Nothing left to bring back: its files were all of it, and none survived.
+  if (!text.trim() && files.length === 0) return undefined;
+  return { id, text, attachments: files, at };
+}
+
+export function loadStashes(): Stashes {
+  const all: Record<string, StashEntry[]> = {};
+  for (const [key, threadId] of keysUnder(STASH_PREFIX)) {
+    const raw = parse(read(key));
+    if (!Array.isArray(raw)) continue;
+    const list = raw
+      .map((v) => reviveStash(threadId, v))
+      .filter((e): e is StashEntry => !!e)
+      .sort((a, b) => b.at - a.at)
+      .slice(0, MAX_STASH);
+    if (list.length) all[threadId] = list;
+  }
+  return all;
+}
+
+const storedStash = (list: readonly StashEntry[]) =>
+  JSON.stringify(list.map((e) => ({ ...e, attachments: storedRefs(e.attachments) })));
+
+/**
+ * Mirrors the stashes to storage on every change, each thread's list under
+ * its own key. Stashing is a tap, not a keystroke, so there is nothing to
+ * debounce. Only threads whose stored form changed are written, measured
+ * against what storage holds, so a list cleaned up on load is rewritten
+ * clean.
+ */
+export function persistStashes(store: StashStore): () => void {
+  const written = new Map<string, string>();
+  for (const [key, threadId] of keysUnder(STASH_PREFIX)) {
+    const raw = read(key);
+    if (raw !== null) written.set(threadId, raw);
+  }
+  // Each list as last serialised, so a change to one thread does not
+  // serialise all the others again.
+  const seen = new Map<string, readonly StashEntry[]>();
+
+  const sync = () => {
+    const next = store.all();
+    for (const [threadId, list] of Object.entries(next)) {
+      if (seen.get(threadId) === list) continue;
+      seen.set(threadId, list);
+      const json = list.length ? storedStash(list) : undefined;
+      if (written.get(threadId) === json) continue;
+      if (json) {
+        write(STASH_PREFIX + threadId, json);
+        written.set(threadId, json);
+      } else {
+        remove(STASH_PREFIX + threadId);
+        written.delete(threadId);
+      }
+    }
+    for (const threadId of new Set([...written.keys(), ...seen.keys()])) {
+      if (threadId in next) continue;
+      if (written.delete(threadId)) remove(STASH_PREFIX + threadId);
+      seen.delete(threadId);
+    }
+  };
+  sync();
+  return store.subscribe(sync);
 }
 
 // Outbox
