@@ -23,7 +23,7 @@ func (s *session) ComposerItems(ctx context.Context) ([]adapter.ComposerItem, er
 	var response struct {
 		Commands []claudeCommand `json:"commands"`
 	}
-	if err := s.conn.Call(ctx, "supportedCommands", map[string]any{}, &response); err != nil {
+	if err := s.rpc().Call(ctx, "supportedCommands", map[string]any{}, &response); err != nil {
 		return nil, err
 	}
 	disk := claudeDiskSkills(s.configDir, s.cwd)

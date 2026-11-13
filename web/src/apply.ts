@@ -376,6 +376,42 @@ function settleRequests(
   };
 }
 
+// thread.rewound cuts the thread back to before a turn: the items from its
+// first one on, that turn and every turn after it, and the jobs those turns
+// spawned. Queued prompts, artefacts and the settings baseline are the
+// thread's and stay. Mirrors State.rewind in internal/projection/state.go.
+//
+// `at` indexes the server's full item list, and the window here is not a
+// contiguous copy of it (a settled parent's children are left out), so the
+// cut is found by the turn's own first item, as the server found `at`
+// (State.RewindAt). A turn that starts above the window takes the whole window
+// with it; paging older items then carries on from `at`.
+function rewind(s: ThreadState, turnId: string, at: number): ThreadState {
+  const i = s.turns.findIndex((t) => t.id === turnId);
+  const removed = new Set(i < 0 ? [turnId] : s.turns.slice(i).map((t) => t.id));
+  // The turn's own first item, else (a turn that wrote none) the first of a
+  // turn after it, as the server's cut falls.
+  let first = s.items.findIndex((it) => it.turnId === turnId);
+  if (first < 0) first = s.items.findIndex((it) => !!it.turnId && removed.has(it.turnId));
+  const before = s.itemsBefore ?? 0;
+  let items = s.items;
+  let itemsBefore = s.itemsBefore;
+  if (typeof at === "number" && at < before) {
+    items = [];
+    itemsBefore = Math.max(0, at);
+  } else if (first >= 0) {
+    items = s.items.slice(0, first);
+  }
+  if (i < 0) return { ...s, items, itemsBefore };
+  return {
+    ...s,
+    items,
+    itemsBefore,
+    turns: s.turns.slice(0, i),
+    jobs: s.jobs.filter((j) => !j.turnId || !removed.has(j.turnId)),
+  };
+}
+
 export function applyEvent(state: ThreadState, ev: Event): ThreadState {
   if (ev.seq <= state.seq) return state;
   const s: ThreadState = { ...state, seq: ev.seq };
@@ -564,6 +600,9 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
                 error: p.error,
                 failure: p.failure,
                 finishedAt: ev.timestamp,
+                // A finish with no anchor (a duplicate, or the server closing
+                // the turn itself) does not take one away.
+                ...(p.rewindable ? { rewindable: true } : {}),
               }
             : t,
         ),
@@ -584,6 +623,9 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           : s.items,
       };
     }
+
+    case "thread.rewound":
+      return rewind(s, p.turnId, p.at);
 
     case "turn.diff":
       // What the turn changed, measured by the server once the harness had

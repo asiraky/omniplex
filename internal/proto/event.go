@@ -20,6 +20,10 @@ const (
 	// account of the same harness. It changes who the next turn is billed to,
 	// not the conversation, so it is a line in the timeline and nothing more.
 	ThreadAccountChanged = "thread.account_changed"
+	// ThreadRewound cuts the thread back to just before a turn: that turn and
+	// everything after it leave the transcript, and the harness has already
+	// forgotten them by the time this is written.
+	ThreadRewound = "thread.rewound"
 
 	TurnStarted  = "turn.started"
 	TurnFinished = "turn.finished"
@@ -561,6 +565,23 @@ type TurnFinishedPayload struct {
 	// ResetAt is when a FailureLimit's window reopens, in epoch ms. Zero means
 	// the harness did not say, or the failure is not a limit.
 	ResetAt int64 `json:"resetAt,omitempty"`
+	// HarnessRef is the adapter's own anchor for this turn in the harness's
+	// history, opaque to everything but that adapter: what it needs to rewind
+	// the conversation to this turn. It stays in the log and never goes over
+	// the wire; clients see only Rewindable.
+	HarnessRef string `json:"harnessRef,omitempty"`
+	// Rewindable is set on wire copies only, in place of HarnessRef: the turn
+	// carries an anchor, so the thread can be rewound to before it.
+	Rewindable bool `json:"rewindable,omitempty"`
+}
+
+// ThreadRewoundPayload is a rewind that has happened. At is the index in the
+// thread's full item list of the first item removed; TurnID is the turn the
+// thread was cut back to before, which is removed with everything after it.
+type ThreadRewoundPayload struct {
+	TurnID        string `json:"turnId"`
+	At            int    `json:"at"`
+	RestoredFiles bool   `json:"restoredFiles,omitempty"`
 }
 
 // TurnSuggestedPayload is a suggested next prompt; see TurnSuggested.

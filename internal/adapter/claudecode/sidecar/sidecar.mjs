@@ -323,10 +323,13 @@ const session = query({
     // running is held by the CLI until its next model call; the echo is the
     // only signal of when that happened.
     extraArgs: { "replay-user-messages": null },
-    // Mutually exclusive by SDK contract: sessionId names a new conversation,
-    // resume continues an existing one.
+    // sessionId names a new conversation, resume continues an existing one.
+    // The SDK takes both only for a fork: a rewind copies resume up to and
+    // including resumeSessionAt into a new conversation named sessionId.
     ...(config.resume ? { resume: config.resume } : {}),
-    ...(config.sessionId && !config.resume ? { sessionId: config.sessionId } : {}),
+    ...(config.resume && config.resumeSessionAt ? { resumeSessionAt: config.resumeSessionAt } : {}),
+    ...(config.resume && config.forkSession ? { forkSession: true } : {}),
+    ...(config.sessionId && (!config.resume || config.forkSession) ? { sessionId: config.sessionId } : {}),
     // Use the Claude Code the host resolved. We never ship one.
     ...(config.claudePath ? { pathToClaudeCodeExecutable: config.claudePath } : {}),
   },

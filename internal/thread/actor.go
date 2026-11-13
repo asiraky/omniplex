@@ -110,6 +110,10 @@ type Actor struct {
 	// has not come back. A prompt waits behind them, so a model change made
 	// just before sending is the model the prompt runs on.
 	controlPending int
+	// rewinding is set while a rewind is on its way to the harness, for the
+	// commands that start a turn without waiting on controlPending
+	// (rewindBlocks).
+	rewinding bool
 	// process numbers the harness processes this actor has run. It moves on
 	// whenever one is started or dropped, and the host services handed to a
 	// process carry the number it was started under, so a question from one
@@ -222,6 +226,7 @@ type command struct {
 	plan         *recoveryPlan       // prompt: the restart continuation Recover is sending
 	delivery     string              // prompt: proto.DeliverySteer, proto.DeliveryQueue, or the default
 	keepImages   bool                // edit_queued_prompt: leave the entry's attachments as they are
+	restoreFiles bool                // rewind: put the checkout back too
 	// from is the harness process a harness event or exit came from. A
 	// process replaced by an account switch, or killed by Stop, still drains
 	// its last events and its exit; those are about a process this actor no
@@ -305,6 +310,7 @@ const (
 	cmdDropRecovery   = "drop_recovery"
 	cmdEvict          = "evict"
 	cmdRead           = "read"
+	cmdRewind         = "rewind"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -326,6 +332,10 @@ var ErrEmptyPrompt = errors.New("a message needs text or an attachment")
 // ErrCannotSteer is returned when asked to hand a queued prompt to a running
 // turn on a harness that only reads messages between turns.
 var ErrCannotSteer = errors.New("this harness cannot take a message mid-turn")
+
+// errRewinding turns away what would start a turn while a rewind is on its
+// way to the harness.
+var errRewinding = errors.New("the thread is being rewound; try again once that has finished")
 
 // ErrClosed is returned when a command tries to mutate a closed transcript.
 var ErrClosed = errors.New("thread is closed")
@@ -1083,6 +1093,17 @@ func (a *Actor) handle(c command) (stop bool) {
 		a.flushDeltas()
 	}
 
+	// A turn started under a rewind would be cut with the turns before it.
+	// A due schedule waits for the next tick.
+	if a.rewinding && c.kind == "schedule_tick" {
+		c.reply <- cmdResult{}
+		return false
+	}
+	if a.rewindBlocks(c) {
+		c.reply <- cmdResult{err: errRewinding}
+		return false
+	}
+
 	// Continuing is a prompt the server writes, so it is turned into one here
 	// where the projection can say which turn is being continued.
 	if c.kind == cmdContinue {
@@ -1357,6 +1378,9 @@ func (a *Actor) handle(c command) (stop bool) {
 
 	case cmdSwitchAccount:
 		c.reply <- cmdResult{err: a.switchAccount(c.account)}
+
+	case cmdRewind:
+		a.rewind(ctx, c.reqID, c.restoreFiles, c.reply)
 
 	case cmdSetModel:
 		if a.state.Closed {

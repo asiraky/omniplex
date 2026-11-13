@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
-import { useDraft } from "~/app/draftStore";
+import { appendDraft, useDraft } from "~/app/draftStore";
 import { useStash } from "~/app/stashStore";
 import { useFailedSend, useWaitingSend } from "~/app/outbox";
 import { shallow, useThread, useThreadStore } from "~/app/threadStore";
@@ -21,11 +21,13 @@ import { promptHistory, sameHistory } from "~/lib/promptHistory";
 import { OpenPathContext } from "~/lib/openPath";
 import { ReadAloudContext } from "~/lib/readAloud";
 import { quoteInto, ReplyContext } from "~/lib/reply";
+import { RewindContext, rewindTarget, type RewindTarget } from "~/lib/rewind";
 import { threadTitle } from "~/lib/threadTitle";
 import { toast } from "~/lib/toast";
 import { useLatest } from "~/useLatest";
 import type {
   HarnessMeta,
+  Item,
   PendingElicitation,
   PullRequest,
   ScheduledPrompt,
@@ -59,6 +61,8 @@ const FlowDialog = lazy(() =>
 const ScheduleDialog = lazy(() =>
   import("./ScheduleDialog").then((m) => ({ default: m.ScheduleDialog })),
 );
+// Opens on "Edit from here", which most threads never see.
+const RewindSheet = lazy(() => import("./transcript/RewindSheet"));
 
 /**
  * The attached thread: its transcript, and floating over the tail of it the
@@ -71,6 +75,7 @@ const ScheduleDialog = lazy(() =>
 export function ThreadView({
   activeId,
   meta,
+  threads,
   harnesses,
   scroll,
   commands,
@@ -91,6 +96,8 @@ export function ThreadView({
 }: {
   activeId: string | null;
   meta: ThreadMeta | undefined;
+  /** Every thread, to see whether another one works in this one's folder. */
+  threads: ThreadMeta[];
   harnesses: HarnessMeta[];
   scroll: {
     positionOf: (id: string) => ScrollPosition | undefined;
@@ -135,7 +142,7 @@ export function ThreadView({
   // there, since what comes next is typing the answer. While the composer is
   // locked (thread closed, workspace going away or broken), replies offer nothing.
   const writable = useThread(useThreadStore(), composerWritable);
-  const { getDraft, setDraft } = store;
+  const { getDraft, setDraft, setDrafts } = store;
   const { composerRef } = recents;
   const reply = useCallback(
     (quote: string) => {
@@ -146,6 +153,39 @@ export function ThreadView({
     },
     [activeId, composerRef, getDraft, setDraft],
   );
+  // "Edit from here": what the confirmation is asking about. Worked out from
+  // the state as it opens, and read only then, so the button's context stays
+  // one function for the whole thread and no memoised row redraws for it.
+  const threadStore = useThreadStore();
+  const metaNow = useLatest(meta);
+  const threadsNow = useLatest(threads);
+  const [rewinding, setRewinding] = useState<RewindTarget | null>(null);
+  const openRewind = useCallback(
+    (item: Item) => {
+      const s = threadStore.get();
+      const target = s && rewindTarget(s, item, metaNow.current, threadsNow.current);
+      if (target) setRewinding(target);
+    },
+    [threadStore, metaNow, threadsNow],
+  );
+  // Leaving the thread drops the question rather than asking it on return.
+  // Dropped while rendering, so the sheet never shows over another thread.
+  if (rewinding && rewinding.threadId !== activeId) setRewinding(null);
+  const rewinds = harnessRewinds(harnesses, harnessId);
+  const { rewind } = commands;
+  const closeRewind = useCallback(() => setRewinding(null), []);
+  // Done: the prompt goes back into the composer under anything already
+  // typed, a paragraph away, and the cursor follows it — on a phone too, since
+  // editing it is the whole point.
+  const rewindingNow = useLatest(rewinding);
+  const onRewound = useCallback(() => {
+    const target = rewindingNow.current;
+    setRewinding(null);
+    if (target?.text) setDrafts((d) => appendDraft(d, target.threadId, target.text));
+  }, [rewindingNow, setDrafts]);
+  const focusComposer = useCallback(() => {
+    if (activeId) composerRef.current?.focusEnd(getDraft(activeId).length);
+  }, [activeId, composerRef, getDraft]);
   // A sign-in a saved card offers from its row in the transcript.
   const [signIn, setSignIn] = useState<CardSignIn | null>(null);
   const steers = harnessSteers(harnesses, harnessId);
@@ -203,43 +243,57 @@ export function ThreadView({
       <OpenPathContext.Provider value={panel.openPath}>
         <ReadAloudContext.Provider value={speech}>
           <ReplyContext.Provider value={writable ? reply : null}>
-            <Transcript
-              key={activeId}
-              onLoadOlder={commands.loadOlderItems}
-              initialScroll={initialScroll}
-              onScrollChange={scroll.record}
-              onContinue={onContinue}
-              onLogin={onProviderLogin}
-              providerName={provider?.displayName}
-              providerReady={provider?.availability.state === "ready"}
-              onRetryTurn={harness.retryTurn}
-              switchTargets={harness.switchTargets}
-              onSwitchAccount={onSwitchAccount}
-              onCancelContinuation={onCancelContinuation}
-              onRetryProvision={onRetryProvision}
-              onCleanup={onCleanup}
-              onForceDelete={onForceDeleteThread}
-              onOpenDiff={panel.openDiff}
-              onOpenJobs={panel.openJobs}
-              onOpenArtefact={panel.openArtefact}
-              pr={pr}
-              onFinish={onFinishThread}
-              recents={recents.items}
-              recentsSeeded={recents.seeded}
-              onPickRecent={recents.pick}
-              onDequeue={commands.dequeue}
-              onEditQueued={commands.editQueued}
-              onSendQueued={commands.sendQueued}
-              onResumeQueue={commands.resumeQueue}
-              onQueuedEditLost={commands.keepLostEdit}
-              steers={steers}
-              onCardSignIn={setSignIn}
-              describeSettings={describe}
-              turnStatus={turnStatus}
-            />
+            <RewindContext.Provider value={writable && rewinds ? openRewind : null}>
+              <Transcript
+                key={activeId}
+                onLoadOlder={commands.loadOlderItems}
+                initialScroll={initialScroll}
+                onScrollChange={scroll.record}
+                onContinue={onContinue}
+                onLogin={onProviderLogin}
+                providerName={provider?.displayName}
+                providerReady={provider?.availability.state === "ready"}
+                onRetryTurn={harness.retryTurn}
+                switchTargets={harness.switchTargets}
+                onSwitchAccount={onSwitchAccount}
+                onCancelContinuation={onCancelContinuation}
+                onRetryProvision={onRetryProvision}
+                onCleanup={onCleanup}
+                onForceDelete={onForceDeleteThread}
+                onOpenDiff={panel.openDiff}
+                onOpenJobs={panel.openJobs}
+                onOpenArtefact={panel.openArtefact}
+                pr={pr}
+                onFinish={onFinishThread}
+                recents={recents.items}
+                recentsSeeded={recents.seeded}
+                onPickRecent={recents.pick}
+                onDequeue={commands.dequeue}
+                onEditQueued={commands.editQueued}
+                onSendQueued={commands.sendQueued}
+                onResumeQueue={commands.resumeQueue}
+                onQueuedEditLost={commands.keepLostEdit}
+                steers={steers}
+                onCardSignIn={setSignIn}
+                describeSettings={describe}
+                turnStatus={turnStatus}
+              />
+            </RewindContext.Provider>
           </ReplyContext.Provider>
         </ReadAloudContext.Provider>
       </OpenPathContext.Provider>
+
+      {rewinding && rewinding.threadId === activeId && (
+        <Suspense fallback={null}>
+          <RewindSheet
+            target={rewinding}
+            rewind={(restoreFiles) => rewind(rewinding.turnId, restoreFiles)}
+            onRewound={onRewound}
+            focusAfter={focusComposer}
+            onClose={closeRewind}
+          />
+        </Suspense>
+      )}
 
       {signIn && (
         <Suspense fallback={null}>
@@ -298,6 +352,12 @@ export function ThreadView({
 // is what a queued prompt's "Steer now" and the composer's steer both need.
 function harnessSteers(harnesses: HarnessMeta[], harnessId: string) {
   return harnesses.find((h) => h.id === harnessId)?.steers ?? false;
+}
+
+// Whether the thread's harness can forget the end of its conversation, which
+// "Edit from here" needs.
+function harnessRewinds(harnesses: HarnessMeta[], harnessId: string) {
+  return harnesses.find((h) => h.id === harnessId)?.rewinds ?? false;
 }
 
 function hasCard(e: PendingElicitation): e is PendingElicitation & { card: NonNullable<PendingElicitation["card"]> } {

@@ -76,6 +76,7 @@ func (a *Adapter) Meta() adapter.HarnessMeta {
 		Accent:  "oklch(0.76 0.13 165)",
 		DocsURL: "https://developers.openai.com/codex",
 		Steers:  true,
+		Rewinds: true,
 	}
 }
 
@@ -969,6 +970,37 @@ func (s *session) SetServiceTier(ctx context.Context, tier string) error {
 	return nil
 }
 
+var _ adapter.Rewinder = (*session)(nil)
+
+// Rewind has codex forget target.Turn and every turn after it: thread/revert
+// replaces the thread's stored history with the turns before it, so the next
+// turn/start continues from there. Files are not touched. Turn is codex's own
+// turn id, the HarnessRef the turn finished with.
+func (s *session) Rewind(ctx context.Context, target adapter.RewindTarget) error {
+	if target.Turn == "" {
+		return errors.New("no codex turn to rewind to")
+	}
+	s.mu.Lock()
+	running := s.turnID != ""
+	s.mu.Unlock()
+	if running {
+		return errors.New("a turn is running; wait for it to finish")
+	}
+	if err := s.died(s.conn.Call(ctx, "thread/revert", map[string]any{
+		"threadId":     s.threadID,
+		"beforeTurnId": target.Turn,
+	}, nil)); err != nil {
+		return fmt.Errorf("codex thread/revert: %w", err)
+	}
+	// A rewind always forgets the latest turn, so a reset still owed to it
+	// would back-fill a turn the thread no longer has. lastServerTurn stays:
+	// it only screens out stragglers, and codex will not reuse the id.
+	s.mu.Lock()
+	s.resetTurn = ""
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *session) Close() error {
 	s.closed.Do(func() {
 		s.mu.Lock()
@@ -1595,7 +1627,14 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			return
 		}
 
-		fin := proto.TurnFinishedPayload{TurnID: done, StopReason: stop}
+		// The ref is the id the completion names, which is the one turn/start
+		// or review/start answered with and the one thread/revert takes. A
+		// review runs under a second id (see runningTurnID) that is not kept.
+		ref := p.Turn.ID
+		if ref == "" {
+			ref = known
+		}
+		fin := proto.TurnFinishedPayload{TurnID: done, StopReason: stop, HarnessRef: ref}
 		if stop == proto.StopError {
 			f := completionFailure(p.Turn.Error, remembered)
 			fin.Error = f.message

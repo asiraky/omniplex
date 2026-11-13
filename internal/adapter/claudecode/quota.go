@@ -252,7 +252,7 @@ func claudeAccountID(path string) string {
 // getContextUsage, over the live process.
 func (s *session) Quota(ctx context.Context) (adapter.QuotaSnapshot, error) {
 	var raw json.RawMessage
-	if err := s.conn.Call(ctx, "getUsage", nil, &raw); err != nil {
+	if err := s.rpc().Call(ctx, "getUsage", nil, &raw); err != nil {
 		return adapter.QuotaSnapshot{}, fmt.Errorf("claude usage: %w", err)
 	}
 	snap, err := parseClaudeUsage(raw)

@@ -59,7 +59,14 @@ function newestBesidesNotify(items: Item[]): Item | undefined {
 export function useTranscriptModel(
   state: Pick<
     TranscriptState,
-    "phase" | "closed" | "items" | "turns" | "scheduledPrompts" | "pendingPermissions" | "pendingElicitations"
+    | "phase"
+    | "closed"
+    | "items"
+    | "itemsBefore"
+    | "turns"
+    | "scheduledPrompts"
+    | "pendingPermissions"
+    | "pendingElicitations"
   >,
 ) {
   // The provisioner is holding the transcript while it works, or while it
@@ -71,7 +78,9 @@ export function useTranscriptModel(
     state.phase === "cleaning" ||
     state.phase === "provision_failed" ||
     state.phase === "cleanup_failed";
-  const empty = state.items.length === 0 && !workspaceOccupied;
+  // An empty window with history above it is not an empty thread: a rewind to
+  // a turn above the window leaves exactly that while the page above loads.
+  const empty = state.items.length === 0 && !(state.itemsBefore ?? 0) && !workspaceOccupied;
 
   // Only the final agent block is still growing; everything above it is
   // settled and renders in full. A block the harness opened but never filled is

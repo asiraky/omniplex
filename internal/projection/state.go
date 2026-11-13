@@ -309,6 +309,12 @@ type Turn struct {
 	// is measured here rather than in any presenter.
 	StartedAt  int64 `json:"startedAt,omitempty"`
 	FinishedAt int64 `json:"finishedAt,omitempty"`
+	// HarnessRef is the adapter's anchor for this turn, from turn.finished.
+	// It is kept in stored state and snapshots, and stripped from every wire
+	// copy, where Rewindable stands in for it.
+	HarnessRef string `json:"harnessRef,omitempty"`
+	// Rewindable is set on wire copies only: the turn carries a HarnessRef.
+	Rewindable bool `json:"rewindable,omitempty"`
 }
 
 // QueuedPrompt is a prompt waiting for the running turn to finish. It lives in
@@ -1067,6 +1073,11 @@ func (s *State) Apply(ev proto.Event) {
 				s.Turns[i].Failure = p.Failure
 				s.Turns[i].Done = true
 				s.Turns[i].FinishedAt = ev.Timestamp
+				// A finish with no anchor (a duplicate, or the server
+				// closing the turn itself) does not take one away.
+				if p.HarnessRef != "" {
+					s.Turns[i].HarnessRef = p.HarnessRef
+				}
 			}
 		}
 		if match {
@@ -1096,6 +1107,11 @@ func (s *State) Apply(ev proto.Event) {
 				}
 			}
 		}
+
+	case proto.ThreadRewound:
+		var p proto.ThreadRewoundPayload
+		decode(ev.Payload, &p)
+		s.rewind(p)
 
 	case proto.MessageChunk:
 		var p proto.MessageChunkPayload
@@ -1395,6 +1411,37 @@ func (s *State) settleRequests(turnID string) {
 	s.Elicitations = elicits
 }
 
+// rewind cuts the thread back to before turn p.TurnID: items from p.At on,
+// that turn and every turn after it, and the jobs those turns spawned. The
+// actor writes one only while nothing is running, so there is no open turn or
+// live job to settle. Queued and held prompts, artefacts, the settings
+// baseline and the harness session are the thread's, not the removed turns',
+// and stay. Mirrored in web/src/apply.ts.
+func (s *State) rewind(p proto.ThreadRewoundPayload) {
+	if p.At >= 0 && p.At <= len(s.Items) {
+		// Cleared so the cut tail's content is not held by the array.
+		clear(s.Items[p.At:])
+		s.Items = s.Items[:p.At]
+	}
+	if i := s.TurnIndex(p.TurnID); i >= 0 {
+		removed := make(map[string]bool, len(s.Turns)-i)
+		for _, t := range s.Turns[i:] {
+			removed[t.ID] = true
+		}
+		clear(s.Turns[i:])
+		s.Turns = s.Turns[:i]
+		jobs := s.Jobs[:0]
+		for _, j := range s.Jobs {
+			if j.TurnID == "" || !removed[j.TurnID] {
+				jobs = append(jobs, j)
+			}
+		}
+		clear(s.Jobs[len(jobs):])
+		s.Jobs = jobs
+	}
+	s.reindex()
+}
+
 // Card statuses: pending until answered, then the outcome's result.
 const (
 	CardPending   = "pending"
@@ -1600,4 +1647,33 @@ func (s *State) cloneRest() *State {
 	copy(out.Queued, s.Queued)
 
 	return &out
+}
+
+// TurnIndex is the position of turn id in Turns, or -1.
+func (s *State) TurnIndex(id string) int {
+	for i := range s.Turns {
+		if s.Turns[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// CanRewindTo reports whether the thread can be cut back to before Turns[i]:
+// the turn needs the harness's anchor. One with none (from before anchors
+// existed, or one the server closed itself after a crash) cannot be.
+func (s *State) CanRewindTo(i int) bool {
+	return i >= 0 && i < len(s.Turns) && s.Turns[i].HarnessRef != ""
+}
+
+// RewindAt is the index in Items of the first item turn id owns — its opening
+// prompt — or -1. A settings notice written just before that prompt is not the
+// turn's: the switch it records still happened, so it stays.
+func (s *State) RewindAt(turnID string) int {
+	for i := range s.Items {
+		if s.Items[i].TurnID == turnID {
+			return i
+		}
+	}
+	return -1
 }

@@ -111,7 +111,9 @@ func (s *session) followTask(msg map[string]json.RawMessage) {
 		session := m.SessionID
 		if session == "" {
 			s.mu.Lock()
-			session = s.harnessSessionID
+			// A rewound conversation not yet settled reports a recipe; the
+			// running process is its new id either way.
+			session = parseConversation(s.harnessSessionID).id
 			s.mu.Unlock()
 		}
 		s.startTail(m.ToolUseID, m.TaskID, session)

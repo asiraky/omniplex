@@ -61,7 +61,7 @@ func newBridgeSession(t *testing.T) (*session, *io.PipeWriter) {
 		streams: map[string]*stream{},
 	}
 	s.conn = jsonrpc.NewConn(pr, io.Discard, s.handleRequest, s.handleNotification, nil)
-	go s.watchExit()
+	go s.watchExit(s.conn, 0)
 	t.Cleanup(func() { _ = pw.Close() })
 	return s, pw
 }

@@ -297,6 +297,23 @@ export function useThreadCommands({
     [activeId, clientRef],
   );
 
+  // Cuts the thread back to before a turn, in the transcript and in the
+  // harness's own history, and puts the files back too when asked. Resolves
+  // null once the server has done it, else why not, for the confirmation to
+  // say while it stays open. The caller hands the prompt back to the composer.
+  const rewind = useCallback(
+    async (turnId: string, restoreFiles: boolean): Promise<string | null> => {
+      if (!activeId || !clientRef.current) return "Not connected";
+      try {
+        await clientRef.current.command("rewind_thread", { threadId: activeId, turnId, restoreFiles });
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+    },
+    [activeId, clientRef],
+  );
+
   // Steers it into the running turn, or starts a turn with it when the
   // thread is idle; the server decides which from the thread's phase.
   const sendQueued = useCallback(
@@ -435,6 +452,7 @@ export function useThreadCommands({
     dequeue,
     editQueued,
     keepLostEdit,
+    rewind,
     sendQueued,
     resumeQueue,
     resolvePermission,
