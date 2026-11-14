@@ -91,11 +91,14 @@ jobs:
       # "Is it answering" is not enough: a failed start leaves the old binary
       # running and answering perfectly. Assert the commit, which only the new
       # build reports. Loopback is what makes the commit visible at all — the
-      # probe withholds it from unpaired callers.
+      # probe withholds it from unpaired callers. The wait is long because
+      # startup migrations (the home migration hashes every conversation file)
+      # run before the server listens; cutting one off mid-run is worse than a
+      # slow deploy.
       - name: Verify
         id: verify
         run: |
-          for i in $(seq 1 30); do
+          for i in $(seq 1 300); do
             RUNNING=$(curl -fsS --max-time 3 "$HEALTH" 2>/dev/null \
               | python3 -c 'import json,sys; print(json.load(sys.stdin).get("commit",""))' 2>/dev/null || true)
             if [ "$RUNNING" = "${{ github.sha }}" ]; then
@@ -104,7 +107,7 @@ jobs:
             fi
             sleep 1
           done
-          echo "::error::did not report ${{ github.sha }} within 30s (last saw '${RUNNING:-nothing}')"
+          echo "::error::did not report ${{ github.sha }} within 300s (last saw '${RUNNING:-nothing}')"
           exit 1
 
       - name: Roll back
