@@ -113,7 +113,7 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 	if signedOut(ctx, path, env) {
 		return adapter.Unavailable(
 			"Codex is not signed in.",
-			adapter.Remedy{Text: "Sign in", Command: "codex login", Action: adapter.RemedyLogin},
+			adapter.Remedy{Text: "Sign in", Command: "codex login --device-auth", Action: adapter.RemedyLogin},
 		)
 	}
 
@@ -143,14 +143,15 @@ func signedOut(ctx context.Context, path string, env map[string]string) bool {
 	return strings.Contains(strings.ToLower(string(out)), "not logged in")
 }
 
-// LoginCommand starts Codex's own sign-in flow, which opens the browser and
-// waits for the callback on this machine.
+// LoginCommand starts Codex's device-code sign-in: it prints a URL and a
+// one-time code to enter from any browser. Plain `codex login` redirects to a
+// callback on 127.0.0.1, which only works when the browser runs on the server.
 func (a *Adapter) LoginCommand(ctx context.Context, overlay map[string]string) ([]string, []string, error) {
 	path, err := exec.LookPath(a.Bin)
 	if err != nil {
 		return nil, nil, fmt.Errorf("the Codex CLI was not found on this machine")
 	}
-	return []string{path, "login"}, codexEnv(overlay), nil
+	return []string{path, "login", "--device-auth"}, codexEnv(overlay), nil
 }
 
 // PermissionModes are omniplex's presets over Codex's two orthogonal axes (approval
