@@ -54,13 +54,19 @@ func (m *Manager) SwitchAccount(ctx context.Context, threadID, instanceID string
 	if err != nil {
 		return err
 	}
+	// The process gets the other harnesses' homes too; moving the
+	// conversation needs only the accounts' own.
+	procEnv, err := m.sessionEnv(to.inst)
+	if err != nil {
+		return err
+	}
 	a, err := m.View(ctx, threadID)
 	if err != nil {
 		return err
 	}
 	err = a.SwitchAccount(ctx, accountSwitch{
 		ad:  to.ad,
-		env: toEnv,
+		env: procEnv,
 		move: func(harnessID string) error {
 			if err := mover.MoveConversation(fromEnv, toEnv, meta.Cwd, harnessID); err != nil {
 				return err

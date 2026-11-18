@@ -377,6 +377,56 @@ func absolutePaths(spec provider.Spec, ad adapter.Adapter) provider.Spec {
 	return spec
 }
 
+// sessionEnv is the env a thread's harness process runs under: its account's
+// overlay plus the config home of every other harness's primary account. A
+// thread's shell is where an agent runs `codex exec` or `claude -p`, and
+// without the variable that CLI reads the machine's own ~/.codex or ~/.claude,
+// a login Omniplex never touches, rather than the one the user signed in to
+// from Omniplex. The thread's own harness is left alone: its home is its
+// account's, from the overlay.
+func (m *Manager) sessionEnv(inst provider.Instance) (map[string]string, error) {
+	env, err := m.envFor(inst)
+	if err != nil {
+		return nil, err
+	}
+	for name, value := range m.siblingHomes(inst.Driver) {
+		if _, set := env[name]; set {
+			continue
+		}
+		if env == nil {
+			env = map[string]string{}
+		}
+		env[name] = value
+	}
+	return env, nil
+}
+
+// siblingHomes maps each other driver's config-home variable to its primary
+// account's home. A driver with no enabled account, or whose account names no
+// home of its own, is absent: there is no Omniplex login to point at.
+func (m *Manager) siblingHomes(driver string) map[string]string {
+	out := map[string]string{}
+	for id, ad := range m.drivers {
+		if id == driver || ad == nil {
+			continue
+		}
+		homeEnv := isolatingEnv(ad)
+		if homeEnv == "" {
+			continue
+		}
+		reg, err := m.resolveInstance("", id)
+		if err != nil {
+			continue
+		}
+		for _, v := range reg.inst.Env {
+			if v.Name == homeEnv && !v.Sensitive && strings.TrimSpace(v.Value) != "" {
+				out[homeEnv] = v.Value
+			}
+		}
+	}
+	return out
+}
+
 // isolatingEnv is the variable that gives an instance of ad its own config
 // home, or "" when the driver has none.
 func isolatingEnv(ad adapter.Adapter) string {

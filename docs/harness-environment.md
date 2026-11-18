@@ -45,6 +45,11 @@ signing in or out from a terminal on the box changes nothing in Omniplex.
 Omniplex refuses an account whose home is the machine's own `~/.claude`,
 `~/.codex` or `~/.pi/agent`.
 
+A thread's process also gets the home of every other harness's primary
+account, so an agent that runs `codex exec` from a Claude thread, or `claude -p`
+from a Codex one, uses the login made in Omniplex rather than the machine's
+own. Its own harness's variable is always its account's.
+
 The user's configuration is shared. Skills, `CLAUDE.md`, settings, agents and
 the rest of the adapter's `SharedEntries` are symlinks from the account's home
 to the same entry in the machine's home, e.g. `~/.claude/skills`. That source
