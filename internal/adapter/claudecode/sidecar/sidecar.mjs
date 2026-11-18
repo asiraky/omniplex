@@ -300,6 +300,8 @@ const session = query({
     // SDK sends an empty custom prompt, not Claude Code's CLI preset, so a
     // string here adds to the same minimal base rather than replacing it.
     ...(config.instructions ? { systemPrompt: config.instructions } : {}),
+    // A private thread: no transcript under ~/.claude/projects.
+    ...(config.ephemeral ? { persistSession: false } : {}),
     ...harnessRuntime,
     includePartialMessages: true,
     canUseTool,

@@ -75,6 +75,22 @@ type Config struct {
 	// dropped. Off by default, because it adds seconds and Scribe's own
 	// punctuation is usually good enough.
 	DictationCleanup bool `json:"dictationCleanup,omitempty"`
+	// AssistantPrompt is the system prompt of an assistant chat, a thread
+	// with no project. Empty means DefaultAssistantPrompt. It takes effect
+	// when a session next starts.
+	AssistantPrompt string `json:"assistantPrompt,omitempty"`
+}
+
+// DefaultAssistantPrompt is what an assistant chat is told it is, until the
+// user writes their own.
+const DefaultAssistantPrompt = `You are a general-purpose assistant. The user opened this chat to ask a question, think something through, or get a quick task done; it is not tied to any project or codebase. Answer directly and concisely, and ask when the request is unclear. You have the full set of tools: use them when they help (searching the web, reading or writing files, running commands), and skip them when a plain answer will do. The working folder is a scratch space for anything you need to make.`
+
+// AssistantPromptOrDefault is the assistant chat's system prompt.
+func (c Config) AssistantPromptOrDefault() string {
+	if p := strings.TrimSpace(c.AssistantPrompt); p != "" {
+		return p
+	}
+	return DefaultAssistantPrompt
 }
 
 // ProjectsDirOrDefault is the folder project home folders go in.

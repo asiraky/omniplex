@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
 	_ "modernc.org/sqlite"
 
+	"github.com/asiraky/omniplex/internal/ephemeral"
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
@@ -162,7 +164,11 @@ type ThreadMeta struct {
 	// on purpose: a move writes the midpoint of its new neighbours, so
 	// reordering one thread writes one row and nothing else shifts. Never
 	// omitted: zero is a real place in the order.
-	Position          float64         `json:"position"`
+	Position float64 `json:"position"`
+	// Private is a thread that is never written to disk: its rows live in the
+	// store's in-memory database and are gone when the server stops. Read off
+	// the id, not stored, so it cannot disagree with where the rows are.
+	Private           bool            `json:"private,omitempty"`
 	ProvisionScript   string          `json:"-"`
 	DeprovisionScript string          `json:"-"`
 	ProvisionResult   json.RawMessage `json:"-"`
@@ -171,9 +177,14 @@ type ThreadMeta struct {
 // Store wraps the database. Writes are serialised through a single mutex-held
 // connection; reads use the pool. The thread actor is the only writer per
 // thread in-process, and this guards the cross-thread case.
+//
+// mem holds the private threads (see package ephemeral): every method that
+// takes a thread id sends a private one there, and the thread list is both
+// databases together. It is nil on the in-memory store itself.
 type Store struct {
-	db *sql.DB
-	mu sync.Mutex
+	db  *sql.DB
+	mu  sync.Mutex
+	mem *Store
 }
 
 func Open(path string) (*Store, error) {
@@ -186,6 +197,44 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("rename sessions to threads: %w", err)
 	}
+	s, err := migrate(db)
+	if err != nil {
+		return nil, err
+	}
+	if s.mem, err = openMemory(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open private store: %w", err)
+	}
+	return s, nil
+}
+
+// openMemory is the database private threads live in. An in-memory SQLite
+// database belongs to the connection that made it, so the pool is held to
+// that one connection and never lets it go idle and close: a second
+// connection, or a reopened first, would be a different, empty database.
+func openMemory() (*Store, error) {
+	db, err := sql.Open("sqlite", ":memory:?_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+	db.SetConnMaxIdleTime(0)
+	return migrate(db)
+}
+
+// private routes a thread: the in-memory store when the thread is private,
+// nil when its rows are on disk.
+func (s *Store) private(threadID string) *Store {
+	if s.mem != nil && ephemeral.Is(threadID) {
+		return s.mem
+	}
+	return nil
+}
+
+// migrate brings an open database up to the current schema.
+func migrate(db *sql.DB) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
@@ -358,7 +407,12 @@ func renameSessionsToThreads(db *sql.DB, path string) error {
 	return tx.Commit()
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if s.mem != nil {
+		s.mem.Close()
+	}
+	return s.db.Close()
+}
 
 // CreateThread inserts the thread, checking in the same transaction that its
 // project is still there. That check is what makes DeleteProject's refusal
@@ -367,6 +421,23 @@ func (s *Store) Close() error { return s.db.Close() }
 // delete landing in that gap would otherwise count zero threads, commit, and
 // leave this insert to succeed against a project that no longer exists.
 func (s *Store) CreateThread(ctx context.Context, m ThreadMeta) error {
+	// A new thread lands above every other, private or not, so the top is
+	// read from the database the thread is not going into and the INSERT
+	// goes one below whichever is lower.
+	other, into := s.mem, s
+	if p := s.private(m.ID); p != nil {
+		other, into = s, p
+	}
+	floor := 1.0
+	if other != nil {
+		if err := other.db.QueryRowContext(ctx, `SELECT COALESCE(MIN(position), 1) FROM threads`).Scan(&floor); err != nil {
+			return err
+		}
+	}
+	return into.createThread(ctx, m, floor)
+}
+
+func (s *Store) createThread(ctx context.Context, m ThreadMeta, floor float64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -392,8 +463,8 @@ func (s *Store) CreateThread(ctx context.Context, m ThreadMeta) error {
 	// rest — and the store mutex means two creates cannot claim the same one.
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO threads (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, service_tier, workspace_mode, base_ref, provision_script, deprovision_script, pinned, position)
-		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MIN(position), 1) - 1 FROM threads))`,
-		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.FolderID, m.Branch, m.Model, m.Mode, m.Effort, m.ServiceTier, m.WorkspaceMode, m.BaseRef, m.ProvisionScript, m.DeprovisionScript, m.Pinned); err != nil {
+		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT MIN(COALESCE(MIN(position), 1), ?) - 1 FROM threads))`,
+		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.FolderID, m.Branch, m.Model, m.Mode, m.Effort, m.ServiceTier, m.WorkspaceMode, m.BaseRef, m.ProvisionScript, m.DeprovisionScript, m.Pinned, floor); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -402,6 +473,9 @@ func (s *Store) CreateThread(ctx context.Context, m ThreadMeta) error {
 // Append writes one event at seq = head_seq+1 and bumps head_seq in the same
 // transaction. Returns the sequenced event.
 func (s *Store) Append(ctx context.Context, threadID string, em proto.Emission) (proto.Event, error) {
+	if p := s.private(threadID); p != nil {
+		return p.Append(ctx, threadID, em)
+	}
 	payload, err := json.Marshal(em.Payload)
 	if err != nil {
 		return proto.Event{}, err
@@ -449,6 +523,9 @@ func (s *Store) Append(ctx context.Context, threadID string, em proto.Emission) 
 
 // SetPhase records idle | turn | background | closed, or a workspace phase.
 func (s *Store) SetPhase(ctx context.Context, threadID, phase string) error {
+	if p := s.private(threadID); p != nil {
+		return p.SetPhase(ctx, threadID, phase)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.ExecContext(ctx, `UPDATE threads SET phase = ?, updated_at = ? WHERE id = ?`,
@@ -458,6 +535,9 @@ func (s *Store) SetPhase(ctx context.Context, threadID, phase string) error {
 
 // SetProviderInstance moves a thread to another account of its harness.
 func (s *Store) SetProviderInstance(ctx context.Context, threadID, instance string) error {
+	if p := s.private(threadID); p != nil {
+		return p.SetProviderInstance(ctx, threadID, instance)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.ExecContext(ctx, `UPDATE threads SET provider_instance = ?, updated_at = ? WHERE id = ?`,
@@ -466,6 +546,9 @@ func (s *Store) SetProviderInstance(ctx context.Context, threadID, instance stri
 }
 
 func (s *Store) SetTitle(ctx context.Context, threadID, title string) error {
+	if p := s.private(threadID); p != nil {
+		return p.SetTitle(ctx, threadID, title)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.ExecContext(ctx, `UPDATE threads SET title = ? WHERE id = ? AND title = ''`, title, threadID)
@@ -477,6 +560,9 @@ func (s *Store) SetTitle(ctx context.Context, threadID, title string) error {
 // called. updated_at is left alone for the same reason as pinning — naming a
 // thread is not activity.
 func (s *Store) RenameThread(ctx context.Context, threadID, title string) error {
+	if p := s.private(threadID); p != nil {
+		return p.RenameThread(ctx, threadID, title)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.ExecContext(ctx, `UPDATE threads SET title = ? WHERE id = ?`, title, threadID)
@@ -495,6 +581,9 @@ func (s *Store) RenameThread(ctx context.Context, threadID, title string) error 
 
 // ReadEvents returns events in (afterSeq, afterSeq+limit], ordered by seq.
 func (s *Store) ReadEvents(ctx context.Context, threadID string, afterSeq int64, limit int) ([]proto.Event, error) {
+	if p := s.private(threadID); p != nil {
+		return p.ReadEvents(ctx, threadID, afterSeq, limit)
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT seq, type, payload, created_at FROM events
 		 WHERE thread_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`, threadID, afterSeq, limit)
@@ -538,6 +627,9 @@ type ToolBody struct {
 // without opening the thread. ErrNotFound when the thread has no row for that
 // call.
 func (s *Store) ToolBody(ctx context.Context, threadID, toolCallID string) (ToolBody, error) {
+	if p := s.private(threadID); p != nil {
+		return p.ToolBody(ctx, threadID, toolCallID)
+	}
 	rows, err := s.db.QueryContext(ctx, toolBodyQuery, threadID, toolCallID)
 	if err != nil {
 		return ToolBody{}, err
@@ -575,12 +667,16 @@ func (s *Store) ToolBody(ctx context.Context, threadID, toolCallID string) (Tool
 }
 
 func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
+	if p := s.private(id); p != nil {
+		return p.Thread(ctx, id)
+	}
 	var m ThreadMeta
 	var provisionResult []byte
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, service_tier, workspace_mode, base_ref, pinned, last_viewed_seq, position, provision_script, deprovision_script, provision_result FROM threads WHERE id = ?`, id).
 		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.ServiceTier, &m.WorkspaceMode, &m.BaseRef, &m.Pinned, &m.LastViewedSeq, &m.Position, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
 	m.ProvisionResult = json.RawMessage(provisionResult)
+	m.Private = ephemeral.Is(m.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, ErrNotFound
 	}
@@ -595,6 +691,32 @@ func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
 // the old newest-created-first anchor breaks the tie, and the id after it
 // keeps two threads created in the same millisecond in one stable order.
 func (s *Store) ListThreads(ctx context.Context) ([]ThreadMeta, error) {
+	out, err := s.listThreads(ctx)
+	if err != nil || s.mem == nil {
+		return out, err
+	}
+	private, err := s.mem.listThreads(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(private) == 0 {
+		return out, nil
+	}
+	out = append(out, private...)
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Position != b.Position {
+			return a.Position < b.Position
+		}
+		if a.CreatedAt != b.CreatedAt {
+			return a.CreatedAt > b.CreatedAt
+		}
+		return a.ID > b.ID
+	})
+	return out, nil
+}
+
+func (s *Store) listThreads(ctx context.Context) ([]ThreadMeta, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, service_tier, workspace_mode, base_ref, pinned, last_viewed_seq, position
 		 FROM threads ORDER BY position ASC, created_at DESC, id DESC`)
@@ -609,12 +731,16 @@ func (s *Store) ListThreads(ctx context.Context) ([]ThreadMeta, error) {
 		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.ServiceTier, &m.WorkspaceMode, &m.BaseRef, &m.Pinned, &m.LastViewedSeq, &m.Position); err != nil {
 			return nil, err
 		}
+		m.Private = ephemeral.Is(m.ID)
 		out = append(out, m)
 	}
 	return out, rows.Err()
 }
 
 func (s *Store) UpdateWorkspace(ctx context.Context, id, cwd, branch, phase string, result json.RawMessage) error {
+	if p := s.private(id); p != nil {
+		return p.UpdateWorkspace(ctx, id, cwd, branch, phase, result)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.ExecContext(ctx, `UPDATE threads SET cwd=?, branch=?, phase=?, provision_result=?, updated_at=? WHERE id=?`, cwd, branch, phase, []byte(result), proto.NowMillis(), id)
@@ -622,6 +748,9 @@ func (s *Store) UpdateWorkspace(ctx context.Context, id, cwd, branch, phase stri
 }
 
 func (s *Store) DeleteThread(ctx context.Context, id string) error {
+	if p := s.private(id); p != nil {
+		return p.DeleteThread(ctx, id)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -647,6 +776,9 @@ func (s *Store) DeleteThread(ctx context.Context, id string) error {
 // leaves updated_at alone on purpose: pinning is not activity, and bumping the
 // stamp would reshuffle anything sorted by it.
 func (s *Store) SetThreadPinned(ctx context.Context, threadID string, pinned bool) error {
+	if p := s.private(threadID); p != nil {
+		return p.SetThreadPinned(ctx, threadID, pinned)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.ExecContext(ctx, `UPDATE threads SET pinned=? WHERE id=?`, pinned, threadID)
@@ -668,6 +800,9 @@ func (s *Store) SetThreadPinned(ctx context.Context, threadID string, pinned boo
 // is the whole write: one row, nothing renumbered. updated_at is left alone —
 // arranging the list is not activity.
 func (s *Store) SetThreadPosition(ctx context.Context, threadID string, position float64) error {
+	if p := s.private(threadID); p != nil {
+		return p.SetThreadPosition(ctx, threadID, position)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.ExecContext(ctx, `UPDATE threads SET position = ? WHERE id = ?`, position, threadID)
@@ -693,6 +828,9 @@ func (s *Store) SetThreadPosition(ctx context.Context, threadID string, position
 // alone — looking is not activity, and the stamp no longer orders the list
 // anyway.
 func (s *Store) MarkThreadViewed(ctx context.Context, threadID string, seq int64) error {
+	if p := s.private(threadID); p != nil {
+		return p.MarkThreadViewed(ctx, threadID, seq)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.ExecContext(ctx,
@@ -713,6 +851,9 @@ func (s *Store) MarkThreadViewed(ctx context.Context, threadID string, seq int64
 // MarkThreadUnread drops the viewed cursor to zero — the explicit "come back
 // to this" action, the one legal way the cursor moves backwards.
 func (s *Store) MarkThreadUnread(ctx context.Context, threadID string) error {
+	if p := s.private(threadID); p != nil {
+		return p.MarkThreadUnread(ctx, threadID)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.ExecContext(ctx,
@@ -745,6 +886,9 @@ func (s *Store) PutSnapshot(ctx context.Context, threadID string, seq int64, sta
 // the write lands gets no row: the actor writes snapshots off its own
 // goroutine, and one must not outlive the thread it belongs to.
 func (s *Store) PutSnapshotBlob(ctx context.Context, threadID string, seq int64, blob []byte) error {
+	if p := s.private(threadID); p != nil {
+		return p.PutSnapshotBlob(ctx, threadID, seq, blob)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -766,6 +910,9 @@ func (s *Store) PutSnapshotBlob(ctx context.Context, threadID string, seq int64,
 
 // LatestSnapshot returns the newest snapshot, or (0, nil, nil) if none exists.
 func (s *Store) LatestSnapshot(ctx context.Context, threadID string) (int64, json.RawMessage, error) {
+	if p := s.private(threadID); p != nil {
+		return p.LatestSnapshot(ctx, threadID)
+	}
 	var seq int64
 	var blob []byte
 	err := s.db.QueryRowContext(ctx,
@@ -789,6 +936,9 @@ var ErrCommandInProgress = errors.New("command is still in progress")
 // keeps a concurrent retry from mistaking a placeholder for a successful null
 // result.
 func (s *Store) ClaimCommand(ctx context.Context, commandID, threadID string) (json.RawMessage, bool, error) {
+	if p := s.private(threadID); p != nil {
+		return p.ClaimCommand(ctx, commandID, threadID)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -820,17 +970,32 @@ func (s *Store) ReleaseCommand(ctx context.Context, commandID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM commands WHERE command_id = ? AND result IS NULL`, commandID)
+	if err == nil && s.mem != nil {
+		err = s.mem.ReleaseCommand(ctx, commandID)
+	}
 	return err
 }
 
+// CompleteCommand stores a command's result in whichever database claimed
+// it: the caller has the command id, not always the thread it was for.
 func (s *Store) CompleteCommand(ctx context.Context, commandID string, result any) error {
 	blob, err := json.Marshal(result)
 	if err != nil {
 		return err
 	}
+	if err := s.completeCommand(ctx, commandID, blob); err != nil {
+		return err
+	}
+	if s.mem != nil {
+		return s.mem.completeCommand(ctx, commandID, blob)
+	}
+	return nil
+}
+
+func (s *Store) completeCommand(ctx context.Context, commandID string, blob []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err = s.db.ExecContext(ctx, `UPDATE commands SET result = ? WHERE command_id = ?`, blob, commandID)
+	_, err := s.db.ExecContext(ctx, `UPDATE commands SET result = ? WHERE command_id = ?`, blob, commandID)
 	return err
 }
 

@@ -37,6 +37,7 @@ import { EmptyState } from "./components/EmptyState";
 import { SetupScreen, ThemePreviewScreen, ToolsScreen, UsageScreen } from "./components/FullPageScreens";
 import { LazyCommandPalette, LazyShortcutsHelp, usePrefetchOverlays } from "./components/Overlays";
 import { Sidebar } from "./components/Sidebar";
+import { AssistantDraft } from "./components/AssistantDraft";
 import { ThreadDraft } from "./components/ThreadDraft";
 import { ThreadHeader } from "./components/ThreadHeader";
 import { ThreadPanel } from "./components/ThreadPanel";
@@ -174,10 +175,20 @@ export function App() {
   const newThreadIn = useCallback(() => showPalette("newThread"), [showPalette]);
   const openPaletteRoot = useCallback(() => showPalette("root"), [showPalette]);
   const startBlank = useCallback(() => startFresh(), [startFresh]);
+  // Not focused on a phone, where the cursor would raise the keyboard over the draft.
+  const startAssistant = useCallback(
+    (isPrivate: boolean) => startFresh({ assistant: true, private: isPrivate, focus: isDesktop }),
+    [startFresh, isDesktop],
+  );
   // Reachable from over the palette, which would otherwise cover the draft.
   const newThreadHere = () => {
     palette.setOpen(false);
     startNew({ focus: true, projectId: meta?.projectId ?? nav.creating?.projectId });
+  };
+  const newAssistant = (isPrivate = false) => {
+    palette.setOpen(false);
+    screens.leaveAll();
+    startAssistant(isPrivate);
   };
   const toggleSidebar = () => nav.setSidebarOpen((open) => !open);
   // Setup and the new-thread draft both send a driver with no account here;
@@ -213,6 +224,7 @@ export function App() {
     onTogglePalette: palette.toggle,
     onNewThreadIn: newThreadIn,
     onNewThreadHere: newThreadHere,
+    onNewAssistant: () => newAssistant(),
     onCopyTranscript: copyTranscript,
     onFindInThread: find.show,
     onStopTurn: commands.cancel,
@@ -244,6 +256,7 @@ export function App() {
     onOpenDiff: () => panel.openDiff(),
     onStopTurn: commands.cancel,
     onNewThreadHere: newThreadHere,
+    onNewAssistant: newAssistant,
     onNewProject: () => {
       screens.uncover();
       screens.setNewProject(true);
@@ -367,6 +380,7 @@ export function App() {
           onSelect={select}
           onNewThreadIn={newThreadIn}
           onNew={startBlank}
+          onNewAssistant={startAssistant}
           onOpenPalette={openPaletteRoot}
           projectView={projectView}
           showJumpHints={showJumpHints}
@@ -416,6 +430,7 @@ export function App() {
             panel={panel}
             onShowMcp={() => screens.setTools({ tab: "mcp" })}
             onFind={find.show}
+            onClose={deletion.deleteFlow.ask}
           />
 
           {attached ? (
@@ -436,12 +451,32 @@ export function App() {
               onLogin={auth.openInstanceAuth}
               onForceDelete={deletion.forceDelete}
               onFinish={deletion.deleteFlow.ask}
-              readAloud={wire.hasElevenLabsKey}
+              // Read-aloud caches audio on disk, which a private chat must not.
+              readAloud={wire.hasElevenLabsKey && !meta?.private}
               status={wire.status}
               turnStatus={wire.turnStatus}
               // Not on a phone: the cursor there would raise the keyboard over the new draft.
               onSendAndNewThread={(preset) => startNew({ ...preset, focus: isDesktop })}
               find={find}
+            />
+          ) : nav.creating?.assistant ? (
+            <AssistantDraft
+              key={nav.creating.nonce}
+              preset={nav.creating}
+              composerRef={composerRef}
+              harnesses={harnesses}
+              userConfig={wire.userConfig}
+              status={wire.status}
+              drafts={store.draftStore}
+              onStart={create}
+              attachments={store.attachments[NEW_THREAD] ?? []}
+              onAttachFiles={store.attachToDraft}
+              onRemoveAttachment={(key) => store.removeAttachment(NEW_THREAD, key)}
+              onRecheck={auth.recheck}
+              onLogin={auth.openInstanceAuth}
+              onManageProviders={() => screens.setSettings({ at: { kind: "providers" } })}
+              onAddAccount={addAccount}
+              dictate={wire.hasElevenLabsKey}
             />
           ) : nav.creating ? (
             <ThreadDraft

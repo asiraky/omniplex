@@ -2,6 +2,7 @@ import {
   CheckIcon,
   CopyIcon,
   EllipsisIcon,
+  HatGlassesIcon,
   LinkIcon,
   PanelLeftIcon,
   PanelRightIcon,
@@ -10,6 +11,7 @@ import {
   PinOffIcon,
   PlugIcon,
   SearchIcon,
+  XIcon,
 } from "lucide-react";
 import { useRef, useState } from "react";
 
@@ -76,6 +78,7 @@ export function ThreadHeader({
   panel,
   onShowMcp,
   onFind,
+  onClose,
 }: {
   sidebarOpen: boolean;
   onShowSidebar: () => void;
@@ -91,6 +94,8 @@ export function ThreadHeader({
   panel: PanelControls;
   onShowMcp: () => void;
   onFind: () => void;
+  /** Asks to close an assistant chat, which deletes it. */
+  onClose?: (meta: ThreadMeta) => void;
 }) {
   // The thread the title field is open on: switching threads closes it rather
   // than opening the next thread's name for editing.
@@ -123,9 +128,29 @@ export function ThreadHeader({
               onDone={() => setRenamingId(null)}
               onRename={onRename}
             />
+            {meta?.private && (
+              <span
+                title="Kept in memory only. Closing it deletes it."
+                className="text-muted-foreground flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]"
+              >
+                <HatGlassesIcon aria-hidden className="size-3" />
+                Private
+              </span>
+            )}
             {isDesktop && <ExtensionStatuses statuses={thread.extensionStatuses} inline />}
             {SHOW_MODE_SWITCHER && !thread.closed && <ModeSwitcher harness={harness} />}
             {isDesktop ? <DesktopActions actions={actions} /> : <PhoneActions actions={actions} />}
+            {/* An assistant chat has nothing to land, so being done with it
+                is closing it, one tap away. */}
+            {meta && !meta.projectId && onClose && (
+              <IconButton
+                label={meta.private ? "Close private chat" : "Close chat"}
+                onClick={() => onClose(meta)}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <XIcon />
+              </IconButton>
+            )}
           </>
         ) : (
           <PendingTitle attaching={!!meta} creating={creating} />

@@ -16,6 +16,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/attachment"
+	"github.com/asiraky/omniplex/internal/ephemeral"
 	"github.com/asiraky/omniplex/internal/project"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
@@ -332,8 +333,14 @@ func (m *Manager) SetAttachments(p AttachmentPurger) {
 func (m *Manager) SetArtefacts(p AttachmentPurger) { m.artefacts = p }
 
 // purgeAttachments is best effort: a picture left behind must never be the
-// reason a thread cannot be deleted.
+// reason a thread cannot be deleted. A private thread's scratch folder goes
+// with them: nothing it made outlives it.
 func (m *Manager) purgeAttachments(id string) {
+	if ephemeral.Is(id) {
+		if err := ephemeral.Forget(id); err != nil {
+			m.logf("remove private folder for %s: %v", id, err)
+		}
+	}
 	if m.artefacts != nil {
 		if err := m.artefacts.PurgeThread(id); err != nil {
 			m.logf("purge artefacts for %s: %v", id, err)
@@ -1335,6 +1342,11 @@ func (m *Manager) Cleanup(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	// Closing a private chat is the end of it: there is no transcript on disk
+	// to come back to, so it goes rather than lingering closed.
+	if meta.Private {
+		return m.deleteUnprojected(ctx, id)
+	}
 	if meta.ProjectID == "" {
 		return m.closeLocked(ctx, id, "closed by user")
 	}
@@ -1647,6 +1659,21 @@ func (m *Manager) closeLocked(ctx context.Context, id, reason string) error {
 	return nil
 }
 
+// deleteUnprojected deletes a thread with no project: there is no workspace
+// to clean up, only the harness to stop and the rows and files to drop.
+// m.lifecycle is held.
+func (m *Manager) deleteUnprojected(ctx context.Context, id string) error {
+	if err := m.closeLocked(ctx, id, "deleted"); err != nil {
+		return err
+	}
+	if err := m.store.DeleteThread(ctx, id); err != nil {
+		return err
+	}
+	m.purgeAttachments(id)
+	m.notifyList()
+	return nil
+}
+
 // Delete removes a thread and its log entirely. removeWorktree is the user's
 // answer to the checkbox in the confirmation dialog: without it nothing on disk
 // is touched, whatever mode the thread ran in.
@@ -1690,15 +1717,7 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 		return nil
 	}
 	if meta.ProjectID == "" {
-		if err := m.closeLocked(ctx, id, "deleted"); err != nil {
-			return err
-		}
-		if err := m.store.DeleteThread(ctx, id); err != nil {
-			return err
-		}
-		m.purgeAttachments(id)
-		m.notifyList()
-		return nil
+		return m.deleteUnprojected(ctx, id)
 	}
 	if meta.Phase == "cleaning" {
 		return errors.New("workspace cleanup is already running")

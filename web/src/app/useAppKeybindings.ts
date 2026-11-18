@@ -52,6 +52,7 @@ export function useAppKeybindings({
   onTogglePalette,
   onNewThreadIn,
   onNewThreadHere,
+  onNewAssistant,
   onCopyTranscript,
   onFindInThread,
   onStopTurn,
@@ -73,6 +74,7 @@ export function useAppKeybindings({
   onTogglePalette: () => void;
   onNewThreadIn: () => void;
   onNewThreadHere: () => void;
+  onNewAssistant: () => void;
   onCopyTranscript: () => void;
   onFindInThread: () => void;
   onStopTurn: () => void;
@@ -94,6 +96,7 @@ export function useAppKeybindings({
     palette: onTogglePalette,
     newThreadIn: onNewThreadIn,
     newThreadHere: onNewThreadHere,
+    newAssistant: onNewAssistant,
     prevThread: () => go(stepThread(shown(), activeId, -1)),
     nextThread: () => go(stepThread(shown(), activeId, 1)),
     // Folded sections count: a thread waiting on an answer is worth opening

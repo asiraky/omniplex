@@ -489,10 +489,16 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		if a.ProjectID == "" {
+		var actor *thread.Actor
+		var err error
+		switch {
+		case a.Assistant:
+			actor, err = c.srv.mgr.CreateAssistant(ctx, thread.AssistantOptions{Title: a.Title, Harness: a.Harness, Instance: a.Instance, Model: a.Model, Mode: a.Mode, Effort: a.Effort, ServiceTier: a.ServiceTier, Pinned: a.Pinned, Private: a.Private})
+		case a.ProjectID == "":
 			return nil, errors.New("a thread belongs to a project; choose one")
+		default:
+			actor, err = c.srv.mgr.CreateProject(ctx, thread.CreateProjectOptions{ProjectID: a.ProjectID, Title: a.Title, Harness: a.Harness, Instance: a.Instance, Model: a.Model, Mode: a.Mode, Effort: a.Effort, ServiceTier: a.ServiceTier, AgentSettingsExplicit: a.AgentSettingsExplicit, Branch: a.Branch, Workspace: a.Workspace, WorkspacePath: a.WorkspacePath, FolderID: a.FolderID, BaseRef: a.BaseRef, Pinned: a.Pinned})
 		}
-		actor, err := c.srv.mgr.CreateProject(ctx, thread.CreateProjectOptions{ProjectID: a.ProjectID, Title: a.Title, Harness: a.Harness, Instance: a.Instance, Model: a.Model, Mode: a.Mode, Effort: a.Effort, ServiceTier: a.ServiceTier, AgentSettingsExplicit: a.AgentSettingsExplicit, Branch: a.Branch, Workspace: a.Workspace, WorkspacePath: a.WorkspacePath, FolderID: a.FolderID, BaseRef: a.BaseRef, Pinned: a.Pinned})
 		if err != nil {
 			return nil, err
 		}
@@ -1084,7 +1090,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		// travel to a client, so no env value — secret or not — can leak
 		// through the settings surface.
 		cfg.Providers = nil
-		return map[string]any{"userConfig": cfg, "hasElevenLabsKey": c.srv.speech.HasKey()}, nil
+		return map[string]any{"userConfig": cfg, "hasElevenLabsKey": c.srv.speech.HasKey(), "defaultAssistantPrompt": userconfig.DefaultAssistantPrompt}, nil
 
 	case "save_user_config":
 		var a saveUserConfigArgs
@@ -1108,7 +1114,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		c.srv.mgr.UserConfigChanged()
 		cfg.Providers = nil
-		return map[string]any{"userConfig": cfg, "hasElevenLabsKey": c.srv.speech.HasKey()}, nil
+		return map[string]any{"userConfig": cfg, "hasElevenLabsKey": c.srv.speech.HasKey(), "defaultAssistantPrompt": userconfig.DefaultAssistantPrompt}, nil
 
 	case "set_elevenlabs_key":
 		var a setElevenLabsKeyArgs

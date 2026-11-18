@@ -127,6 +127,12 @@ type createArgs struct {
 	// Pinned starts the thread in the sidebar's Pinned section. The draft
 	// decides, from the user's default and the toggle beside the composer.
 	Pinned bool `json:"pinned"`
+	// Assistant starts an assistant chat: no project, the user's assistant
+	// prompt in place of Omniplex's. ProjectID and the workspace fields are
+	// ignored.
+	Assistant bool `json:"assistant"`
+	// Private makes an assistant chat one that is never written to disk.
+	Private bool `json:"private"`
 }
 
 // deleteThreadArgs carries the user's answer to the confirmation dialog's

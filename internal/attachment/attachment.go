@@ -33,6 +33,8 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // as above
+
+	"github.com/asiraky/omniplex/internal/ephemeral"
 )
 
 // MaxImageBytes bounds one image. Set by what the far end will take rather
@@ -158,6 +160,10 @@ func New(dir string) *Store {
 func (s *Store) threadDir(threadID string) (string, error) {
 	if !safeID.MatchString(threadID) {
 		return "", errors.New("bad thread id")
+	}
+	// A private thread's files stay in its scratch space, off the disk.
+	if ephemeral.Is(threadID) {
+		return filepath.Join(ephemeral.Dir(), "attachments", threadID), nil
 	}
 	return filepath.Join(s.dir, threadID), nil
 }

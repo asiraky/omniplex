@@ -28,6 +28,7 @@ function actions(over: Partial<Args>) {
     onOpenDiff: vi.fn(),
     onStopTurn: vi.fn(),
     onNewThreadHere: vi.fn(),
+    onNewAssistant: vi.fn(),
     onNewProject: vi.fn(),
     onSettings: vi.fn(),
     onUsage: vi.fn(),

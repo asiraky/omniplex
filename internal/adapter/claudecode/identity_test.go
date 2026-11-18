@@ -104,6 +104,7 @@ func TestConversationIDPrefersTheHarnessIDOnResume(t *testing.T) {
 		{"resume without a rotation uses omniplex's name", adapter.CreateOptions{ThreadID: "omniplex-id", Resume: true}, "omniplex-id"},
 		{"resume after a rotation uses the rotated id", adapter.CreateOptions{ThreadID: "omniplex-id", Resume: true, HarnessSessionID: "rotated"}, "rotated"},
 		{"a rotation never renames a fresh session", adapter.CreateOptions{ThreadID: "omniplex-id", HarnessSessionID: "rotated"}, "omniplex-id"},
+		{"a private thread is named by the uuid under its mark", adapter.CreateOptions{ThreadID: "private-6f1c0a52-8a43-4b8e-9d0e-2f3b4c5d6e7f"}, "6f1c0a52-8a43-4b8e-9d0e-2f3b4c5d6e7f"},
 	}
 	for _, tc := range cases {
 		if got := conversationID(tc.o); got != tc.want {

@@ -31,6 +31,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/asiraky/omniplex/internal/ephemeral"
 )
 
 const (
@@ -263,7 +265,16 @@ func (s *Store) shareDir(thread, id string) (string, error) {
 	if !safeID.MatchString(thread) || !safeID.MatchString(id) {
 		return "", ErrBadPath
 	}
-	return filepath.Join(s.dir, thread, id), nil
+	return filepath.Join(s.threadDir(thread), id), nil
+}
+
+// threadDir holds a thread's shares. A private thread's are in its scratch
+// space, never on disk beside everyone else's.
+func (s *Store) threadDir(thread string) string {
+	if ephemeral.Is(thread) {
+		return filepath.Join(ephemeral.Dir(), "artefacts", thread)
+	}
+	return filepath.Join(s.dir, thread)
 }
 
 // Snapshot copies the artefact at src into the share for (thread, id),
@@ -402,7 +413,7 @@ func (s *Store) PurgeThread(thread string) error {
 	if !safeID.MatchString(thread) {
 		return ErrBadPath
 	}
-	return os.RemoveAll(filepath.Join(s.dir, thread))
+	return os.RemoveAll(s.threadDir(thread))
 }
 
 func newNonce() string {

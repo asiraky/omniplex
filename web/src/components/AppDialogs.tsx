@@ -97,6 +97,7 @@ export function AppDialogs({
             onSaveUserConfig={wire.saveUserConfig}
             hasElevenLabsKey={wire.hasElevenLabsKey}
             onSetElevenLabsKey={wire.setElevenLabsKey}
+            defaultAssistantPrompt={wire.defaultAssistantPrompt}
             providers={{
               wires: auth.authWires,
               onOpenTerminal: setLoginInstance,

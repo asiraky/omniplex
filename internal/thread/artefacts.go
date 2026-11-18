@@ -16,6 +16,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/artefact"
+	"github.com/asiraky/omniplex/internal/ephemeral"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/store"
@@ -43,6 +44,11 @@ type extras struct {
 	// suggestPrompts asks the harness for a next-prompt suggestion after
 	// each turn.
 	suggestPrompts bool
+	// instructions are the session's system prompt: Omniplex's own, or for
+	// an assistant chat the user's assistant prompt in its place.
+	instructions string
+	// ephemeral is a private thread's: the harness keeps nothing on disk.
+	ephemeral bool
 }
 
 // options fills in everything a session gets from omniplex rather than from
@@ -50,8 +56,12 @@ type extras struct {
 // the same set.
 func (x extras) options(o adapter.CreateOptions) adapter.CreateOptions {
 	o.MCPServers, o.ExtraDirs, o.SkillDirs, o.Plugins = x.mcp, x.extraDirs, x.skillDirs, x.plugins
-	o.Instructions = omniplexInstructions
+	o.Instructions = x.instructions
+	if o.Instructions == "" {
+		o.Instructions = omniplexInstructions
+	}
 	o.SuggestPrompts = x.suggestPrompts
+	o.Ephemeral = x.ephemeral
 	return o
 }
 
@@ -64,7 +74,9 @@ func (x extras) options(o adapter.CreateOptions) adapter.CreateOptions {
 // another. A project's thread working outside the home also gets the home's
 // private skills; a harness in the home finds them by itself. Every thread
 // gets omniplex's bundled plugin. Prompt suggestions follow the user's
-// setting, on unless it is turned off or the config cannot be read.
+// setting, on unless it is turned off or the config cannot be read. A thread
+// with no project is an assistant chat, told the user's assistant prompt
+// instead of Omniplex's; a private one asks the harness to keep nothing.
 func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, cwd string, logf func(string, ...any)) extras {
 	home, err := ThreadHome(ctx, st, meta.ProjectID, cwd)
 	if err != nil {
@@ -94,6 +106,11 @@ func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, met
 	x.mcp = append(x.mcp, userMCPServers(ctx, ad, meta.ProjectID)...)
 	cfg, err := userconfig.Load()
 	x.suggestPrompts = err != nil || cfg.SuggestPrompts == nil || *cfg.SuggestPrompts
+	x.instructions = omniplexInstructions
+	if meta.ProjectID == "" {
+		x.instructions = cfg.AssistantPromptOrDefault()
+	}
+	x.ephemeral = ephemeral.Is(meta.ID)
 	return x
 }
 

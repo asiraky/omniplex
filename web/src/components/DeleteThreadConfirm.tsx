@@ -38,9 +38,13 @@ export function DeleteThreadConfirm({ flow }: { flow: DeleteThread }) {
               is at risk. The old copy promised a worktree removal that a
               borrowed thread never performed. */}
           <DialogDescription>
-            {flow.mode === "local"
-              ? "This permanently deletes the thread and its transcript. Your checkout is left untouched."
-              : "This permanently deletes the thread and its transcript."}
+            {flow.confirming?.private
+              ? "This private chat was never saved, so once it is closed there is no getting it back."
+              : flow.confirming && !flow.confirming.projectId
+                ? "This permanently deletes the chat and its transcript. Files it made in the assistant folder stay."
+                : flow.mode === "local"
+                  ? "This permanently deletes the thread and its transcript. Your checkout is left untouched."
+                  : "This permanently deletes the thread and its transcript."}
           </DialogDescription>
         </DialogHeader>
 

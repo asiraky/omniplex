@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/ephemeral"
 	"github.com/asiraky/omniplex/internal/jsonrpc"
 	"github.com/asiraky/omniplex/internal/procgroup"
 	"github.com/asiraky/omniplex/internal/proto"
@@ -291,6 +293,9 @@ type sidecarConfig struct {
 	// PromptSuggestions is the SDK option of the same name: after a turn the
 	// harness sends one prompt_suggestion, its guess at the next prompt.
 	PromptSuggestions bool `json:"promptSuggestions,omitempty"`
+	// Ephemeral turns off the SDK's session file (persistSession: false):
+	// for a private thread whose transcript cannot be kept in memory.
+	Ephemeral bool `json:"ephemeral,omitempty"`
 }
 
 // sdkPlugin is the SDK's local plugin option: a folder holding
@@ -314,7 +319,8 @@ func conversationID(o adapter.CreateOptions) string {
 		return o.HarnessSessionID
 	}
 	if o.ThreadID != "" {
-		return o.ThreadID
+		// Claude takes only a uuid, which a private thread's id is under its mark.
+		return ephemeral.Bare(o.ThreadID)
 	}
 	return uuid.NewString()
 }
@@ -325,13 +331,27 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, fmt.Errorf("claude is unavailable: %s", avail.Reason)
 	}
 
+	configDir := claudeConfigDir(o.Cwd, o.Env)
+	sweepPrivateLinks(configDir)
+	// A private thread keeps its transcript in memory, through a link from
+	// Claude's config folder. One whose folder is somewhere else, which
+	// nothing makes, keeps none.
+	noTranscript := false
+	if o.Ephemeral {
+		linked, err := privateTranscripts(configDir, o.Cwd)
+		if err != nil {
+			return nil, fmt.Errorf("keep the private chat's transcript in memory: %w", err)
+		}
+		noTranscript = !linked
+	}
+
 	conv := conversation{id: conversationID(o)}
 	if o.Resume {
 		conv = parseConversation(conversationID(o))
 		// A rewind's conversation is only written once it carries a turn.
 		// Until then it is started from what it was cut from; after, it is
 		// an ordinary conversation, whatever the id still says.
-		if conv.pending() && conversationOnDisk(claudeConfigDir(o.Cwd, o.Env), o.Cwd, conv.id) {
+		if conv.pending() && conversationOnDisk(configDir, o.Cwd, conv.id) {
 			conv = conversation{id: conv.id}
 		}
 		conv.resume = !conv.pending()
@@ -352,6 +372,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		ClaudePath:                      r.claudePath,
 		AdditionalDirectories:           o.ExtraDirs,
 		Instructions:                    o.Instructions,
+		Ephemeral:                       noTranscript,
 		PromptSuggestions:               o.SuggestPrompts,
 	}
 	servers, secrets, err := sidecarMCP(o.MCPServers)
@@ -378,14 +399,31 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if kv := mcpToolTimeout(o.MCPServers, o.Env); kv != "" {
 		extra = append(extra, kv)
 	}
+	taskEnv := o.Env
+	if o.Ephemeral {
+		penv, err := privateEnv(o.Cwd)
+		if err != nil {
+			return nil, err
+		}
+		if penv != nil {
+			taskEnv = maps.Clone(o.Env)
+			if taskEnv == nil {
+				taskEnv = map[string]string{}
+			}
+		}
+		for k, v := range penv {
+			extra = append(extra, k+"="+v)
+			taskEnv[k] = v
+		}
+	}
 
 	s := &session{
 		host:             host,
 		launch:           launch{r: r, cfg: cfg, env: o.Env, extra: extra},
 		cwd:              o.Cwd,
-		configDir:        claudeConfigDir(o.Cwd, o.Env),
+		configDir:        configDir,
 		accountFile:      claudeJSON(o.Env),
-		taskRoot:         claudeTaskRoot(o.Cwd, o.Env),
+		taskRoot:         claudeTaskRoot(o.Cwd, taskEnv),
 		commands:         &a.commands,
 		harnessSessionID: conv.String(),
 		model:            o.Model,

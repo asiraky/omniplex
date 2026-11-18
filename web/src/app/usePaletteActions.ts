@@ -34,6 +34,7 @@ export function usePaletteActions({
   onOpenDiff,
   onStopTurn,
   onNewThreadHere,
+  onNewAssistant,
   onNewProject,
   onSettings,
   onUsage,
@@ -60,6 +61,8 @@ export function usePaletteActions({
   onOpenDiff: () => void;
   onStopTurn: () => void;
   onNewThreadHere: () => void;
+  /** An assistant chat outside any project; `private` starts it kept off disk. */
+  onNewAssistant: (isPrivate: boolean) => void;
   onNewProject: () => void;
   onSettings: () => void;
   onUsage: () => void;
@@ -166,6 +169,19 @@ export function usePaletteActions({
     command: "newThreadHere",
     keywords: ["create", "start"],
     run: onNewThreadHere,
+  });
+  app({
+    id: "new-assistant",
+    label: "New assistant chat",
+    command: "newAssistant",
+    keywords: ["create", "start", "chat", "ask", "general"],
+    run: () => onNewAssistant(false),
+  });
+  app({
+    id: "new-private",
+    label: "New private chat",
+    keywords: ["incognito", "ephemeral", "throwaway", "assistant", "temporary"],
+    run: () => onNewAssistant(true),
   });
   app({ id: "new-project", label: "New project", keywords: ["add", "repository"], run: onNewProject });
   app({ id: "settings", label: "Settings", command: "settings", keywords: ["preferences"], run: onSettings });
