@@ -437,7 +437,7 @@ func (m *Manager) instanceFor(meta store.ThreadMeta) (registered, error) {
 // stricter strands it in "cleaning" forever. The adapter may be nil.
 func (m *Manager) cleanupAdapter(meta store.ThreadMeta) (adapter.Adapter, map[string]string) {
 	if reg, err := m.instanceFor(meta); err == nil {
-		if env, envErr := m.envFor(reg.inst); envErr == nil {
+		if env, envErr := m.sessionEnv(reg.inst); envErr == nil {
 			return reg.ad, env
 		}
 		return reg.ad, nil
@@ -979,7 +979,7 @@ func (m *Manager) Create(ctx context.Context, harness, instance, cwd, model, mod
 	if err != nil {
 		return nil, err
 	}
-	env, err := m.envFor(reg.inst)
+	env, err := m.sessionEnv(reg.inst)
 	if err != nil {
 		return nil, err
 	}
@@ -1154,7 +1154,7 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 	if err != nil {
 		return nil, err
 	}
-	env, err := m.envFor(reg.inst)
+	env, err := m.sessionEnv(reg.inst)
 	if err != nil {
 		return nil, err
 	}
@@ -1439,7 +1439,7 @@ func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, er
 		reg, regErr := m.instanceFor(meta)
 		var env map[string]string
 		if regErr == nil {
-			env, regErr = m.envFor(reg.inst)
+			env, regErr = m.sessionEnv(reg.inst)
 		}
 		if regErr != nil {
 			if activate {
