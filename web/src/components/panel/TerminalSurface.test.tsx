@@ -507,6 +507,19 @@ describe("TerminalSurface: key bar", () => {
     expect(socket.send.mock.calls).toEqual([["\x03"], ["c"]]);
   });
 
+  it("keeps ctrl armed through a reply the terminal sends on its own", () => {
+    phone();
+    const term = mount();
+    const ctrl = screen.getByRole("button", { name: "ctrl" });
+
+    fireEvent.click(ctrl);
+    act(() => term.type("\x1b[12;40R"));
+    expect(ctrl.getAttribute("aria-pressed")).toBe("true");
+    act(() => term.type("c"));
+
+    expect(socket.send.mock.calls).toEqual([["\x1b[12;40R"], ["\x03"]]);
+  });
+
   it("applies an armed alt to the next key tapped on the bar, and a second tap disarms", () => {
     phone();
     const term = mount();

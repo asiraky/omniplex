@@ -270,6 +270,16 @@ func (s *Server) termKill(device, id string) {
 	}
 }
 
+// termDrop ends a terminal without barring its id from a later spawn.
+func (s *Server) termDrop(device, id string) {
+	s.termMu.Lock()
+	sess := s.terms[termKey(device, id)]
+	s.termMu.Unlock()
+	if sess != nil {
+		s.termKillSession(sess)
+	}
+}
+
 // termKillSession removes a session the user (or a revocation) ended.
 func (s *Server) termKillSession(sess *termSession) {
 	sess.mu.Lock()

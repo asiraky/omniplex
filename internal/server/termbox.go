@@ -91,10 +91,30 @@ func (s *Server) boxCommand(ctx context.Context) (*exec.Cmd, error) {
 	if err := s.ensureBox(ctx, tmux, home); err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(tmux, s.boxArgs("attach-session", "-t", boxSession)...)
+	cmd := exec.Command("/bin/sh", append([]string{"-c", boxAttachScript, "sh", tmux}, s.boxArgs()...)...)
 	cmd.Dir, cmd.Env = home, boxEnv()
 	return cmd, nil
 }
+
+// boxAttachScript is a new client's start, run as sh -c with the tmux binary
+// and its server's arguments. tmux redraws only the screen for a client that
+// attaches, and what scrolled off before is out of reach behind no prefix key
+// and no mouse. So the last of it is printed first, then a screen of blank
+// lines pushes it up into the scrollback, out of the way of the redraw: the
+// phone can scroll back through a build the laptop started.
+const boxAttachScript = `t=$1; shift
+h=$("$t" "$@" display-message -p -t ` + boxSession + ` '#{history_size} #{pane_height}' 2>/dev/null)
+set -- "$t" "$@"
+n=${h% *}; r=${h#* }
+if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
+	"$@" capture-pane -p -e -J -S -` + boxSeedLines + ` -E -1 -t ` + boxSession + ` 2>/dev/null
+	i=0; while [ "$i" -lt "${r:-0}" ] 2>/dev/null; do echo; i=$((i+1)); done
+fi
+exec "$@" attach-session -t ` + boxSession
+
+// boxSeedLines is how much of the shell's past a new client is shown: what
+// the screen keeps above itself (SCROLLBACK in TerminalSurface.tsx).
+const boxSeedLines = "1000"
 
 // ensureBox starts the shell's tmux server unless it is already running.
 //
@@ -175,7 +195,11 @@ func (s *Server) termCwd(ctx context.Context, sess *termSession) string {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := s.boxCmd(ctx, sess.cmd.Path, "display-message", "-p", "-t", boxSession, "#{pane_current_path}").Output()
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		return ""
+	}
+	out, err := s.boxCmd(ctx, tmux, "display-message", "-p", "-t", boxSession, "#{pane_current_path}").Output()
 	if err != nil {
 		return ""
 	}

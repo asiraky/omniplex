@@ -116,12 +116,17 @@ func (s *Server) handleDeleteTerm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	device, _ := auth.DeviceFrom(r.Context())
-	// The client first, so this device's own socket is told its terminal was
-	// closed rather than that the shell exited.
-	s.termKill(device.ID, id)
-	if r.URL.Query().Get("box") == "1" {
-		s.killBox(r.Context())
+	if r.URL.Query().Get("box") != "1" {
+		s.termKill(device.ID, id)
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
+	// The client first, so this device's own socket is told its terminal was
+	// closed rather than that the shell exited. Its id is not barred, as a
+	// closed tab's is: every open of the box reuses it, and the next one is
+	// to start a new shell.
+	s.termDrop(device.ID, id)
+	s.killBox(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
 

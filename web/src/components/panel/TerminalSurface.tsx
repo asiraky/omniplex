@@ -196,9 +196,14 @@ export function TerminalSurface({
       }, CWD_SETTLE_MS);
     };
 
-    // The phone keyboard's keys, with whatever the key bar has armed.
+    // The phone keyboard's keys, with whatever the key bar has armed. xterm's
+    // own replies to the shell come through here too: those are not keys, and
+    // an armed Ctrl or Alt waits for the next real one.
     const data = term.onData((d) => {
-      if (historyParsing > 0 && isTerminalReply(d)) return;
+      if (isTerminalReply(d)) {
+        if (historyParsing === 0) sendRef.current(d);
+        return;
+      }
       const armed = modsRef.current;
       if (!hasMods(armed)) return sendRef.current(d);
       setMods(NO_MODS);

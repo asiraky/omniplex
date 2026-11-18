@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,6 +157,26 @@ func TestBoxShellIsSharedAcrossDevices(t *testing.T) {
 	laptop.until(t, ctx, "y=7.")
 }
 
+// tmux redraws only the screen for a new client, so what scrolled off before
+// it attached is printed first, for the phone to scroll back through.
+func TestBoxNewClientGetsWhatScrolledOff(t *testing.T) {
+	rig, _ := newBoxRig(t)
+	ctx := testCtx(t)
+
+	laptop := rig.dialBox(t, ctx, rig.client, "id=laptop")
+	laptop.input(t, ctx, "seq -f 'l%g.' 1 200\n")
+	laptop.until(t, ctx, "l200.")
+
+	phone := rig.dialBox(t, ctx, pairedClient(t, rig.ts, rig.guard), "id=phone")
+	phone.until(t, ctx, "l200.")
+	if !strings.Contains(phone.out.String(), "l5.") {
+		t.Fatalf("the new client was not shown what scrolled off; got %q", phone.out.String())
+	}
+	// Still a working client of the same shell after the seed.
+	phone.input(t, ctx, "echo ph\"\"one\n")
+	phone.until(t, ctx, "phone")
+}
+
 // Without tmux the client is told what to install, not that something broke.
 func TestBoxShellWithoutTmuxSaysSo(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -207,9 +228,11 @@ func TestBoxDeleteEndsTheShell(t *testing.T) {
 		t.Fatalf("another device's socket closed %d, want 4000", code)
 	}
 
-	fresh := rig.dialBox(t, ctx, rig.client, "id=box&fresh=1")
-	fresh.input(t, ctx, "echo \"val=$X.\"\n")
-	fresh.until(t, ctx, "val=.")
+	// An ordinary open, not the ended screen's restart: the box id is used
+	// for every open, so ending the shell must not bar it.
+	again := rig.dialBox(t, ctx, rig.client, "id=box")
+	again.input(t, ctx, "echo \"val=$X.\"\n")
+	again.until(t, ctx, "val=.")
 }
 
 // exit ends the shell like any other, and a fresh open starts another.
