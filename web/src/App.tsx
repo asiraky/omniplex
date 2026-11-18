@@ -32,7 +32,6 @@ import { useThreadTitle } from "./app/useThreadTitle";
 import { useTranscriptCopy } from "./app/useTranscriptCopy";
 import { useWire } from "./app/useWire";
 import { AppDialogs } from "./components/AppDialogs";
-import { BoxTerminalScreen } from "./components/BoxTerminalScreen";
 import { DeleteThreadDialog } from "./components/DeleteThreadDialog";
 import { EmptyState } from "./components/EmptyState";
 import { SetupScreen, ThemePreviewScreen, ToolsScreen, UsageScreen } from "./components/FullPageScreens";
@@ -56,6 +55,11 @@ import { useModHeld } from "./useShortcuts";
 // Most sessions never open one, so it stays out of the first load.
 const AssistantDraft = lazy(() =>
   import("./components/AssistantDraft").then((m) => ({ default: m.AssistantDraft })),
+);
+
+// It carries xterm, which only a terminal needs.
+const BoxTerminalScreen = lazy(() =>
+  import("./components/BoxTerminalScreen").then((m) => ({ default: m.BoxTerminalScreen })),
 );
 
 export function App() {
@@ -555,12 +559,14 @@ export function App() {
         </main>
 
         {screens.boxTerminal && (
-          <BoxTerminalScreen
-            sidebarOpen={nav.sidebarOpen}
-            onShowSidebar={() => setSidebarOpen(true)}
-            onClose={closeBoxTerminal}
-            onAddToChat={boxAddToChat}
-          />
+          <Suspense fallback={null}>
+            <BoxTerminalScreen
+              sidebarOpen={nav.sidebarOpen}
+              onShowSidebar={() => setSidebarOpen(true)}
+              onClose={closeBoxTerminal}
+              onAddToChat={boxAddToChat}
+            />
+          </Suspense>
         )}
 
         {/* Put away rather than unmounted under the box terminal: the thread's
