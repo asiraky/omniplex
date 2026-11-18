@@ -16,11 +16,11 @@ import (
 	"github.com/asiraky/omniplex/internal/auth"
 )
 
-// The terminal surface: a pty bound to a thread's checkout (or a harness's
-// sign-in flow), reached over a WebSocket. It is its own endpoint rather than
-// a set of sync-protocol commands because a terminal is a stream, not a
-// request. The gate covers it like every other route: an unpaired device
-// never reaches the shell.
+// The terminal surface: a pty bound to a thread's checkout, a harness's
+// sign-in flow, or the box shell (termbox.go), reached over a WebSocket. It is
+// its own endpoint rather than a set of sync-protocol commands because a
+// terminal is a stream, not a request. The gate covers it like every other
+// route: an unpaired device never reaches the shell.
 //
 // Lifetime: the pty belongs to a client-chosen terminal id, not to a socket
 // (see termsession.go). A socket that drops detaches; the pty keeps running
@@ -31,34 +31,39 @@ import (
 // leaves the id in place until a socket has drained its last output (or the
 // TTL passes), so an exit while detached is replayed rather than lost.
 //
-// GET /api/term?id=<id>&thread=<id>|login=<instance>[&since=<n>][&tail=<n>][&attach=1|&fresh=1]
-// upgrades to a WebSocket. attach=1 only ever reattaches; without it a missing
-// terminal is spawned. fresh=1 is the user asking for a new shell after the
-// last one ended: an ended terminal under the id is replaced, not replayed.
-// since is the stream offset the client already holds. tail is how many lines
-// of scrollback the client keeps: a socket with no since is sent only the last
-// tail lines the ring holds, not the whole ring. It is ignored when since is
-// non-zero, since a reconnect needs exactly the gap.
+// GET /api/term?id=<id>&thread=<id>|login=<instance>|box=1[&since=<n>][&tail=<n>][&attach=1|&fresh=1]
+// upgrades to a WebSocket; exactly one of thread, login and box is required.
+// attach=1 only ever reattaches; without it a missing terminal is spawned.
+// fresh=1 is the user asking for a new shell after the last one ended: an
+// ended terminal under the id is replaced, not replayed. since is the stream
+// offset the client already holds. tail is how many lines of scrollback the
+// client keeps: a socket with no since is sent only the last tail lines the
+// ring holds, not the whole ring. It is ignored when since is non-zero, since
+// a reconnect needs exactly the gap.
 //
 // Wire format: the client sends text frames of JSON — {"type":"input","data"}
 // to type, {"type":"resize","cols","rows"} on layout change, {"type":"cwd"} to
-// ask where the shell is now. The server first sends {"type":"sync","offset":N},
-// N being the stream offset of the next binary byte, then the pty's raw output
-// as binary frames. It sends another sync when the client has fallen so far
-// behind that output was overwritten, which is the client's cue that the
-// screen has a gap. It answers a cwd with {"type":"cwd","data":"<absolute
-// path>","root":"<absolute path>"}: data is where the shell is now, "" when it
-// cannot tell, and root is where it started, which for a thread is the
-// checkout root the panel's paths are relative to. A path the shell printed
-// after a cd resolves against data, and opens as a path under root. Close 4000
+// ask where the shell is now. The server first sends
+// {"type":"sync","offset":N}, N being the stream offset of the next binary
+// byte, then the pty's raw output as binary frames. It sends another sync when
+// the client has fallen so far behind that output was overwritten, which is
+// the client's cue that the screen has a gap. It answers a cwd with
+// {"type":"cwd","data":"<absolute path>","root":"<absolute path>"}: data is
+// where the shell is now, "" when it cannot tell, and root is where it
+// started, which for a thread is the checkout root the panel's paths are
+// relative to, and for the box shell is $HOME. A path the shell printed after
+// a cd resolves against data, and opens as a path under root. Close 4000
 // "exited" means the process ended and its output was fully sent; 4404 "no
 // such terminal" answers an attach=1 for an id the server no longer has, and
 // ends a socket whose terminal was closed or revoked; 4400 "could not start"
 // means a new terminal failed to spawn (no such thread, no checkout, no pty)
-// and retrying will not help.
+// and retrying will not help; its reason is "could not start", or "tmux is not
+// installed on the box" for a box terminal on a machine without tmux.
 //
 // DELETE /api/term?id=<id> kills the terminal: closing a tab is an explicit
-// end, not a drop to wait out.
+// end, not a drop to wait out. For the box shell that ends only this device's
+// client; DELETE /api/term?id=<id>&box=1 also ends the shell itself, for every
+// device, whose sockets then close 4000.
 
 const (
 	termStatusExited  websocket.StatusCode = 4000
@@ -106,7 +111,12 @@ func (s *Server) handleDeleteTerm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	device, _ := auth.DeviceFrom(r.Context())
+	// The client first, so this device's own socket is told its terminal was
+	// closed rather than that the shell exited.
 	s.termKill(device.ID, id)
+	if r.URL.Query().Get("box") == "1" {
+		s.killBox(r.Context())
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -117,18 +127,26 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "a valid id is required", http.StatusBadRequest)
 		return
 	}
-	// Two things run here: the user's shell in a thread's checkout, or a
-	// harness's own sign-in flow for one provider instance. Both are a pty the
-	// user types into; only what it runs differs.
-	threadID, login := q.Get("thread"), q.Get("login")
+	// Three things run here: the user's shell in a thread's checkout, a
+	// harness's own sign-in flow for one provider instance, or the box shell.
+	// All are a pty the user types into; only what it runs differs.
+	threadID, login, box := q.Get("thread"), q.Get("login"), q.Get("box") == "1"
 	var target string
-	switch {
-	case login != "":
-		target = "login:" + login
-	case threadID != "":
+	given := 0
+	if threadID != "" {
 		target = "thread:" + threadID
-	default:
-		http.Error(w, "thread or login is required", http.StatusBadRequest)
+		given++
+	}
+	if login != "" {
+		target = "login:" + login
+		given++
+	}
+	if box {
+		target = boxTarget
+		given++
+	}
+	if given != 1 {
+		http.Error(w, "exactly one of thread, login and box is required", http.StatusBadRequest)
 		return
 	}
 	since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
@@ -169,12 +187,17 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 			_ = ws.Close(termStatusMissing, "no such terminal")
 			return
 		}
-		cmd, err := s.termCommand(r.Context(), threadID, login)
+		cmd, err := s.termCommand(r.Context(), threadID, login, box)
 		if err == nil {
 			sess, err = s.termSpawn(device.ID, id, target, fresh, cmd)
 		}
 		if errors.Is(err, errTermClosed) {
 			_ = ws.Close(termStatusMissing, "no such terminal")
+			return
+		}
+		if errors.Is(err, errNoTmux) {
+			s.logf("term_start_failed target=%s err=%v", target, err)
+			_ = ws.Close(termStatusFailed, errNoTmux.Error())
 			return
 		}
 		if err != nil {
@@ -260,7 +283,7 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 		case "cwd":
 			// Written from here while termStream writes too; the library
 			// serialises whole messages, so a reply cannot split a frame.
-			frame, _ := json.Marshal(termCwdFrame{Type: "cwd", Data: sess.cwd(ctx), Root: sess.cmd.Dir})
+			frame, _ := json.Marshal(termCwdFrame{Type: "cwd", Data: s.termCwd(ctx, sess), Root: sess.cmd.Dir})
 			wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)
 			err := ws.Write(wctx, websocket.MessageText, frame)
 			wcancel()
@@ -272,7 +295,10 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 }
 
 // termCommand builds what a new terminal runs, without starting it.
-func (s *Server) termCommand(ctx context.Context, threadID, login string) (*exec.Cmd, error) {
+func (s *Server) termCommand(ctx context.Context, threadID, login string, box bool) (*exec.Cmd, error) {
+	if box {
+		return s.boxCommand(ctx)
+	}
 	if login != "" {
 		argv, env, err := s.mgr.LoginCommand(ctx, login)
 		if err != nil {

@@ -42,7 +42,7 @@ const (
 type termSession struct {
 	key    string // device + id: the registry key
 	device string
-	target string // "thread:<id>" or "login:<instance>"
+	target string // "thread:<id>", "login:<instance>" or "box"
 
 	cmd  *exec.Cmd
 	tty  *os.File
