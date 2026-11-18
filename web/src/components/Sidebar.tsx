@@ -2,9 +2,11 @@ import {
   ActivityIcon,
   BlocksIcon,
   FolderPlusIcon,
+  HatGlassesIcon,
   SearchIcon,
   SettingsIcon,
   PanelLeftIcon,
+  SparklesIcon,
   SquarePenIcon,
 } from "lucide-react";
 import {
@@ -29,6 +31,12 @@ import { ThreadFilter } from "~/components/ThreadFilter";
 import { StatusDot } from "~/components/StatusDot";
 import { ThemeToggle } from "~/components/ThemeToggle";
 import { Button } from "~/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu";
 import { KbdChord } from "~/components/ui/kbd";
 import { Separator } from "~/components/ui/separator";
 import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
@@ -67,6 +75,8 @@ interface SidebarProps {
   onNewThreadIn: () => void;
   /** New thread, shift-clicked: a draft in the active thread's project, no questions. */
   onNew: () => void;
+  /** A chat outside any project; shift-clicked, a private one. */
+  onNewAssistant: (isPrivate: boolean) => void;
   /** Opens the command palette, which doubles as thread search. */
   onOpenPalette: () => void;
   /**
@@ -370,7 +380,8 @@ function PaletteButton({ onOpen }: { onOpen: () => void }) {
       aria-label="Search threads and commands"
       // Shrinks before anything else in the row does: the chip clips at the
       // narrowest sidebar rather than pushing the icons out of it.
-      className="text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent/50 focus-visible:ring-ring/50 flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-md outline-none focus-visible:ring-[3px] md:h-8 md:w-auto md:min-w-0 md:flex-1 md:shrink md:justify-start md:gap-1.5 md:overflow-hidden md:px-2"
+      // A container, so the shortcut hint can make way for the word when narrow.
+      className="@container text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent/50 focus-visible:ring-ring/50 flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-md outline-none focus-visible:ring-[3px] md:h-8 md:w-auto md:min-w-0 md:flex-1 md:shrink md:justify-start md:gap-1.5 md:overflow-hidden md:px-2"
     >
       <SearchIcon aria-hidden className="size-4 shrink-0" />
       <span className="hidden truncate text-[13px] md:inline">Search</span>
@@ -378,7 +389,7 @@ function PaletteButton({ onOpen }: { onOpen: () => void }) {
         <KbdChord
           shortcut={chord.shortcut}
           platform={chord.platform}
-          className="ml-auto hidden shrink-0 md:inline-flex"
+          className="ml-auto hidden shrink-0 @min-[9rem]:inline-flex"
         />
       )}
     </button>
@@ -454,6 +465,29 @@ function SidebarPanel({
               >
                 <SquarePenIcon />
               </IconButton>
+              {/* The one place a private chat is offered: a tap away, on a
+                  phone too, and out of every composer. */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <IconButton
+                    label="New assistant chat"
+                    shortcut="newAssistant"
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <SparklesIcon />
+                  </IconButton>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-44">
+                  <DropdownMenuItem onSelect={() => props.onNewAssistant(false)} className="text-[13px]">
+                    <SparklesIcon className="text-muted-foreground" />
+                    Assistant chat
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => props.onNewAssistant(true)} className="text-[13px]">
+                    <HatGlassesIcon className="text-muted-foreground" />
+                    Private chat
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <IconButton
                 label="New project"
                 onClick={props.onNewProject}

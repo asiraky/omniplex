@@ -138,6 +138,14 @@ export const COMMANDS = {
     browser: [mod("n", { alt: true })],
     inDialog: inPalette,
   },
+  newAssistant: {
+    label: "New assistant chat",
+    group: "Threads",
+    app: [mod("j")],
+    // Ctrl/⌘+J is the browser's downloads.
+    browser: [mod("g", { alt: true })],
+    inDialog: inPalette,
+  },
   prevThread: {
     label: "Previous thread",
     group: "Threads",

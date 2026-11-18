@@ -26,6 +26,10 @@ const (
 
 var errNoVoice = errors.New(noSpeechVoice)
 
+// errPrivateSpeech refuses read-aloud in a private chat: the audio would be
+// kept in the speech cache on disk, and a private chat keeps nothing.
+var errPrivateSpeech = errors.New("Read-aloud is off in private chats, because its audio is cached on disk")
+
 // routeTTS serves read-aloud. Both routes sit behind the device gate, which
 // an <audio> element passes because its request carries the device cookie.
 func (s *Server) routeTTS(mux *http.ServeMux) {
@@ -109,6 +113,9 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, errNoVoice):
 		writeError(w, http.StatusConflict, noSpeechVoice)
+		return
+	case errors.Is(err, errPrivateSpeech):
+		writeError(w, http.StatusForbidden, err.Error())
 		return
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "no such thread")
@@ -273,6 +280,9 @@ func (s *Server) speechVoice(ctx context.Context, threadID string) (string, erro
 		meta, err := s.store.Thread(ctx, threadID)
 		if err != nil {
 			return "", err
+		}
+		if meta.Private {
+			return "", errPrivateSpeech
 		}
 		projectID = meta.ProjectID
 	}

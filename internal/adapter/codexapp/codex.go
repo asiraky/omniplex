@@ -407,6 +407,10 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if o.Instructions != "" {
 		startParams["developerInstructions"] = o.Instructions
 	}
+	// A private thread: Codex writes no rollout file for it.
+	if o.Ephemeral {
+		startParams["ephemeral"] = true
+	}
 
 	method := "thread/start"
 	if o.HarnessSessionID != "" {

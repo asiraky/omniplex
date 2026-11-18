@@ -21,6 +21,7 @@ import type { Project, ThreadMeta } from "~/protocol";
 // `cwd:` paths, so neither can collide with one.
 export const PINNED_KEY = "pinned";
 export const UNPINNED_KEY = "unpinned";
+export const ASSISTANT_KEY = "assistant";
 
 /** The part of the sidebar's view state that decides what is listed. */
 export interface SidebarView {
@@ -51,13 +52,20 @@ export function sidebarSections(
   view: Pick<SidebarView, "hidden" | "grouped">,
 ): SidebarSection[] {
   const shown = visibleByProject(threads, projects, view.hidden);
-  const { pinned, rest } = splitPinned(shown);
+  const { pinned, rest: unpinned } = splitPinned(shown);
+  // Assistant chats belong to no project, so they get a section of their own
+  // under Pinned however the rest is laid out.
+  const assistant = unpinned.filter((t) => !t.projectId);
+  const rest = unpinned.filter((t) => t.projectId);
   const groups = view.grouped ? groupThreads(rest, projects) : [];
 
   // Pinned threads come from every project, so their rows name theirs, the
   // way a flat list's do. Nothing pinned on screen is no section at all.
-  const top: SidebarSection[] =
-    pinned.length > 0 ? [{ key: PINNED_KEY, name: "Pinned", threads: pinned, showProject: true }] : [];
+  const top: SidebarSection[] = [];
+  if (pinned.length > 0) top.push({ key: PINNED_KEY, name: "Pinned", threads: pinned, showProject: true });
+  if (assistant.length > 0) {
+    top.push({ key: ASSISTANT_KEY, name: "Assistant", threads: assistant, showProject: false });
+  }
 
   // One group is not a grouping, however it came to be the only one: the
   // header would name the only thing there is, on every row, forever.

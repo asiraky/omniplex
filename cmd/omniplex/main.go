@@ -32,6 +32,7 @@ import (
 	"github.com/asiraky/omniplex/internal/bundled"
 	"github.com/asiraky/omniplex/internal/datalock"
 	"github.com/asiraky/omniplex/internal/endpoints"
+	"github.com/asiraky/omniplex/internal/ephemeral"
 	"github.com/asiraky/omniplex/internal/mcp"
 	"github.com/asiraky/omniplex/internal/netinfo"
 	"github.com/asiraky/omniplex/internal/overlay"
@@ -132,6 +133,11 @@ func main() {
 		log.Fatalf("open log: %v", err)
 	}
 	defer st.Close()
+	// Private chats from a server that has stopped are gone with its memory;
+	// their files go now.
+	if _, err := ephemeral.Init(*dbPath); err != nil {
+		log.Fatalf("private chats: %v", err)
+	}
 
 	// The bind decision drives the auth policy: reachable from another
 	// machine means every request from one needs a paired device. It is

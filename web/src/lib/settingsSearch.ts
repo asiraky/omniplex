@@ -75,6 +75,12 @@ const GENERAL: Fixed[] = [
     keywords: ["upgrade", "version"],
   },
   {
+    anchor: "assistant-prompt",
+    label: "Assistant prompt",
+    description: "The system prompt assistant chats run on, in place of Omniplex's. Takes effect on the next chat.",
+    keywords: ["system prompt", "private", "chat", "instructions"],
+  },
+  {
     anchor: "branch-format",
     label: "Branch names from issues",
     description:

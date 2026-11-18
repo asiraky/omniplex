@@ -778,6 +778,8 @@ export interface UserConfig {
   /** Whether the server tidies a dictated transcript (punctuation, filler
       words) with a model before it reaches the composer. Absent means off. */
   dictationCleanup?: boolean;
+  /** The system prompt assistant chats run on. Empty means the built-in one. */
+  assistantPrompt?: string;
 }
 
 /**
@@ -787,6 +789,8 @@ export interface UserConfig {
 export interface UserConfigReply {
   userConfig: UserConfig;
   hasElevenLabsKey: boolean;
+  /** The built-in assistant prompt, what an empty `assistantPrompt` means. */
+  defaultAssistantPrompt?: string;
 }
 
 /** One ElevenLabs voice, as `/api/tts/voices` lists it. */
@@ -812,6 +816,11 @@ export interface GitHubRepo {
 export interface ThreadMeta {
   scheduledCount?: number;
   id: string;
+  /**
+   * A private assistant chat: held in the server's memory only, gone once
+   * closed and on restart.
+   */
+  private?: boolean;
   cwd: string;
   harness: string;
   /**

@@ -34,6 +34,12 @@ func (a *Adapter) MoveConversation(from, to map[string]string, cwd, id string) e
 	if src == dst {
 		return nil
 	}
+	// A private thread's conversation is in memory, behind a link from each
+	// account's folder that runs it: giving the other account its link is
+	// the whole move, and nothing is copied to its folder on disk.
+	if private, err := privateTranscripts(dst, cwd); private || err != nil {
+		return err
+	}
 	// A rewound conversation not yet written is rebuilt from the one it was
 	// cut from, so that is what has to be under the other account.
 	if id = parseConversation(id).moveID(src, cwd); id == "" {

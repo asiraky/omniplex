@@ -191,6 +191,10 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	// runs with full access to them, so withholding trust from the skills
 	// while granting it to the shell buys nothing.
 	args := []string{"--mode", "rpc", "--approve", "--session-id", sid}
+	// A private thread: pi saves no session file.
+	if o.Ephemeral {
+		args = []string{"--mode", "rpc", "--approve", "--no-session"}
+	}
 	if o.Model != "" {
 		args = append(args, "--model", o.Model)
 	}

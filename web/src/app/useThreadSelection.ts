@@ -36,6 +36,10 @@ export interface DraftPreset {
   agent?: ThreadAgent;
   /** Put the cursor in the draft's composer as it opens. */
   focus?: boolean;
+  /** An assistant chat, outside any project, rather than a project thread. */
+  assistant?: boolean;
+  /** With `assistant`: the private toggle starts on. */
+  private?: boolean;
 }
 
 /**

@@ -95,6 +95,7 @@ export function useWire() {
   // Whether the server holds an ElevenLabs key, which is what turns read-aloud
   // on. Known only once the user config has arrived; off until then.
   const [hasElevenLabsKey, setHasElevenLabsKey] = useState(false);
+  const [defaultAssistantPrompt, setDefaultAssistantPrompt] = useState("");
   // Hydrated from the resume cache like the rest, so the first frame paints
   // the thread as it was left.
   const [threadStore] = useState(() => createThreadStore(resume?.state ?? null));
@@ -156,6 +157,7 @@ export function useWire() {
       .then((res: UserConfigReply) => {
         setUserConfig(res.userConfig);
         setHasElevenLabsKey(res.hasElevenLabsKey);
+        setDefaultAssistantPrompt(res.defaultAssistantPrompt ?? "");
       })
       .catch(() => {});
   }, [status, userConfig]);
@@ -210,6 +212,7 @@ export function useWire() {
     userConfig,
     saveUserConfig,
     hasElevenLabsKey,
+    defaultAssistantPrompt,
     setElevenLabsKey,
     /** The attached thread's state: read it with useThread, or get() it at call time. */
     threadStore,

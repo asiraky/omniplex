@@ -74,6 +74,11 @@ type CreateOptions struct {
 	// a turn ends normally, emitted as proto.TurnSuggested. An adapter whose
 	// harness cannot ignores it. Read when the session starts.
 	SuggestPrompts bool
+
+	// Ephemeral asks the harness to keep nothing of the session on disk: no
+	// transcript, no resumable session file. A private thread sets it. Such a
+	// session cannot be resumed once its process is gone.
+	Ephemeral bool
 }
 
 // PluginSkills is the skills folder of a plugin in CreateOptions.Plugins.

@@ -65,6 +65,10 @@ export interface NewThreadInput {
   pinned: boolean;
   /** Named up front, so the title the first prompt would give is not used. */
   title?: string;
+  /** An assistant chat: no project, on the assistant prompt. */
+  assistant?: boolean;
+  /** With `assistant`: never written to disk, and gone once closed. */
+  private?: boolean;
 }
 
 /** One thread of a compare send, and the model's name for saying it did not start. */

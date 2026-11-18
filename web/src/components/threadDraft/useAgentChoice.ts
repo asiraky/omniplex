@@ -20,6 +20,8 @@ export interface AgentSources {
   remembered: ProjectPrefs | undefined;
   harnesses: HarnessMeta[];
   userConfig: UserConfig | null;
+  /** Where picks are remembered, when not under a project: an assistant chat's own slot. */
+  prefsKey?: string;
 }
 
 /** The harness and account the thread runs under. */
@@ -136,8 +138,9 @@ export function useAgentChoice(sources: AgentSources, { patch }: Pick<Remembered
     fast: models.wantFast,
   };
   const remember = (harness: string, change: Partial<HarnessPrefs>) => {
-    if (!project) return;
-    patch(project.id, harness, change, harness === harnessId ? currentPrefs : undefined);
+    const key = sources.prefsKey ?? project?.id;
+    if (!key) return;
+    patch(key, harness, change, harness === harnessId ? currentPrefs : undefined);
   };
   const selectModel = (next: ModelSelection) => {
     const previous = remembered?.byHarness[next.harness];

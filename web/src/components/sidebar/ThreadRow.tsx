@@ -2,9 +2,11 @@ import {
   FolderIcon,
   GitBranchIcon,
   GripVerticalIcon,
+  HatGlassesIcon,
   PencilIcon,
   PinIcon,
   PinOffIcon,
+  SparklesIcon,
   XIcon,
 } from "lucide-react";
 import { memo, useRef, useState } from "react";
@@ -154,7 +156,18 @@ function DetailLine({
          the thing that actually tells two threads in one project
          apart. Ungrouped, the project comes back: there is no
          header then, and the row is the only thing that says it. */}
-      {showProject ? (
+      {!s.projectId ? (
+        // An assistant chat: no project or checkout worth naming, just what
+        // kind of chat it is.
+        <>
+          {s.private ? (
+            <HatGlassesIcon aria-hidden className="size-3 shrink-0" />
+          ) : (
+            <SparklesIcon aria-hidden className="size-3 shrink-0" />
+          )}
+          <span className="min-w-0 flex-1 truncate">{s.private ? "Private" : "Assistant"}</span>
+        </>
+      ) : showProject ? (
         <>
           <FolderIcon aria-hidden className="size-3 shrink-0" />
           {/* With a branch alongside it the project keeps its natural

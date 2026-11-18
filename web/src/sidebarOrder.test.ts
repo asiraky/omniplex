@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { sidebarOrder } from "./sidebarOrder";
+import { sidebarOrder, sidebarSections } from "./sidebarOrder";
 import type { Project, ThreadMeta } from "~/protocol";
 
 const project = (id: string, createdAt: number) =>
   ({ id, name: id, defaults: {}, folders: [], createdAt, updatedAt: 0 }) as unknown as Project;
-const thread = (id: string, projectId: string, pinned?: boolean) =>
+const thread = (id: string, projectId: string | undefined, pinned?: boolean) =>
   ({ id, projectId, pinned, cwd: "/src/x" }) as ThreadMeta;
 const ids = (list: ThreadMeta[]) => list.map((s) => s.id);
 const view = (over: { hidden?: string[]; collapsed?: string[]; grouped?: boolean } = {}) => ({
@@ -78,5 +78,47 @@ describe("sidebarOrder", () => {
 
   it("is empty when the filter hides everything", () => {
     expect(sidebarOrder(threads, projects, view({ hidden: ["p1", "p2"] }))).toEqual([]);
+  });
+  describe("assistant chats", () => {
+    const withChats = [thread("x", undefined), ...threads, thread("y", undefined), thread("z", undefined, true)];
+    const sections = (v = view()) =>
+      sidebarSections(withChats, projects, v).map((s) => [s.key, ids(s.threads)]);
+
+    it("get a section of their own under Pinned, grouped or not", () => {
+      expect(sections()).toEqual([
+        ["pinned", ["c", "z"]],
+        ["assistant", ["x", "y"]],
+        ["p1", ["b", "d"]],
+        ["p2", ["a", "e"]],
+      ]);
+      expect(sections(view({ grouped: false }))).toEqual([
+        ["pinned", ["c", "z"]],
+        ["assistant", ["x", "y"]],
+        ["unpinned", ["a", "b", "d", "e"]],
+      ]);
+    });
+
+    it("stay out of the one-project count, so one project still lists flat", () => {
+      expect(sections(view({ hidden: ["p2"] }))).toEqual([
+        ["pinned", ["z"]],
+        ["assistant", ["x", "y"]],
+        ["unpinned", ["b", "d"]],
+      ]);
+    });
+
+    it("fold by their own key, and are walked in the order shown", () => {
+      expect(ids(sidebarOrder(withChats, projects, view({ collapsed: ["assistant"] })))).toEqual([
+        "c", "z", "b", "d", "a", "e",
+      ]);
+      expect(ids(sidebarOrder(withChats, projects, view()))).toEqual([
+        "c", "z", "x", "y", "b", "d", "a", "e",
+      ]);
+    });
+
+    it("stand alone when they are all there is", () => {
+      expect(sidebarSections([thread("x", undefined)], projects, view()).map((s) => s.key)).toEqual([
+        "assistant",
+      ]);
+    });
   });
 });

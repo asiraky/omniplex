@@ -31,7 +31,17 @@ func updateScheduleIndex(ctx context.Context, tx *sql.Tx, threadID string, em pr
 	return nil
 }
 
+// DueScheduleThreads is the threads with a schedule due, private ones too.
 func (s *Store) DueScheduleThreads(ctx context.Context, now int64) ([]string, error) {
+	ids, err := s.dueScheduleThreads(ctx, now)
+	if err != nil || s.mem == nil {
+		return ids, err
+	}
+	private, err := s.mem.dueScheduleThreads(ctx, now)
+	return append(ids, private...), err
+}
+
+func (s *Store) dueScheduleThreads(ctx context.Context, now int64) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT p.thread_id FROM scheduled_prompts p JOIN threads s ON s.id=p.thread_id WHERE p.status IN ('pending','ready') AND p.due_at<=? AND s.phase IN ('idle','turn')`, now)
 	if err != nil {
 		return nil, err
@@ -47,7 +57,21 @@ func (s *Store) DueScheduleThreads(ctx context.Context, now int64) ([]string, er
 	}
 	return ids, rows.Err()
 }
+
+// ScheduleCounts is each thread's pending schedules, private ones too.
 func (s *Store) ScheduleCounts(ctx context.Context) (map[string]int, error) {
+	out, err := s.scheduleCounts(ctx)
+	if err != nil || s.mem == nil {
+		return out, err
+	}
+	private, err := s.mem.scheduleCounts(ctx)
+	for id, n := range private {
+		out[id] = n
+	}
+	return out, err
+}
+
+func (s *Store) scheduleCounts(ctx context.Context) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT thread_id,COUNT(*) FROM scheduled_prompts WHERE status IN ('pending','ready') GROUP BY thread_id`)
 	if err != nil {
 		return nil, err

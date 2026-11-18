@@ -16,6 +16,7 @@ import {
 } from "~/components/ui/select";
 import { Separator } from "~/components/ui/separator";
 import { Switch } from "~/components/ui/switch";
+import { Textarea } from "~/components/ui/textarea";
 import { branchTemplate, DEFAULT_BRANCH_TEMPLATE } from "~/lib/branchTemplate";
 import { pickerInstances } from "~/lib/models";
 import { LEVELS } from "~/lib/permissions";
@@ -217,6 +218,54 @@ function VoiceSettings({
 }
 
 /**
+ * The prompt assistant chats run on. It opens on the built-in one so editing
+ * starts from something; saved equal to that, or empty, it stays the default
+ * and follows the built-in one when that changes.
+ */
+function AssistantPromptField({
+  value,
+  defaultPrompt,
+  onChange,
+}: {
+  value: string;
+  defaultPrompt: string;
+  onChange: (prompt: string) => void;
+}) {
+  // Held here, so clearing the box to write a new one does not snap the
+  // default back in.
+  const [text, setText] = useState(value || defaultPrompt);
+  const edit = (next: string) => {
+    setText(next);
+    onChange(next.trim() === "" || next === defaultPrompt ? "" : next);
+  };
+  return (
+    <div data-setting="assistant-prompt" className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <Label htmlFor="settings-assistant-prompt" className="flex-1">
+          Assistant prompt
+        </Label>
+        {text !== defaultPrompt && defaultPrompt && (
+          <Button variant="ghost" size="sm" onClick={() => edit(defaultPrompt)}>
+            Reset
+          </Button>
+        )}
+      </div>
+      <Textarea
+        id="settings-assistant-prompt"
+        value={text}
+        onChange={(e) => edit(e.target.value)}
+        placeholder={defaultPrompt}
+        rows={6}
+        className="text-[13px] md:text-[12px]"
+      />
+      <p className="text-muted-foreground text-[11px]">
+        The system prompt assistant chats run on, in place of Omniplex's. Takes effect on the next chat.
+      </p>
+    </div>
+  );
+}
+
+/**
  * The operator's own settings, kept in ~/.omniplex/config.json on the machine
  * running Omniplex. A project's own choices win over the defaults here; these
  * only decide what a project's first thread starts on.
@@ -227,6 +276,7 @@ export function GeneralSettings({
   onSave,
   hasElevenLabsKey,
   onSetElevenLabsKey,
+  defaultAssistantPrompt = "",
   onBack,
 }: {
   userConfig: UserConfig;
@@ -236,6 +286,8 @@ export function GeneralSettings({
   hasElevenLabsKey: boolean;
   /** Stores a key, or removes the stored one when given "". */
   onSetElevenLabsKey: (key: string) => Promise<void>;
+  /** The built-in assistant prompt, what an empty one means. */
+  defaultAssistantPrompt?: string;
   onBack?: () => void;
 }) {
   const [cfg, setCfg] = useState<UserConfig>(userConfig);
@@ -386,6 +438,14 @@ export function GeneralSettings({
           onCheckedChange={(on) => patch({ autoUpdateHarnesses: on })}
         />
       </div>
+
+      <Separator />
+
+      <AssistantPromptField
+        value={cfg.assistantPrompt ?? ""}
+        defaultPrompt={defaultAssistantPrompt}
+        onChange={(assistantPrompt) => patch({ assistantPrompt })}
+      />
 
       <Separator />
 

@@ -64,6 +64,7 @@ function renderSidebar(over: Partial<Props> = {}) {
     onSelect: vi.fn(),
     onNewThreadIn: vi.fn(),
     onNew: vi.fn(),
+    onNewAssistant: vi.fn(),
     onOpenPalette: vi.fn(),
     showJumpHints: false,
     onDelete: vi.fn(),
@@ -104,6 +105,7 @@ function renderLive(threads: ThreadMeta[], over: Partial<Props> = {}) {
     onSelect: vi.fn(),
     onNewThreadIn: vi.fn(),
     onNew: vi.fn(),
+    onNewAssistant: vi.fn(),
     onOpenPalette: vi.fn(),
     showJumpHints: false,
     onDelete: vi.fn(() => Promise.resolve()),
@@ -518,6 +520,21 @@ describe("Sidebar", () => {
     const props = renderSidebar({ activeId: null });
     fireEvent.click(screen.getByRole("button", { name: "New project" }));
     expect(props.onNewProject).toHaveBeenCalled();
+  });
+
+  it("starts an assistant chat, or a private one, from the sparkles menu", async () => {
+    const props = renderSidebar({ activeId: null });
+    const pick = async (name: string) => {
+      fireEvent.pointerDown(screen.getByRole("button", { name: "New assistant chat" }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      fireEvent.click(await screen.findByRole("menuitem", { name }));
+    };
+    await pick("Private chat");
+    expect(props.onNewAssistant).toHaveBeenLastCalledWith(true);
+    await pick("Assistant chat");
+    expect(props.onNewAssistant).toHaveBeenLastCalledWith(false);
   });
 
   it("offers the worktree removal as a checkbox, ticked for one omniplex provisioned", () => {

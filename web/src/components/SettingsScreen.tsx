@@ -100,6 +100,7 @@ export function SettingsScreen({
   onSaveUserConfig,
   hasElevenLabsKey,
   onSetElevenLabsKey,
+  defaultAssistantPrompt,
   providers,
   project: projectActions,
   onAddProject,
@@ -115,6 +116,8 @@ export function SettingsScreen({
   onSaveUserConfig: (cfg: UserConfig) => Promise<void>;
   hasElevenLabsKey: boolean;
   onSetElevenLabsKey: (key: string) => Promise<void>;
+  /** The built-in assistant prompt, for the field that edits it. */
+  defaultAssistantPrompt?: string;
   providers: {
     wires: AuthWires;
     onOpenTerminal: (instanceId: string) => void;
@@ -199,6 +202,7 @@ export function SettingsScreen({
         onSave={onSaveUserConfig}
         hasElevenLabsKey={hasElevenLabsKey}
         onSetElevenLabsKey={onSetElevenLabsKey}
+        defaultAssistantPrompt={defaultAssistantPrompt}
         onBack={back}
       />
     ) : (
