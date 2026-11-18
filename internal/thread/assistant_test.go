@@ -98,3 +98,16 @@ func TestClosingAPrivateChatForgetsIt(t *testing.T) {
 		t.Fatalf("scratch folder after close: %v, want gone", err)
 	}
 }
+
+// A project named after the assistant folder is given a home beside it, not
+// the folder assistant chats will work in.
+func TestProjectNeverTakesTheAssistantFolder(t *testing.T) {
+	_, st, _, projects := assistantSetup(t)
+	home, err := newHome(context.Background(), st, "Assistant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home == filepath.Join(projects, assistantFolder) {
+		t.Fatalf("project home = %s, the assistant folder", home)
+	}
+}

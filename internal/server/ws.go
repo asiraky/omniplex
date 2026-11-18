@@ -13,6 +13,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/attachment"
+	"github.com/asiraky/omniplex/internal/ephemeral"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/store"
@@ -359,9 +360,15 @@ func threadOfArgs(args json.RawMessage) string {
 	}
 	var a struct {
 		ThreadID string `json:"threadId"`
+		// Creating a private chat: there is no thread yet, but its record,
+		// whose reply carries the new chat, must not reach the disk either.
+		Private bool `json:"private"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return ""
+	}
+	if a.ThreadID == "" && a.Private {
+		return ephemeral.Unborn
 	}
 	return a.ThreadID
 }

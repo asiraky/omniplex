@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { lazy, Suspense, useCallback, useMemo } from "react";
 
 import { NEW_THREAD } from "./app/threadKeys";
 import { ThreadStoreContext, useThread } from "./app/threadStore";
@@ -37,7 +37,6 @@ import { EmptyState } from "./components/EmptyState";
 import { SetupScreen, ThemePreviewScreen, ToolsScreen, UsageScreen } from "./components/FullPageScreens";
 import { LazyCommandPalette, LazyShortcutsHelp, usePrefetchOverlays } from "./components/Overlays";
 import { Sidebar } from "./components/Sidebar";
-import { AssistantDraft } from "./components/AssistantDraft";
 import { ThreadDraft } from "./components/ThreadDraft";
 import { ThreadHeader } from "./components/ThreadHeader";
 import { ThreadPanel } from "./components/ThreadPanel";
@@ -52,6 +51,11 @@ import { useGuardFileDrops } from "./useFileDrop";
 import { useIsDesktop } from "./useMediaQuery";
 import type { ThreadState } from "./protocol";
 import { useModHeld } from "./useShortcuts";
+
+// Most sessions never open one, so it stays out of the first load.
+const AssistantDraft = lazy(() =>
+  import("./components/AssistantDraft").then((m) => ({ default: m.AssistantDraft })),
+);
 
 export function App() {
   const isDesktop = useIsDesktop();
@@ -460,24 +464,26 @@ export function App() {
               find={find}
             />
           ) : nav.creating?.assistant ? (
-            <AssistantDraft
-              key={nav.creating.nonce}
-              preset={nav.creating}
-              composerRef={composerRef}
-              harnesses={harnesses}
-              userConfig={wire.userConfig}
-              status={wire.status}
-              drafts={store.draftStore}
-              onStart={create}
-              attachments={store.attachments[NEW_THREAD] ?? []}
-              onAttachFiles={store.attachToDraft}
-              onRemoveAttachment={(key) => store.removeAttachment(NEW_THREAD, key)}
-              onRecheck={auth.recheck}
-              onLogin={auth.openInstanceAuth}
-              onManageProviders={() => screens.setSettings({ at: { kind: "providers" } })}
-              onAddAccount={addAccount}
-              dictate={wire.hasElevenLabsKey}
-            />
+            <Suspense fallback={null}>
+              <AssistantDraft
+                key={nav.creating.nonce}
+                preset={nav.creating}
+                composerRef={composerRef}
+                harnesses={harnesses}
+                userConfig={wire.userConfig}
+                status={wire.status}
+                drafts={store.draftStore}
+                onStart={create}
+                attachments={store.attachments[NEW_THREAD] ?? []}
+                onAttachFiles={store.attachToDraft}
+                onRemoveAttachment={(key) => store.removeAttachment(NEW_THREAD, key)}
+                onRecheck={auth.recheck}
+                onLogin={auth.openInstanceAuth}
+                onManageProviders={() => screens.setSettings({ at: { kind: "providers" } })}
+                onAddAccount={addAccount}
+                dictate={wire.hasElevenLabsKey}
+              />
+            </Suspense>
           ) : nav.creating ? (
             <ThreadDraft
               // A new request is a new draft, on its own values.

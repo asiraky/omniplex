@@ -188,8 +188,8 @@ func ProjectHome(ctx context.Context, st *store.Store, projectID string) (string
 	return home, os.MkdirAll(home, 0o755)
 }
 
-// newHome picks a folder in the projects folder no other project uses and
-// nothing already occupies, numbering the name when it is taken.
+// newHome picks a folder in the projects folder no other project uses, nor
+// assistant chats, and nothing already occupies, numbering the name when it is taken.
 func newHome(ctx context.Context, st *store.Store, name string) (string, error) {
 	cfg, _ := userconfig.Load()
 	dir, err := cfg.ProjectsDirOrDefault()
@@ -200,7 +200,7 @@ func newHome(ctx context.Context, st *store.Store, name string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	taken := map[string]bool{}
+	taken := map[string]bool{filepath.Join(dir, assistantFolder): true}
 	for _, p := range projects {
 		if p.Home != "" {
 			taken[p.Home] = true

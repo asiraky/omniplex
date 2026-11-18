@@ -16,6 +16,10 @@ import (
 	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
+// assistantFolder is where in the projects folder normal assistant chats work.
+// No project is given it as a home, though nothing may be there yet.
+const assistantFolder = "assistant"
+
 // AssistantOptions starts an assistant chat: a thread with no project, run on
 // the user's assistant prompt rather than Omniplex's.
 type AssistantOptions struct {
@@ -66,7 +70,7 @@ func (m *Manager) CreateAssistant(ctx context.Context, o AssistantOptions) (*Act
 		if err != nil {
 			return nil, err
 		}
-		cwd = filepath.Join(dir, "assistant")
+		cwd = filepath.Join(dir, assistantFolder)
 	}
 
 	now := proto.NowMillis()

@@ -114,3 +114,28 @@ func TestPrivateCommandCompletesByID(t *testing.T) {
 		t.Fatalf("retry = %s, %v, %v", res, done, err)
 	}
 }
+
+// Creating a private chat is recorded before the chat exists, under a
+// stand-in id, and the record, whose reply names the new chat, stays out of
+// the database file like the chat itself.
+func TestUnbornPrivateCommandStaysInMemory(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, done, err := s.ClaimCommand(ctx, "c1", ephemeral.Unborn); err != nil || done {
+		t.Fatalf("claim = %v, %v", done, err)
+	}
+	if err := s.CompleteCommand(ctx, "c1", map[string]string{"threadId": "private-x"}); err != nil {
+		t.Fatal(err)
+	}
+	var onDisk int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM commands WHERE command_id = 'c1'`).Scan(&onDisk); err != nil || onDisk != 0 {
+		t.Fatalf("rows in the file = %d, %v", onDisk, err)
+	}
+	if res, done, err := s.ClaimCommand(ctx, "c1", ephemeral.Unborn); err != nil || !done || string(res) != `{"threadId":"private-x"}` {
+		t.Fatalf("retry = %s, %v, %v", res, done, err)
+	}
+}

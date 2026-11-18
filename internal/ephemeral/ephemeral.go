@@ -24,6 +24,11 @@ import (
 
 const prefix = "private-"
 
+// Unborn stands in for a private thread that does not exist yet, such as the
+// one a create command is making: Is reports it private, so whatever is filed
+// under it stays in memory, but it names no thread.
+const Unborn = prefix
+
 // NewID is a fresh private thread id.
 func NewID() string { return prefix + uuid.NewString() }
 
@@ -56,6 +61,11 @@ func Init(dbPath string) (string, error) {
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("make private scratch folder: %w", err)
+	}
+	// By its real path, which is the one a harness sees as its cwd and names
+	// things after: macOS's temp folder sits behind a link.
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
 	}
 	mu.Lock()
 	root = dir
