@@ -10,7 +10,12 @@ export type TerminalTarget =
   /** The user's shell in a thread's checkout. */
   | { thread: string }
   /** A harness's own sign-in flow for one provider instance. */
-  | { login: string };
+  | { login: string }
+  /**
+   * The one shell on the box itself, shared by every device and kept across
+   * server restarts.
+   */
+  | { box: true };
 
 export type TermStatus = "connecting" | "online" | "reconnecting";
 
@@ -26,7 +31,8 @@ export interface TermSocketEvents {
   /** What is on screen no longer lines up with the stream: clear it. */
   onReset(): void;
   onStatus(status: TermStatus): void;
-  onEnded(reason: TermEnd): void;
+  /** reason is the server's own words for the close, "" when it gave none. */
+  onEnded(end: TermEnd, reason: string): void;
 }
 
 /** Where a shell is, as its server saw it. Both absolute. */
@@ -107,7 +113,8 @@ export function openTermSocket(
   const url = () => {
     const q = new URLSearchParams({ id });
     if ("thread" in target) q.set("thread", target.thread);
-    else q.set("login", target.login);
+    else if ("login" in target) q.set("login", target.login);
+    else q.set("box", "1");
     if (offset > 0) q.set("since", String(offset));
     else {
       // Past the start, since already says what to send; tail would only
@@ -193,7 +200,7 @@ export function openTermSocket(
       answerWhere(null);
       const end = CLOSE_ENDS[e.code];
       if (end) {
-        events.onEnded(end);
+        events.onEnded(end, e.reason);
         return;
       }
       events.onStatus("reconnecting");
@@ -273,4 +280,13 @@ export function openTermSocket(
 export function endTerminal(id: string) {
   // A failed DELETE is fine: the server reaps the shell on its idle TTL.
   fetch(`/api/term?id=${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
+}
+
+/**
+ * End the box shell for every device: its tmux session goes with it, so this
+ * is not the same as a tab closing on one screen.
+ */
+export async function endBoxShell(id: string): Promise<void> {
+  // A failed DELETE leaves the shell running, which the next attach shows.
+  await fetch(`/api/term?id=${encodeURIComponent(id)}&box=1`, { method: "DELETE" }).catch(() => {});
 }

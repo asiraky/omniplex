@@ -3,7 +3,8 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { quoteTerminalOutput } from "~/lib/terminalQuote";
-import { render } from "~/test/harness";
+import type { TermSocketEvents } from "~/lib/termSocket";
+import { render, viewport } from "~/test/harness";
 
 import { TerminalSurface } from "./TerminalSurface";
 
@@ -22,12 +23,13 @@ const { FakeTerminal, socket, toast } = vi.hoisted(() => {
     static last: FakeTerminal;
     cols = 40;
     rows = 4;
-    modes = { mouseTrackingMode: "none" };
+    modes = { mouseTrackingMode: "none", applicationCursorKeysMode: false };
     element = document.createElement("div");
     lines = [line("")];
     selection = "";
     provider?: { provideLinks(y: number, cb: (links?: any[]) => void): void };
     private onSelection?: () => void;
+    private onInput?: (data: string) => void;
     buffer = {
       active: {
         getLine: (y: number) => this.lines[y],
@@ -50,6 +52,9 @@ const { FakeTerminal, socket, toast } = vi.hoisted(() => {
       this.lines = rows.map((r) => line(r));
       this.buffer.active.length = rows.length;
     }
+    type(data: string) {
+      this.onInput?.(data);
+    }
     select(text: string) {
       this.selection = text;
       this.onSelection?.();
@@ -67,7 +72,8 @@ const { FakeTerminal, socket, toast } = vi.hoisted(() => {
       this.onSelection = cb;
       return { dispose() {} };
     }
-    onData() {
+    onData(cb: (data: string) => void) {
+      this.onInput = cb;
       return { dispose() {} };
     }
     onResize() {
@@ -87,13 +93,25 @@ const { FakeTerminal, socket, toast } = vi.hoisted(() => {
     reset() {}
     dispose() {}
   }
-  const socket = { resize() {}, send() {}, dispose() {}, restart() {}, where: vi.fn() };
+  const socket = {
+    events: null as unknown as TermSocketEvents,
+    resize() {},
+    send: vi.fn(),
+    dispose() {},
+    restart() {},
+    where: vi.fn(),
+  };
   return { FakeTerminal, socket, toast: { info: vi.fn() } };
 });
 
 vi.mock("@xterm/xterm", () => ({ Terminal: FakeTerminal }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
-vi.mock("~/lib/termSocket", () => ({ openTermSocket: () => socket }));
+vi.mock("~/lib/termSocket", () => ({
+  openTermSocket: (_id: string, _target: unknown, events: TermSocketEvents) => {
+    socket.events = events;
+    return socket;
+  },
+}));
 vi.mock("~/lib/toast", () => ({ toast }));
 
 function mount(props: Partial<Parameters<typeof TerminalSurface>[0]> = {}) {
@@ -118,6 +136,7 @@ let open: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   toast.info.mockClear();
   socket.where.mockReset().mockResolvedValue(null);
+  socket.send.mockReset();
   open = vi.fn();
   vi.stubGlobal("open", open);
 });
@@ -318,5 +337,144 @@ describe("TerminalSurface: links", () => {
     tap(55, 10);
 
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe("TerminalSurface: ending", () => {
+  it("says why a start failed when the server gave a reason of its own", () => {
+    mount({ target: { box: true } });
+    act(() => socket.events.onEnded("failed", "tmux is not installed on the box"));
+    expect(screen.getByText(/tmux is not installed on the box/)).toBeTruthy();
+  });
+
+  it("keeps the usual notice for the server's generic failure", () => {
+    const onEnded = vi.fn();
+    mount({ onEnded });
+    act(() => socket.events.onEnded("failed", "could not start"));
+    expect(screen.queryByText(/could not start: could not start/)).toBeNull();
+    expect(screen.getByText("The shell could not start.")).toBeTruthy();
+    expect(onEnded).toHaveBeenCalledWith("failed", "could not start");
+  });
+});
+
+describe("TerminalSurface: where the shell is", () => {
+  const at = { cwd: "/home/me/code", root: "/home/me" };
+
+  it("reports where the shell is on connect, and again once a command settles", async () => {
+    vi.useFakeTimers();
+    try {
+      socket.where.mockResolvedValue(at);
+      const onCwd = vi.fn();
+      const term = mount({ target: { box: true }, onCwd });
+
+      await act(async () => socket.events.onStatus("online"));
+      expect(onCwd).toHaveBeenCalledWith("/home/me/code", "/home/me");
+      expect(socket.where).toHaveBeenCalledOnce();
+
+      // Typing without Enter asks nothing; a burst of commands asks once.
+      act(() => term.type("cd sr"));
+      act(() => term.type("c\r"));
+      act(() => vi.advanceTimersByTime(200));
+      act(() => term.type("ls\r"));
+      await act(async () => vi.advanceTimersByTime(399));
+      expect(socket.where).toHaveBeenCalledOnce();
+      await act(async () => vi.advanceTimersByTime(1));
+      expect(socket.where).toHaveBeenCalledTimes(2);
+      expect(onCwd).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks the shell nothing for a caller that does not show where it is", async () => {
+    vi.useFakeTimers();
+    try {
+      const term = mount();
+      await act(async () => socket.events.onStatus("online"));
+      act(() => term.type("cd /tmp\r"));
+      await act(async () => vi.advanceTimersByTime(1000));
+      expect(socket.where).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// A phone: narrow, and a pointer that cannot hover. The harness answers only
+// the width queries, so the coarse pointer is answered here.
+function phone() {
+  viewport("phone");
+  const narrow = window.matchMedia;
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    ...narrow(query),
+    matches: query === "(pointer: coarse)" || narrow(query).matches,
+  }));
+}
+
+describe("TerminalSurface: key bar", () => {
+  const keys = () => screen.queryByRole("toolbar", { name: "Terminal keys" });
+
+  it("shows on a touch screen, not with a mouse", () => {
+    const desktop = mount();
+    expect(keys()).toBeNull();
+    desktop.unmount();
+
+    phone();
+    mount();
+    expect(keys()).toBeTruthy();
+  });
+
+  it("sends Esc and the arrows, in the mode the program asked for", () => {
+    phone();
+    const term = mount();
+    fireEvent.click(screen.getByRole("button", { name: "esc" }));
+    fireEvent.click(screen.getByRole("button", { name: "Up" }));
+    term.modes.applicationCursorKeysMode = true;
+    fireEvent.click(screen.getByRole("button", { name: "Up" }));
+    expect(socket.send.mock.calls).toEqual([["\x1b"], ["\x1b[A"], ["\x1bOA"]]);
+  });
+
+  it("does not take focus from the terminal when tapped", () => {
+    phone();
+    mount();
+    const tab = screen.getByRole("button", { name: "tab" });
+    expect(fireEvent.pointerDown(tab)).toBe(false);
+    expect(fireEvent.mouseDown(tab)).toBe(false);
+  });
+
+  it("applies an armed ctrl to the next key typed, then disarms", () => {
+    phone();
+    const term = mount();
+    const ctrl = screen.getByRole("button", { name: "ctrl" });
+
+    fireEvent.click(ctrl);
+    expect(ctrl.getAttribute("aria-pressed")).toBe("true");
+    act(() => term.type("c"));
+    expect(ctrl.getAttribute("aria-pressed")).toBe("false");
+    act(() => term.type("c"));
+
+    expect(socket.send.mock.calls).toEqual([["\x03"], ["c"]]);
+  });
+
+  it("applies an armed alt to the next key tapped on the bar, and a second tap disarms", () => {
+    phone();
+    const term = mount();
+    const alt = screen.getByRole("button", { name: "alt" });
+
+    fireEvent.click(alt);
+    fireEvent.click(alt);
+    act(() => term.type("x"));
+    fireEvent.click(alt);
+    fireEvent.click(screen.getByRole("button", { name: "Left" }));
+    fireEvent.click(screen.getByRole("button", { name: "Left" }));
+
+    expect(socket.send.mock.calls).toEqual([["x"], ["\x1b[1;3D"], ["\x1b[D"]]);
+  });
+
+  it("goes once the shell has ended", () => {
+    phone();
+    mount();
+    act(() => socket.events.onEnded("exited", ""));
+    expect(keys()).toBeNull();
   });
 });
