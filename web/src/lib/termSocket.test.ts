@@ -31,8 +31,8 @@ class FakeSocket {
     this.readyState = FakeSocket.OPEN;
     this.onopen?.();
   }
-  sync(offset: number) {
-    this.onmessage?.({ data: JSON.stringify({ type: "sync", offset }) });
+  sync(offset: number, live = 0) {
+    this.onmessage?.({ data: JSON.stringify({ type: "sync", offset, live }) });
   }
   where(data: string, root = "/repo") {
     this.onmessage?.({ data: JSON.stringify({ type: "cwd", data, root }) });
@@ -46,12 +46,16 @@ const latest = () => FakeSocket.all[FakeSocket.all.length - 1];
 
 function setup(target: TerminalTarget = { thread: "t1" }, tail?: () => number) {
   const out: string[] = [];
+  const history: boolean[] = [];
   const log = { resets: 0, statuses: [] as TermStatus[], ended: [] as TermEnd[], reasons: [] as string[] };
   const term = openTermSocket(
     "term-1",
     target,
     {
-      onData: (b) => out.push(new TextDecoder().decode(b)),
+      onData: (b, h) => {
+        out.push(new TextDecoder().decode(b));
+        history.push(h);
+      },
       onReset: () => log.resets++,
       onStatus: (s) => log.statuses.push(s),
       onEnded: (end, reason) => {
@@ -61,7 +65,7 @@ function setup(target: TerminalTarget = { thread: "t1" }, tail?: () => number) {
     },
     tail,
   );
-  return { term, out, log };
+  return { term, out, history, log };
 }
 
 beforeEach(() => {
@@ -133,6 +137,31 @@ describe("sync", () => {
     latest().close();
     vi.advanceTimersByTime(300);
     expect(latest().params.get("since")).toBe("502");
+  });
+});
+
+describe("history", () => {
+  it("marks bytes written before the attach as history, and the rest as live", () => {
+    const { out, history } = setup();
+    latest().open();
+    latest().sync(0, 5);
+    latest().bytes("befor");
+    latest().bytes("after");
+    expect(out).toEqual(["befor", "after"]);
+    expect(history).toEqual([true, false]);
+  });
+
+  it("starts over from the new socket's mark after a reconnect", () => {
+    const { history } = setup();
+    latest().open();
+    latest().sync(0, 0);
+    latest().bytes("abc");
+    latest().close();
+    vi.advanceTimersByTime(300);
+    latest().open();
+    latest().sync(3, 10);
+    latest().bytes("gap");
+    expect(history).toEqual([false, true]);
   });
 });
 

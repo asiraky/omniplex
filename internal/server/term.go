@@ -44,8 +44,11 @@ import (
 // Wire format: the client sends text frames of JSON — {"type":"input","data"}
 // to type, {"type":"resize","cols","rows"} on layout change, {"type":"cwd"} to
 // ask where the shell is now. The server first sends
-// {"type":"sync","offset":N}, N being the stream offset of the next binary
-// byte, then the pty's raw output as binary frames. It sends another sync when
+// {"type":"sync","offset":N,"live":L}, N being the stream offset of the next
+// binary byte and L where output written while this socket was attached
+// begins, then the pty's raw output as binary frames. Bytes before L are
+// history: the client draws them but must not answer the terminal queries in
+// them, which were asked of whoever was attached then. It sends another sync when
 // the client has fallen so far behind that output was overwritten, which is
 // the client's cue that the screen has a gap. It answers a cwd with
 // {"type":"cwd","data":"<absolute path>","root":"<absolute path>"}: data is
@@ -81,6 +84,7 @@ type termClientFrame struct {
 type termSyncFrame struct {
 	Type   string `json:"type"`
 	Offset int64  `json:"offset"`
+	Live   int64  `json:"live"`
 }
 
 type termCwdFrame struct {
@@ -182,7 +186,17 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 	// A close code is what lets the client tell "gone" or "broken" from a
 	// network drop worth retrying; an HTTP error would look like the latter.
 	sess := s.termAttach(device.ID, id, target, fresh)
-	if sess == nil {
+	// Output before live was written while this socket was not attached. A
+	// terminal query in it (tmux asks the terminal what it is on every
+	// attach) was meant for whoever was there then, and answering it now
+	// would type the answer into the shell. A shell this socket started has
+	// no such history.
+	var live int64
+	if sess != nil {
+		sess.mu.Lock()
+		live = sess.ring.Total()
+		sess.mu.Unlock()
+	} else {
 		if attachOnly {
 			_ = ws.Close(termStatusMissing, "no such terminal")
 			return
@@ -222,7 +236,7 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer cancel()
-		if !termStream(ctx, ws, sess, since) {
+		if !termStream(ctx, ws, sess, since, live) {
 			return
 		}
 		if sess.isKilled() {
@@ -330,7 +344,7 @@ func (s *Server) termCommand(ctx context.Context, threadID, login string, box bo
 // a slow socket falls behind on its own and is told so with a fresh sync.
 // Returns when the socket fails or, after draining, when the session ends;
 // drained reports the latter, and the caller closes the socket.
-func termStream(ctx context.Context, ws *websocket.Conn, sess *termSession, next int64) (drained bool) {
+func termStream(ctx context.Context, ws *websocket.Conn, sess *termSession, next, live int64) (drained bool) {
 	write := func(typ websocket.MessageType, p []byte) bool {
 		wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)
 		defer wcancel()
@@ -344,7 +358,7 @@ func termStream(ctx context.Context, ws *websocket.Conn, sess *termSession, next
 		sess.mu.Unlock()
 
 		if !synced || from != next {
-			frame, _ := json.Marshal(termSyncFrame{Type: "sync", Offset: from})
+			frame, _ := json.Marshal(termSyncFrame{Type: "sync", Offset: from, Live: live})
 			if !write(websocket.MessageText, frame) {
 				return false
 			}

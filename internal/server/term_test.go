@@ -141,6 +141,7 @@ type termReader struct {
 	conn   *websocket.Conn
 	offset int64
 	syncs  []int64
+	live   int64
 	cwds   []termCwdFrame
 	out    strings.Builder
 }
@@ -155,6 +156,7 @@ func (tr *termReader) next(ctx context.Context) error {
 		var f struct {
 			Type   string `json:"type"`
 			Offset int64  `json:"offset"`
+			Live   int64  `json:"live"`
 			Data   string `json:"data"`
 			Root   string `json:"root"`
 		}
@@ -163,6 +165,7 @@ func (tr *termReader) next(ctx context.Context) error {
 			case "sync":
 				tr.offset = f.Offset
 				tr.syncs = append(tr.syncs, f.Offset)
+				tr.live = f.Live
 			case "cwd":
 				tr.cwds = append(tr.cwds, termCwdFrame{Type: f.Type, Data: f.Data, Root: f.Root})
 			}
@@ -283,6 +286,35 @@ func TestTermOutputWhileDetachedIsReplayedOnReattach(t *testing.T) {
 	second.until(t, ctx, "done")
 	if strings.Contains(second.out.String(), "sleep 1") {
 		t.Fatalf("reattach resent output the client already had: %q", second.out.String())
+	}
+}
+
+func TestTermSyncMarksOutputFromBeforeTheAttachAsHistory(t *testing.T) {
+	rig := newTermRig(t, time.Minute)
+	ctx := testCtx(t)
+
+	first := &termReader{conn: rig.dial(t, ctx, rig.client, "id=history")}
+	if err := first.next(ctx); err != nil || first.live != 0 {
+		t.Fatalf("a shell this socket started has no history, got live %d (%v)", first.live, err)
+	}
+	first.input(t, ctx, "echo be\"\"fore\n")
+	first.until(t, ctx, "before")
+	first.conn.Close(websocket.StatusNormalClosure, "")
+	sess := rig.session("history")
+	eventually(t, "the drop to detach", func() bool { return attachedCount(sess) == 0 })
+	sess.mu.Lock()
+	written := sess.ring.Total()
+	sess.mu.Unlock()
+
+	second := &termReader{conn: rig.dial(t, ctx, rig.client, "id=history&attach=1")}
+	if err := second.next(ctx); err != nil || second.live != written {
+		t.Fatalf("a reattach should mark the %d bytes already written as history, got live %d (%v)", written, second.live, err)
+	}
+	second.until(t, ctx, "before")
+	second.input(t, ctx, "echo af\"\"ter\n")
+	second.until(t, ctx, "after")
+	if second.offset <= second.live {
+		t.Fatalf("output after the attach should land past live %d, stream at %d", second.live, second.offset)
 	}
 }
 

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { OpenPath } from "~/lib/openPath";
 import { bufferRows, lastTerminalLines, quoteTerminalOutput } from "~/lib/terminalQuote";
-import { barKeyBytes, type BarKey, hasMods, type Mods, NO_MODS, withMods } from "~/lib/terminalKeys";
+import { barKeyBytes, type BarKey, hasMods, isTerminalReply, type Mods, NO_MODS, withMods } from "~/lib/terminalKeys";
 import { openTermSocket, type TermEnd, type TermSocket, type TermStatus, type TerminalTarget } from "~/lib/termSocket";
 import { toast } from "~/lib/toast";
 import { cn } from "~/lib/utils";
@@ -150,8 +150,16 @@ export function TerminalSurface({
     };
     let cwdTimer: number | null = null;
 
+    // History chunks still being parsed. A query in one (tmux asks what the
+    // terminal is on every attach) was asked of a screen that is long gone;
+    // xterm.js answering it now would land in the shell as typed text.
+    let historyParsing = 0;
     const socket = openTermSocket(termId, target, {
-      onData: (bytes) => term.write(bytes),
+      onData: (bytes, history) => {
+        if (!history) return term.write(bytes);
+        historyParsing++;
+        term.write(bytes, () => historyParsing--);
+      },
       onReset: () => term.reset(),
       onStatus: (s) => {
         setStatus(s);
@@ -184,6 +192,7 @@ export function TerminalSurface({
 
     // The phone keyboard's keys, with whatever the key bar has armed.
     const data = term.onData((d) => {
+      if (historyParsing > 0 && isTerminalReply(d)) return;
       const armed = modsRef.current;
       if (!hasMods(armed)) return sendRef.current(d);
       setMods(NO_MODS);

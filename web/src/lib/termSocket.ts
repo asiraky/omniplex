@@ -27,7 +27,12 @@ export type TermStatus = "connecting" | "online" | "reconnecting";
 export type TermEnd = "exited" | "gone" | "failed";
 
 export interface TermSocketEvents {
-  onData(bytes: Uint8Array): void;
+  /**
+   * history is true when the bytes were written before this socket attached:
+   * drawn like any other, but the terminal queries in them were asked of
+   * whoever was attached then and must not be answered now.
+   */
+  onData(bytes: Uint8Array, history: boolean): void;
   /** What is on screen no longer lines up with the stream: clear it. */
   onReset(): void;
   onStatus(status: TermStatus): void;
@@ -84,6 +89,8 @@ export function openTermSocket(
   let disposed = false;
   // The stream offset of the next byte the screen has not seen.
   let offset = 0;
+  // Where output written while this socket was attached begins; see onData.
+  let live = 0;
   // Whether the server has answered for this id since the last (re)start. Only
   // then is the session known to exist: a first connect that never reached the
   // server spawned nothing, and attach=1 would be told there is no terminal.
@@ -165,11 +172,12 @@ export function openTermSocket(
     sock.onmessage = (e: MessageEvent) => {
       if (typeof e.data !== "string") {
         const bytes = new Uint8Array(e.data as ArrayBuffer);
+        const history = offset < live;
         offset += bytes.byteLength;
-        events.onData(bytes);
+        events.onData(bytes, history);
         return;
       }
-      let frame: { type?: string; offset?: unknown; data?: unknown; root?: unknown };
+      let frame: { type?: string; offset?: unknown; live?: unknown; data?: unknown; root?: unknown };
       try {
         frame = JSON.parse(e.data);
       } catch {
@@ -189,6 +197,7 @@ export function openTermSocket(
       // screen: a fresh shell, or we fell behind what the server still holds.
       if (frame.offset !== offset) events.onReset();
       offset = frame.offset;
+      live = typeof frame.live === "number" ? frame.live : 0;
       synced = true;
       fresh = false;
     };

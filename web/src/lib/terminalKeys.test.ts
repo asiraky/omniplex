@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { barKeyBytes, NO_MODS, withMods } from "./terminalKeys";
+import { barKeyBytes, isTerminalReply, NO_MODS, withMods } from "./terminalKeys";
 
 const ctrl = { ctrl: true, alt: false };
 const alt = { ctrl: false, alt: true };
@@ -68,5 +68,27 @@ describe("barKeyBytes", () => {
     expect(barKeyBytes("|", NO_MODS, false)).toBe("|");
     expect(barKeyBytes("/", ctrl, false)).toBe("\x1f");
     expect(barKeyBytes("~", alt, false)).toBe("\x1b~");
+  });
+});
+
+describe("isTerminalReply", () => {
+  it("recognises what xterm.js answers queries with", () => {
+    for (const reply of [
+      "\x1b[?1;2c", // DA1
+      "\x1b[>0;276;0c", // DA2
+      "\x1b[0n", // status report
+      "\x1b[12;40R", // cursor position
+      "\x1b[?2004;1$y", // mode report
+      "\x1b]11;rgb:0000/0000/0000\x1b\\", // background colour
+      "\x1bP>|xterm.js(5.5.0)\x1b\\", // XTVERSION
+    ]) {
+      expect(isTerminalReply(reply), JSON.stringify(reply)).toBe(true);
+    }
+  });
+
+  it("does not mistake keystrokes or a paste for one", () => {
+    for (const key of ["a", "\x1b", "\x1b[A", "\x1bOA", "\x1b[1;5A", "\x1b[15~", "\x1b[Z", "\x1b[200~ls\x1b[201~", "\x1bx"]) {
+      expect(isTerminalReply(key), JSON.stringify(key)).toBe(false);
+    }
   });
 });

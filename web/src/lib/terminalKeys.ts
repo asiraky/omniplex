@@ -63,3 +63,14 @@ export function barKeyBytes(key: BarKey, mods: Mods, appCursor: boolean): string
   }
   return withMods(key === "esc" ? ESC : key === "tab" ? "\t" : key, mods);
 }
+
+// What xterm.js sends back unasked-for by the user: device attributes and
+// status reports (CSI ... c/n/R/t), mode reports (CSI ... $y), and OSC and DCS
+// replies. No key the user can type produces one, bar F3 with a modifier,
+// which reads exactly like a cursor position report.
+const REPLY = /^\x1b(?:\[[?>=]?[\d;]*[cnRt]|\[\??[\d;]*\$y|\][\s\S]*|P[\s\S]*)$/;
+
+/** Whether data is the terminal answering a query rather than a keystroke. */
+export function isTerminalReply(data: string): boolean {
+  return REPLY.test(data);
+}

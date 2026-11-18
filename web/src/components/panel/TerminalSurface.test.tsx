@@ -89,7 +89,15 @@ const { FakeTerminal, socket, toast } = vi.hoisted(() => {
       this.select("");
     }
     focus() {}
-    write() {}
+    // Parse callbacks of written chunks, run by parsed() as xterm.js would
+    // once it has worked through them.
+    private parsing: Array<() => void> = [];
+    write(_data: unknown, cb?: () => void) {
+      if (cb) this.parsing.push(cb);
+    }
+    parsed() {
+      for (const cb of this.parsing.splice(0)) cb();
+    }
     reset() {}
     dispose() {}
   }
@@ -410,6 +418,36 @@ function phone() {
     matches: query === "(pointer: coarse)" || narrow(query).matches,
   }));
 }
+
+describe("TerminalSurface: replies to queries in history", () => {
+  const bytes = (text: string) => new TextEncoder().encode(text);
+  const da = "\x1b[?1;2c";
+
+  it("are dropped while the history that asked is being drawn", () => {
+    const term = mount();
+    socket.events.onData(bytes("\x1b[c"), true);
+    term.type(da);
+    expect(socket.send).not.toHaveBeenCalled();
+  });
+
+  it("are sent for live output, and once the history is drawn", () => {
+    const term = mount();
+    socket.events.onData(bytes("\x1b[c"), false);
+    term.type(da);
+    socket.events.onData(bytes("old"), true);
+    term.parsed();
+    term.type(da);
+    expect(socket.send.mock.calls).toEqual([[da], [da]]);
+  });
+
+  it("does not drop keystrokes typed while history is drawn", () => {
+    const term = mount();
+    socket.events.onData(bytes("old"), true);
+    term.type("l");
+    term.type("\x1b[A");
+    expect(socket.send.mock.calls).toEqual([["l"], ["\x1b[A"]]);
+  });
+});
 
 describe("TerminalSurface: key bar", () => {
   const keys = () => screen.queryByRole("toolbar", { name: "Terminal keys" });
