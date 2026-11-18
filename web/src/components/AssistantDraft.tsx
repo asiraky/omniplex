@@ -7,15 +7,13 @@ import type { DraftPreset } from "~/app/useThreadSelection";
 import type { ConnectionStatus } from "~/client";
 import { Composer, type ComposerHandle } from "~/components/Composer";
 import { Alert, AlertDescription } from "~/components/ui/alert";
-import { Button } from "~/components/ui/button";
 import type { Attachment } from "~/lib/attachments";
-import { cn } from "~/lib/utils";
 import type { HarnessMeta, UserConfig } from "~/protocol";
 import type { NewThreadInput } from "./ThreadDraft";
 import { AgentTools } from "./threadDraft/AgentTools";
 import { InstanceAlerts } from "./threadDraft/InstanceAlerts";
 import { ProviderLogo } from "./ProviderLogo";
-import { chipClass, toolClass } from "./threadDraft/shared";
+import { toolClass } from "./threadDraft/shared";
 import { useAgentChoice } from "./threadDraft/useAgentChoice";
 import { useRememberedChoices } from "./threadDraft/useRememberedChoices";
 
@@ -84,7 +82,8 @@ export function AssistantDraft({
     },
     remembered,
   );
-  const [isPrivate, setPrivate] = useState(!!preset?.private);
+  // Chosen from the sidebar before the draft opens, not toggled in it.
+  const isPrivate = !!preset?.private;
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -172,36 +171,18 @@ export function AssistantDraft({
         <Composer
           key="new-assistant"
           ref={composer}
-          tools={(place) => {
-            const toolSize = place === "row" ? toolClass : undefined;
-            return (
-              <>
-                <AgentTools
-                  harness={agent.selected}
-                  modes={agent.modes}
-                  modeId={agent.displayModeId}
-                  supports1m={agent.supports1m}
-                  want1m={agent.want1m}
-                  onPickMode={(mode) => agent.remember({ mode })}
-                  onToggle1m={() => agent.remember({ want1m: !agent.want1m })}
-                  className={toolSize}
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  aria-label="Private chat"
-                  aria-pressed={isPrivate}
-                  title={isPrivate ? "Private: kept in memory only" : "Saved like any thread"}
-                  onClick={() => setPrivate((p) => !p)}
-                  className={cn(chipClass, toolSize, isPrivate && "text-foreground")}
-                >
-                  <HatGlassesIcon />
-                  <span>Private</span>
-                </Button>
-              </>
-            );
-          }}
+          tools={(place) => (
+            <AgentTools
+              harness={agent.selected}
+              modes={agent.modes}
+              modeId={agent.displayModeId}
+              supports1m={agent.supports1m}
+              want1m={agent.want1m}
+              onPickMode={(mode) => agent.remember({ mode })}
+              onToggle1m={() => agent.remember({ want1m: !agent.want1m })}
+              className={place === "row" ? toolClass : undefined}
+            />
+          )}
           draft={draft}
           onDraftChange={onDraftChange}
           disabled={false}

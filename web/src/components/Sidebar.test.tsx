@@ -522,6 +522,21 @@ describe("Sidebar", () => {
     expect(props.onNewProject).toHaveBeenCalled();
   });
 
+  it("starts an assistant chat, or a private one, from the sparkles menu", async () => {
+    const props = renderSidebar({ activeId: null });
+    const pick = async (name: string) => {
+      fireEvent.pointerDown(screen.getByRole("button", { name: "New assistant chat" }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      fireEvent.click(await screen.findByRole("menuitem", { name }));
+    };
+    await pick("Private chat");
+    expect(props.onNewAssistant).toHaveBeenLastCalledWith(true);
+    await pick("Assistant chat");
+    expect(props.onNewAssistant).toHaveBeenLastCalledWith(false);
+  });
+
   it("offers the worktree removal as a checkbox, ticked for one omniplex provisioned", () => {
     const managed = thread("a", { workspaceMode: "managed", cwd: "/tmp/repo/.worktrees/a" });
     const props = renderSidebar({ threads: [managed], activeId: "a" });

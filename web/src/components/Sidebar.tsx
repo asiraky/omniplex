@@ -2,6 +2,7 @@ import {
   ActivityIcon,
   BlocksIcon,
   FolderPlusIcon,
+  HatGlassesIcon,
   SearchIcon,
   SettingsIcon,
   PanelLeftIcon,
@@ -30,6 +31,12 @@ import { ThreadFilter } from "~/components/ThreadFilter";
 import { StatusDot } from "~/components/StatusDot";
 import { ThemeToggle } from "~/components/ThemeToggle";
 import { Button } from "~/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu";
 import { KbdChord } from "~/components/ui/kbd";
 import { Separator } from "~/components/ui/separator";
 import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
@@ -458,14 +465,29 @@ function SidebarPanel({
               >
                 <SquarePenIcon />
               </IconButton>
-              <IconButton
-                label="New assistant chat"
-                shortcut="newAssistant"
-                onClick={(e) => props.onNewAssistant(e.shiftKey)}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <SparklesIcon />
-              </IconButton>
+              {/* The one place a private chat is offered: a tap away, on a
+                  phone too, and out of every composer. */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <IconButton
+                    label="New assistant chat"
+                    shortcut="newAssistant"
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <SparklesIcon />
+                  </IconButton>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-44">
+                  <DropdownMenuItem onSelect={() => props.onNewAssistant(false)} className="text-[13px]">
+                    <SparklesIcon className="text-muted-foreground" />
+                    Assistant chat
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => props.onNewAssistant(true)} className="text-[13px]">
+                    <HatGlassesIcon className="text-muted-foreground" />
+                    Private chat
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <IconButton
                 label="New project"
                 onClick={props.onNewProject}
