@@ -363,6 +363,19 @@ describe("TerminalSurface: ending", () => {
     expect(screen.getByText("The shell could not start.")).toBeTruthy();
     expect(onEnded).toHaveBeenCalledWith("failed", "could not start");
   });
+
+  it("does not blame idling or a restart for a box shell that went away", () => {
+    mount({ target: { box: true } });
+    act(() => socket.events.onEnded("gone", ""));
+    expect(screen.queryByText(/idle|restarted/)).toBeNull();
+    expect(screen.getByText(/has ended/)).toBeTruthy();
+  });
+
+  it("names idling and restarts for a thread's shell that went away", () => {
+    mount();
+    act(() => socket.events.onEnded("gone", ""));
+    expect(screen.getByText(/idle too long, or the server restarted/)).toBeTruthy();
+  });
 });
 
 describe("TerminalSurface: where the shell is", () => {

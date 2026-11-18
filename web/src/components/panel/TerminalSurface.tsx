@@ -33,6 +33,14 @@ const SHELL_ENDED: Record<TermEnd, string> = {
   failed: "The shell could not start.",
 };
 
+// The box shell has no idle limit and outlives restarts, so gone means it
+// was ended: from another device, or by its tmux server going away.
+const BOX_ENDED: Record<TermEnd, string> = {
+  exited: "The shell exited.",
+  gone: "The box shell has ended.",
+  failed: "The shell could not start.",
+};
+
 const LOGIN_ENDED: Record<TermEnd, string> = {
   exited: "The sign-in has ended.",
   gone: "The sign-in is no longer running.",
@@ -105,6 +113,7 @@ export function TerminalSurface({
   const targetKey =
     "thread" in target ? `thread:${target.thread}` : "login" in target ? `login:${target.login}` : "box";
   const login = "login" in target;
+  const box = "box" in target;
 
   const setMods = (next: Mods) => {
     modsRef.current = next;
@@ -259,7 +268,7 @@ export function TerminalSurface({
     return true;
   };
 
-  const endedText = ended && endedMessage(ended.end, ended.reason, login);
+  const endedText = ended && endedMessage(ended.end, ended.reason, login, box);
 
   return (
     // Marked so Ctrl/⌘+F in here is left to the browser, not thread find.
@@ -304,9 +313,9 @@ export function TerminalSurface({
  * said something more useful than that it failed: what the user has to fix,
  * such as tmux missing on the box.
  */
-function endedMessage(end: TermEnd, reason: string, login: boolean) {
+function endedMessage(end: TermEnd, reason: string, login: boolean, box: boolean) {
   if (end === "failed" && reason && reason !== GENERIC_FAILURE) {
     return `${login ? "The sign-in" : "The shell"} could not start: ${reason}.`;
   }
-  return (login ? LOGIN_ENDED : SHELL_ENDED)[end];
+  return (login ? LOGIN_ENDED : box ? BOX_ENDED : SHELL_ENDED)[end];
 }
