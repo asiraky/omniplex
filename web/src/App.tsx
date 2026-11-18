@@ -1,9 +1,9 @@
-import { lazy, Suspense, useCallback, useMemo } from "react";
+import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 
 import { NEW_THREAD } from "./app/threadKeys";
 import { ThreadStoreContext, useThread } from "./app/threadStore";
 import { useActivePR } from "./app/useActivePR";
-import { useAddToChat, useAppendToChat } from "./app/useAddToChat";
+import { useAddToChat, useAppendToChat, useBoxAddToChat } from "./app/useAddToChat";
 import { useAppKeybindings } from "./app/useAppKeybindings";
 import { useBackgroundAlerts } from "./app/useBackgroundAlerts";
 import { useComposerDrafts } from "./app/useComposerDrafts";
@@ -32,6 +32,7 @@ import { useThreadTitle } from "./app/useThreadTitle";
 import { useTranscriptCopy } from "./app/useTranscriptCopy";
 import { useWire } from "./app/useWire";
 import { AppDialogs } from "./components/AppDialogs";
+import { BoxTerminalScreen } from "./components/BoxTerminalScreen";
 import { DeleteThreadDialog } from "./components/DeleteThreadDialog";
 import { EmptyState } from "./components/EmptyState";
 import { SetupScreen, ThemePreviewScreen, ToolsScreen, UsageScreen } from "./components/FullPageScreens";
@@ -169,6 +170,30 @@ export function App() {
     covered: screens.covering || nav.covering,
     open: openThread,
   });
+  // The box terminal. Opened from anywhere, a phone's sheet steps aside for
+  // it; the sidebar's own row closes the sheet itself.
+  const { openBoxTerminal, closeBoxTerminal } = screens;
+  const { setSidebarOpen } = nav;
+  const openTerminal = () => {
+    openBoxTerminal();
+    if (!isDesktop) setSidebarOpen(false);
+  };
+  // On a phone with nothing open behind it, the terminal was reached from
+  // the drawer, the landing screen, so leaving it by any way goes back there.
+  const [terminalWasOpen, setTerminalWasOpen] = useState(screens.boxTerminal);
+  if (terminalWasOpen !== screens.boxTerminal) {
+    setTerminalWasOpen(screens.boxTerminal);
+    if (!screens.boxTerminal && !isDesktop && !activeId && !nav.creating) setSidebarOpen(true);
+  }
+  const boxAddToChat = useBoxAddToChat({
+    activeId,
+    attached,
+    threads,
+    store,
+    composerRef,
+    onClose: closeBoxTerminal,
+    onOpenThread: openThread,
+  });
   const startNew = (preset?: DraftPreset) => {
     screens.leaveAll();
     nav.startNew(preset);
@@ -234,6 +259,7 @@ export function App() {
     onStopTurn: commands.cancel,
     onToggleSidebar: toggleSidebar,
     onTogglePanel: panel.toggle,
+    onToggleTerminal: () => (screens.boxTerminal ? closeBoxTerminal() : openTerminal()),
     onOpenDiff: () => panel.openDiff(),
     onClosePanel: () => {
       if (panel.open) panel.close();
@@ -274,6 +300,7 @@ export function App() {
       screens.uncover();
       screens.setTools({});
     },
+    onTerminal: openTerminal,
     onToggleSidebar: toggleSidebar,
     onShortcuts: () => palette.setHelpOpen(true),
   });
@@ -393,6 +420,8 @@ export function App() {
           onShowUsage={screens.openUsage}
           onShowSkills={screens.openSkills}
           onShowSettings={screens.openSettings}
+          terminalOpen={screens.boxTerminal}
+          onOpenTerminal={openBoxTerminal}
           accentOf={accentOf}
           projects={projects}
           projectName={projectName}
@@ -414,9 +443,10 @@ export function App() {
         <main
           className={cn(
             "flex min-h-0 min-w-0 flex-1 flex-col",
-            // The expanded diff panel takes the whole content area; the main
-            // column stays mounted so the transcript keeps its scroll and state.
-            panel.open && panel.expanded && "hidden",
+            // The expanded diff panel takes the whole content area, and the
+            // box terminal the main pane; the main column stays mounted so
+            // the transcript keeps its scroll and state.
+            ((panel.open && panel.expanded) || screens.boxTerminal) && "hidden",
           )}
         >
           <ThreadHeader
@@ -524,15 +554,28 @@ export function App() {
           )}
         </main>
 
-        {attached && activeId && (
-          <ThreadPanel
-            clientRef={clientRef}
-            threadId={activeId}
-            panel={panel}
-            pr={pr}
-            onAddToChat={addToChat}
-            onAddComment={appendToChat}
+        {screens.boxTerminal && (
+          <BoxTerminalScreen
+            sidebarOpen={nav.sidebarOpen}
+            onShowSidebar={() => setSidebarOpen(true)}
+            onClose={closeBoxTerminal}
+            onAddToChat={boxAddToChat}
           />
+        )}
+
+        {/* Put away rather than unmounted under the box terminal: the thread's
+            own terminals keep their sockets for the way back. */}
+        {attached && activeId && (
+          <div className={screens.boxTerminal ? "hidden" : "contents"}>
+            <ThreadPanel
+              clientRef={clientRef}
+              threadId={activeId}
+              panel={panel}
+              pr={pr}
+              onAddToChat={addToChat}
+              onAddComment={appendToChat}
+            />
+          </div>
         )}
 
         <AppDialogs

@@ -33,6 +33,7 @@ function actions(over: Partial<Args>) {
     onSettings: vi.fn(),
     onUsage: vi.fn(),
     onSkills: vi.fn(),
+    onTerminal: vi.fn(),
     onToggleSidebar: vi.fn(),
     onShortcuts: vi.fn(),
     ...over,
@@ -72,5 +73,15 @@ describe("usePaletteActions: find in thread", () => {
     const { list } = actions({ transcriptShown: false });
     expect(list.some((a) => a.id === "find")).toBe(false);
     expect(list.some((a) => a.id === "copy")).toBe(true);
+  });
+});
+
+describe("usePaletteActions: terminal", () => {
+  it("opens the box terminal with or without a thread open", () => {
+    for (const over of [{}, { threadOpen: false, meta: undefined }]) {
+      const { args, list } = actions(over);
+      list.find((a) => a.id === "terminal")!.run();
+      expect(args.onTerminal).toHaveBeenCalledOnce();
+    }
   });
 });

@@ -122,6 +122,19 @@ describe("matches", () => {
     expect(matches(ev("/", "Slash", { metaKey: true }), { key: "/" }, "mac")).toBe(false);
   });
 
+  it.each<Platform>(["mac", "other"])("takes ctrl as the Control key itself on %s", (platform) => {
+    const s = { key: "`", ctrl: true };
+    expect(matches(ev("`", "Backquote", { ctrlKey: true }), s, platform)).toBe(true);
+    expect(matches(ev("`", "Backquote", { metaKey: true }), s, platform)).toBe(false);
+    expect(matches(ev("`", "Backquote"), s, platform)).toBe(false);
+    expect(matches(ev("`", "Backquote", { ctrlKey: true, metaKey: true }), s, platform)).toBe(false);
+  });
+
+  it("matches a ctrl chord by position where the layout's backquote types something else", () => {
+    // A dead key: the key reports what it would compose, not "`".
+    expect(matches(ev("Dead", "Backquote", { ctrlKey: true }), { key: "`", ctrl: true }, "other")).toBe(true);
+  });
+
   it("treats Esc as Escape", () => {
     expect(matches(ev("Esc", "Escape"), { key: "escape" }, "other")).toBe(true);
   });
@@ -274,6 +287,31 @@ describe("resolveCommand", () => {
     expect(late(ev("b", "KeyB", { metaKey: true }), ctx())).toBeNull();
   });
 
+  it("toggles the terminal on Ctrl+` on every platform, in either shell", () => {
+    const ctrl = ev("`", "Backquote", { ctrlKey: true });
+    for (const platform of ["mac", "other"] as const) {
+      expect(early(ctrl, browser, platform)).toBe("toggleTerminal");
+      expect(early(ctrl, app, platform)).toBe("toggleTerminal");
+    }
+  });
+
+  it("leaves ⌘` to the Mac, which switches windows with it", () => {
+    expect(early(ev("`", "Backquote", { metaKey: true }), browser, "mac")).toBeNull();
+    expect(early(ev("`", "Backquote", { metaKey: true }), app, "mac")).toBeNull();
+  });
+
+  it("toggles the terminal from inside one, though its input is a text field", () => {
+    const inTerminal = ctx({ editableFocus: true, terminalFocus: true });
+    expect(early(ev("`", "Backquote", { ctrlKey: true }), inTerminal)).toBe("toggleTerminal");
+    // A bare backquote there is typing.
+    expect(early(ev("`", "Backquote"), inTerminal)).toBeNull();
+    expect(late(ev("`", "Backquote"), inTerminal)).toBeNull();
+  });
+
+  it("does not toggle the terminal under a dialog", () => {
+    expect(early(ev("`", "Backquote", { ctrlKey: true }), ctx({ dialogOpen: true }))).toBeNull();
+  });
+
   it("matches nothing for a plain letter", () => {
     expect(early(ev("k", "KeyK"), ctx())).toBeNull();
     expect(late(ev("k", "KeyK"), ctx())).toBeNull();
@@ -288,6 +326,8 @@ describe("labels", () => {
     [{ key: "arrowdown", alt: true, shift: true }, "⌥⇧↓", "Alt+Shift+↓"],
     [{ key: "[", mod: true, shift: true }, "⇧⌘[", "Ctrl+Shift+["],
     [{ key: "escape" }, "Esc", "Esc"],
+    [{ key: "`", ctrl: true }, "⌃`", "Ctrl+`"],
+    [{ key: "`", ctrl: true, shift: true }, "⌃⇧`", "Ctrl+Shift+`"],
   ])("writes %o as %s on a Mac and %s elsewhere", (s, mac, other) => {
     expect(formatShortcut(s, "mac")).toBe(mac);
     expect(formatShortcut(s, "other")).toBe(other);

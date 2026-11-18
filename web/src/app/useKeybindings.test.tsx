@@ -260,6 +260,65 @@ describe("useKeybindings", () => {
     });
   });
 
+  describe("toggle terminal", () => {
+    const ctrlBackquote: KeyboardEventInit = { key: "`", code: "Backquote", ctrlKey: true };
+
+    function focusedXterm() {
+      const term = add("div", { "data-terminal": "" });
+      const xterm = document.createElement("div");
+      xterm.className = "xterm";
+      const input = document.createElement("textarea");
+      input.className = "xterm-helper-textarea";
+      xterm.append(input);
+      term.append(xterm);
+      input.focus();
+      return input;
+    }
+
+    it("closes the terminal from inside it, ahead of the shell taking the key", () => {
+      const input = focusedXterm();
+      const own = vi.fn();
+      input.addEventListener("keydown", own);
+      const toggleTerminal = vi.fn();
+      mount({ toggleTerminal });
+
+      const e = press(input, ctrlBackquote);
+
+      expect(toggleTerminal).toHaveBeenCalledOnce();
+      expect(e.defaultPrevented).toBe(true);
+      expect(own).not.toHaveBeenCalled();
+    });
+
+    it("lets a backquote typed in the terminal through", () => {
+      const input = focusedXterm();
+      const toggleTerminal = vi.fn();
+      mount({ toggleTerminal });
+
+      const e = press(input, { key: "`", code: "Backquote" });
+
+      expect(toggleTerminal).not.toHaveBeenCalled();
+      expect(e.defaultPrevented).toBe(false);
+    });
+
+    it("takes the Control key on a Mac and leaves ⌘` to it", () => {
+      vi.stubGlobal("navigator", { platform: "MacIntel", userAgentData: { platform: "" } });
+      cleanups.push(() => vi.unstubAllGlobals());
+      const toggleTerminal = vi.fn();
+      const toggleSidebar = vi.fn();
+      mount({ toggleTerminal, toggleSidebar });
+      // Read as a Mac, where mod is ⌘.
+      press(document.body, { key: "b", code: "KeyB", metaKey: true });
+      expect(toggleSidebar).toHaveBeenCalledOnce();
+
+      const cmd = press(document.body, { key: "`", code: "Backquote", metaKey: true });
+      expect(toggleTerminal).not.toHaveBeenCalled();
+      expect(cmd.defaultPrevented).toBe(false);
+
+      press(document.body, ctrlBackquote);
+      expect(toggleTerminal).toHaveBeenCalledOnce();
+    });
+  });
+
   it("leaves a command with no handler alone", () => {
     const textarea = add("textarea");
     const own = vi.fn();

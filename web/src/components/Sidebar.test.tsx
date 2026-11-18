@@ -72,6 +72,8 @@ function renderSidebar(over: Partial<Props> = {}) {
     onShowUsage: vi.fn(),
     onShowSkills: vi.fn(),
     onShowSettings: vi.fn(),
+    terminalOpen: false,
+    onOpenTerminal: vi.fn(),
     accentOf: () => undefined,
     projects: [] as Project[],
     projectName: () => "repo",
@@ -113,6 +115,8 @@ function renderLive(threads: ThreadMeta[], over: Partial<Props> = {}) {
     onShowUsage: vi.fn(),
     onShowSkills: vi.fn(),
     onShowSettings: vi.fn(),
+    terminalOpen: false,
+    onOpenTerminal: vi.fn(),
     accentOf: () => undefined,
     projects: [] as Project[],
     projectName: () => "repo",
@@ -215,6 +219,50 @@ describe("Sidebar", () => {
       window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
     });
     expect(props.onOpenChange).not.toHaveBeenCalled();
+  });
+
+  describe("terminal row", () => {
+    const terminalRow = () => screen.getByRole("button", { name: /^Terminal/ });
+
+    it("opens the box terminal and leaves a docked sidebar open", () => {
+      const props = renderSidebar();
+      fireEvent.click(terminalRow());
+      expect(props.onOpenTerminal).toHaveBeenCalledOnce();
+      expect(props.onOpenChange).not.toHaveBeenCalled();
+    });
+
+    it("puts the phone's sheet away as it opens the terminal", () => {
+      viewport("phone");
+      const props = renderSidebar();
+      fireEvent.click(terminalRow());
+      expect(props.onOpenTerminal).toHaveBeenCalledOnce();
+      expect(props.onOpenChange).toHaveBeenCalledWith(false);
+    });
+
+    it("is the active row while the terminal is open, and the thread behind it is not", () => {
+      renderSidebar({ activeId: "a", terminalOpen: true });
+      expect(terminalRow().getAttribute("aria-current")).toBe("page");
+      expect(document.querySelector('[aria-current="true"]')).toBeNull();
+    });
+
+    it("gives the active row back to the thread once the terminal closes", () => {
+      renderSidebar({ activeId: "a", terminalOpen: false });
+      expect(terminalRow().getAttribute("aria-current")).toBeNull();
+      expect(screen.getByRole("button", { name: /^Thread a/ }).getAttribute("aria-current")).toBe("true");
+    });
+
+    it("stays on screen when the filter hides every thread", () => {
+      const projects = [{ id: "p1", name: "repo", folders: [] }] as unknown as Project[];
+      localStorage.setItem("omniplex.projectFilter", JSON.stringify(["p1"]));
+      try {
+        const props = renderSidebar({ projects });
+        expect(screen.getByText(/hidden by the filter/)).toBeTruthy();
+        fireEvent.click(terminalRow());
+        expect(props.onOpenTerminal).toHaveBeenCalledOnce();
+      } finally {
+        localStorage.clear();
+      }
+    });
   });
 
   it("copies a thread's link from the row's context menu", async () => {

@@ -4,10 +4,12 @@ import {
   FolderPlusIcon,
   HatGlassesIcon,
   SearchIcon,
+  ServerIcon,
   SettingsIcon,
   PanelLeftIcon,
   SparklesIcon,
   SquarePenIcon,
+  SquareTerminalIcon,
 } from "lucide-react";
 import {
   memo,
@@ -100,6 +102,10 @@ interface SidebarProps {
   onShowSkills: () => void;
   /** Opens settings: your defaults, providers and their sign-ins, each project. */
   onShowSettings: () => void;
+  /** The box terminal has the main pane: its row is the active one, no thread's is. */
+  terminalOpen: boolean;
+  /** Opens the box terminal in the main pane. */
+  onOpenTerminal: () => void;
   // Supplied by the server via the adapter; the sidebar knows no harness names.
   accentOf: (harness: string) => string | undefined;
   /**
@@ -366,6 +372,50 @@ function ThreadList({
 }
 
 /**
+ * The way to the shell on the box. Above the list's scroller and outside the
+ * filter, so it is always in the same place, one tap away; the full width of
+ * the sheet on a phone. It says where the shell runs and nothing else: the
+ * row cannot know the shell's directory or whether it is busy without a
+ * connection of its own.
+ */
+function TerminalRow({
+  active,
+  onOpen,
+}: {
+  active: boolean;
+  onOpen: () => void;
+}) {
+  const chord = useShortcut("toggleTerminal");
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "focus-visible:ring-ring mx-3 mt-1 block cursor-pointer rounded-lg border px-3 py-2.5 text-left outline-none focus-visible:ring-2 md:mx-2 md:px-2.5 md:py-2",
+        active
+          ? "bg-sidebar-accent text-sidebar-accent-foreground border-transparent"
+          : "bg-background/40 hover:bg-sidebar-accent/60",
+      )}
+    >
+      <span className="flex items-center gap-2">
+        <SquareTerminalIcon aria-hidden className="size-3.5 shrink-0" />
+        <span className="text-[13px] font-medium">Terminal</span>
+        {chord && (
+          <span aria-hidden className="ml-auto">
+            <KbdChord shortcut={chord.shortcut} platform={chord.platform} />
+          </span>
+        )}
+      </span>
+      <span className="text-muted-foreground mt-1 flex items-center gap-1.5 font-mono text-[11px] md:text-[10px]">
+        <ServerIcon aria-hidden className="size-3 shrink-0" />
+        box
+      </span>
+    </button>
+  );
+}
+
+/**
  * The way into the palette, which is also how a phone searches threads. A
  * search-box shape that takes the row's spare width on desktop, with ⌘K in
  * its corner where hints are shown; a thumb-sized icon on a phone, where the
@@ -404,7 +454,13 @@ function SidebarPanel({
   showCollapse: boolean;
   flow: DeleteFlow;
 }) {
-  const { projectView } = props;
+  const { projectView, onOpenTerminal, onOpenChange } = props;
+  const isDesktop = useIsDesktop();
+  // A phone's sheet steps aside for the terminal, as it does for a thread.
+  const openTerminal = () => {
+    onOpenTerminal();
+    if (!isDesktop) onOpenChange(false);
+  };
   // Reorder mode is this panel's alone: closing the sheet ends it, so the
   // next time the list opens its rows are for opening threads again.
   const [reordering, setReordering] = useState(false);
@@ -510,6 +566,8 @@ function SidebarPanel({
         </div>
       </div>
 
+      <TerminalRow active={props.terminalOpen} onOpen={openTerminal} />
+
       <nav
         aria-label="Threads"
         // The scroller a drag nudges along when the row nears an edge.
@@ -518,7 +576,9 @@ function SidebarPanel({
       >
         <ThreadList
           flow={flow}
-          activeId={props.activeId}
+          // The thread stays selected under the terminal, to go back to, but
+          // it is not what is on screen.
+          activeId={props.terminalOpen ? null : props.activeId}
           onSelect={props.onSelect}
           accentOf={props.accentOf}
           projects={props.projects}
