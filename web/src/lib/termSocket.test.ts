@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { endTerminal, openTermSocket, type TermEnd, type TermStatus } from "./termSocket";
+import { endBoxShell, endTerminal, openTermSocket, type TermEnd, type TermStatus, type TerminalTarget } from "./termSocket";
 
 // A socket the test drives by hand, recording what the terminal sends.
 class FakeSocket {
@@ -11,7 +11,7 @@ class FakeSocket {
   binaryType = "blob";
   sent: Record<string, unknown>[] = [];
   onopen: (() => void) | null = null;
-  onclose: ((e: { code: number }) => void) | null = null;
+  onclose: ((e: { code: number; reason: string }) => void) | null = null;
   onmessage: ((e: { data: unknown }) => void) | null = null;
   onerror: (() => void) | null = null;
   constructor(readonly url: string) {
@@ -23,16 +23,16 @@ class FakeSocket {
   send(data: string) {
     this.sent.push(JSON.parse(data));
   }
-  close(code = 1006) {
+  close(code = 1006, reason = "") {
     this.readyState = 3;
-    this.onclose?.({ code });
+    this.onclose?.({ code, reason });
   }
   open() {
     this.readyState = FakeSocket.OPEN;
     this.onopen?.();
   }
-  sync(offset: number) {
-    this.onmessage?.({ data: JSON.stringify({ type: "sync", offset }) });
+  sync(offset: number, live = 0) {
+    this.onmessage?.({ data: JSON.stringify({ type: "sync", offset, live }) });
   }
   where(data: string, root = "/repo") {
     this.onmessage?.({ data: JSON.stringify({ type: "cwd", data, root }) });
@@ -44,21 +44,28 @@ class FakeSocket {
 
 const latest = () => FakeSocket.all[FakeSocket.all.length - 1];
 
-function setup(target: { thread: string } | { login: string } = { thread: "t1" }, tail?: () => number) {
+function setup(target: TerminalTarget = { thread: "t1" }, tail?: () => number) {
   const out: string[] = [];
-  const log = { resets: 0, statuses: [] as TermStatus[], ended: [] as TermEnd[] };
+  const history: boolean[] = [];
+  const log = { resets: 0, statuses: [] as TermStatus[], ended: [] as TermEnd[], reasons: [] as string[] };
   const term = openTermSocket(
     "term-1",
     target,
     {
-      onData: (b) => out.push(new TextDecoder().decode(b)),
+      onData: (b, h) => {
+        out.push(new TextDecoder().decode(b));
+        history.push(h);
+      },
       onReset: () => log.resets++,
       onStatus: (s) => log.statuses.push(s),
-      onEnded: (r) => log.ended.push(r),
+      onEnded: (end, reason) => {
+        log.ended.push(end);
+        log.reasons.push(reason);
+      },
     },
     tail,
   );
-  return { term, out, log };
+  return { term, out, history, log };
 }
 
 beforeEach(() => {
@@ -79,6 +86,22 @@ describe("first connect", () => {
     expect(p.get("login")).toBe("inst");
     expect(p.has("attach")).toBe(false);
     expect(p.has("since")).toBe(false);
+  });
+
+  it("asks for the box shell with no thread or sign-in, and keeps asking for it on a retry", () => {
+    setup({ box: true });
+    let p = latest().params;
+    expect(p.get("box")).toBe("1");
+    expect(p.has("thread")).toBe(false);
+    expect(p.has("login")).toBe(false);
+
+    latest().open();
+    latest().sync(0);
+    latest().close();
+    vi.advanceTimersByTime(300);
+    p = latest().params;
+    expect(p.get("box")).toBe("1");
+    expect(p.get("attach")).toBe("1");
   });
 
   it("sends the latest size on open", () => {
@@ -114,6 +137,31 @@ describe("sync", () => {
     latest().close();
     vi.advanceTimersByTime(300);
     expect(latest().params.get("since")).toBe("502");
+  });
+});
+
+describe("history", () => {
+  it("marks bytes written before the attach as history, and the rest as live", () => {
+    const { out, history } = setup();
+    latest().open();
+    latest().sync(0, 5);
+    latest().bytes("befor");
+    latest().bytes("after");
+    expect(out).toEqual(["befor", "after"]);
+    expect(history).toEqual([true, false]);
+  });
+
+  it("starts over from the new socket's mark after a reconnect", () => {
+    const { history } = setup();
+    latest().open();
+    latest().sync(0, 0);
+    latest().bytes("abc");
+    latest().close();
+    vi.advanceTimersByTime(300);
+    latest().open();
+    latest().sync(3, 10);
+    latest().bytes("gap");
+    expect(history).toEqual([false, true]);
   });
 });
 
@@ -287,6 +335,14 @@ describe("ending", () => {
     expect(FakeSocket.all).toHaveLength(1);
   });
 
+  it("passes on the server's reason for the close", () => {
+    const { log } = setup({ box: true });
+    latest().open();
+    latest().close(4400, "tmux is not installed on the box");
+    expect(log.ended).toEqual(["failed"]);
+    expect(log.reasons).toEqual(["tmux is not installed on the box"]);
+  });
+
   it("ends as exited when the process died while away, after replaying its output", () => {
     const { out, log } = setup();
     latest().open();
@@ -352,7 +408,7 @@ describe("ending", () => {
     latest().open();
     const old = latest();
     term.restart();
-    old.onclose?.({ code: 1006 });
+    old.onclose?.({ code: 1006, reason: "" });
     vi.advanceTimersByTime(60_000);
     expect(FakeSocket.all).toHaveLength(2);
     expect(log.statuses).not.toContain("reconnecting");
@@ -490,5 +546,14 @@ describe("endTerminal", () => {
     expect(() => endTerminal("a b")).not.toThrow();
     await Promise.resolve();
     expect(fetch).toHaveBeenCalledWith("/api/term?id=a%20b", { method: "DELETE" });
+  });
+});
+
+describe("endBoxShell", () => {
+  it("ends the box shell by id, and swallows a failed request", async () => {
+    const fetch = vi.fn().mockRejectedValue(new Error("offline"));
+    vi.stubGlobal("fetch", fetch);
+    await expect(endBoxShell("box main")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith("/api/term?id=box%20main&box=1", { method: "DELETE" });
   });
 });

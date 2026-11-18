@@ -107,6 +107,10 @@ type Server struct {
 	// termClosed are ids DELETE ended, with when, so a spawn that was still
 	// resolving its command when the tab closed does not start a shell.
 	termClosed map[string]time.Time
+	// boxSocket names this instance's tmux server for the box shell, "" when
+	// it is off; boxMu serialises starting it.
+	boxSocket string
+	boxMu     sync.Mutex
 }
 
 type Options struct {
@@ -145,6 +149,10 @@ type Options struct {
 	Speech *tts.Service
 	// Push sends Web Push notifications; nil turns them off.
 	Push *push.Service
+	// BoxDir is the state directory the box shell's tmux server is named
+	// after, so each instance has a shell of its own. Empty turns the box
+	// shell off.
+	BoxDir string
 	// Logf receives compact performance diagnostics. Nil disables logging.
 	Logf func(string, ...any)
 }
@@ -179,6 +187,9 @@ func New(o Options) *Server {
 	}
 	if s.logf == nil {
 		s.logf = func(string, ...any) {}
+	}
+	if o.BoxDir != "" {
+		s.boxSocket = boxSocketName(o.BoxDir)
 	}
 	s.rewriter = tts.NewRewriter(s.logf)
 	s.editorFor = s.threadEditor

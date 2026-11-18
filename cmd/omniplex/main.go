@@ -291,6 +291,7 @@ func main() {
 		ClaudeBundled:  claudeBundled,
 		Speech:         speech,
 		Push:           pushSvc,
+		BoxDir:         filepath.Dir(*dbPath),
 		Logf:           logf,
 		// Nothing is cross-origin any more: the browser talks to this server
 		// and this server talks to Vite, so the upgrade check can stay on.

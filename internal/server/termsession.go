@@ -42,7 +42,7 @@ const (
 type termSession struct {
 	key    string // device + id: the registry key
 	device string
-	target string // "thread:<id>" or "login:<instance>"
+	target string // "thread:<id>", "login:<instance>" or "box"
 
 	cmd  *exec.Cmd
 	tty  *os.File
@@ -264,6 +264,16 @@ func (s *Server) termKill(device, id string) {
 		}
 	}
 	s.termClosed[key] = now
+	s.termMu.Unlock()
+	if sess != nil {
+		s.termKillSession(sess)
+	}
+}
+
+// termDrop ends a terminal without barring its id from a later spawn.
+func (s *Server) termDrop(device, id string) {
+	s.termMu.Lock()
+	sess := s.terms[termKey(device, id)]
 	s.termMu.Unlock()
 	if sess != nil {
 		s.termKillSession(sess)

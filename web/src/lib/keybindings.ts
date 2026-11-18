@@ -18,6 +18,11 @@ export interface Shortcut {
   /** Lower-case `KeyboardEvent.key`, or the unshifted character for punctuation. */
   key: string;
   mod?: boolean;
+  /**
+   * The Control key itself, on a Mac too, for a chord whose ⌘ form the system
+   * owns: ⌘` switches windows there. Not combined with `mod`.
+   */
+  ctrl?: boolean;
   shift?: boolean;
   alt?: boolean;
 }
@@ -231,6 +236,13 @@ export const COMMANDS = {
     browser: [mod("e", { shift: true })],
     inDialog: (ctx) => ctx.modelPickerOpen,
   },
+  // Ctrl on a Mac as well, as VS Code has it: ⌘` is the system's.
+  toggleTerminal: {
+    label: "Toggle terminal",
+    group: "Panels",
+    app: [{ key: "`", ctrl: true }],
+    browser: [{ key: "`", ctrl: true }],
+  },
   toggleSidebar: {
     label: "Toggle threads",
     group: "Panels",
@@ -395,7 +407,7 @@ export function eventKeys(e: KeyEventLike): Set<string> {
 }
 
 function bareSymbol(s: Shortcut): boolean {
-  return !s.mod && !s.alt && s.key.length === 1 && !/^[a-z0-9]$/.test(s.key);
+  return !s.mod && !s.ctrl && !s.alt && s.key.length === 1 && !/^[a-z0-9]$/.test(s.key);
 }
 
 export function matches(e: KeyEventLike, s: Shortcut, platform: Platform): boolean {
@@ -412,7 +424,7 @@ export function matches(e: KeyEventLike, s: Shortcut, platform: Platform): boole
   }
   const mac = platform === "mac";
   const wantMeta = !!s.mod && mac;
-  const wantCtrl = !!s.mod && !mac;
+  const wantCtrl = !!s.ctrl || (!!s.mod && !mac);
   if (e.metaKey !== wantMeta || e.ctrlKey !== wantCtrl) return false;
   if (e.altKey !== !!s.alt || e.shiftKey !== !!s.shift) return false;
   return eventKeys(e).has(s.key);
@@ -420,7 +432,7 @@ export function matches(e: KeyEventLike, s: Shortcut, platform: Platform): boole
 
 /** A chord that types a character: in a text field it is typing, never a shortcut. */
 function typesCharacter(s: Shortcut): boolean {
-  return !s.mod && !s.alt && s.key.length === 1;
+  return !s.mod && !s.ctrl && !s.alt && s.key.length === 1;
 }
 
 /** The first command that matches the event and may fire now, or null. */
@@ -469,11 +481,12 @@ export function shortcutParts(s: Shortcut, platform: Platform): string[] {
   const parts: string[] = [];
   const shift = shiftShown(s);
   if (platform === "mac") {
+    if (s.ctrl) parts.push("⌃");
     if (s.alt) parts.push("⌥");
     if (shift) parts.push("⇧");
     if (s.mod) parts.push("⌘");
   } else {
-    if (s.mod) parts.push("Ctrl");
+    if (s.mod || s.ctrl) parts.push("Ctrl");
     if (s.alt) parts.push("Alt");
     if (shift) parts.push("Shift");
   }

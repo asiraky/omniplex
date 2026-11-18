@@ -58,6 +58,7 @@ export function useAppKeybindings({
   onStopTurn,
   onToggleSidebar,
   onTogglePanel,
+  onToggleTerminal,
   onOpenDiff,
   onClosePanel,
   onSettings,
@@ -80,6 +81,8 @@ export function useAppKeybindings({
   onStopTurn: () => void;
   onToggleSidebar: () => void;
   onTogglePanel: () => void;
+  /** Opens the box terminal, or closes it when it is open. */
+  onToggleTerminal: () => void;
   onOpenDiff: () => void;
   onClosePanel: () => void;
   onSettings: () => void;
@@ -117,6 +120,7 @@ export function useAppKeybindings({
     effort: () => composerRef.current?.openModelPicker("effort"),
     toggleSidebar: onToggleSidebar,
     togglePanel: onTogglePanel,
+    toggleTerminal: onToggleTerminal,
     openDiff: onOpenDiff,
     // Claimed either way, so ⌘W never closes the desktop app's window.
     closePanel: onClosePanel,

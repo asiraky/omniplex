@@ -22,10 +22,15 @@ export function useScreens() {
   // open because these are the user's and the project's first. Open, and on
   // which tab when the caller cares; else the last one used.
   const [tools, setTools] = useState<{ tab?: ToolsTab } | null>(null);
-  // Neither is a dialog, but on a phone each covers the thread like one, so
+  // The shell on the box itself, in the main pane beside the sidebar rather
+  // than over the whole page: it is reached from the list and left back to it.
+  // The open thread stays selected underneath, so closing returns to it.
+  const [boxTerminal, setBoxTerminal] = useState(false);
+  // None is a dialog, but on a phone each covers the thread like one, so
   // Back closes it rather than changing thread.
   useBackDismiss(showUsage, () => setShowUsage(false));
   useBackDismiss(!!tools, () => setTools(null));
+  useBackDismiss(boxTerminal, () => setBoxTerminal(false));
   // The theme sample page: a static mock of the dashboard behind a palette
   // switcher, reachable at #themes so it needs no router.
   const [themePreview, setThemePreview] = useState(() => window.location.hash === "#themes");
@@ -55,7 +60,9 @@ export function useScreens() {
   }, []);
 
   // A full-page screen is up instead of the thread view, composer and all.
-  const fullPage = showUsage || !!tools || setup || themePreview;
+  // The box terminal counts: it takes the thread view's place, if not the
+  // sidebar's.
+  const fullPage = showUsage || !!tools || setup || themePreview || boxTerminal;
   // Whether a full-page screen or Settings hides the thread view, so the
   // server knows the open thread is not actually being watched.
   const covering = !!settings || fullPage;
@@ -65,7 +72,15 @@ export function useScreens() {
     setSettings(null);
     setShowUsage(false);
     setTools(null);
+    setBoxTerminal(false);
   }, []);
+  // Usage and Skills render over everything, so the terminal clears them to
+  // be seen at all; Settings would sit over it as a dialog.
+  const openBoxTerminal = useCallback(() => {
+    uncover();
+    setBoxTerminal(true);
+  }, [uncover]);
+  const closeBoxTerminal = useCallback(() => setBoxTerminal(false), []);
   // Choosing a thread or starting one is going somewhere: every screen gives
   // way, the URL ones too, since the user asked for it.
   const leaveAll = () => {
@@ -84,6 +99,9 @@ export function useScreens() {
 
   return {
     fullPage,
+    boxTerminal,
+    openBoxTerminal,
+    closeBoxTerminal,
     openAccess,
     openUsage,
     openSkills,

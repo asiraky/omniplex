@@ -39,6 +39,7 @@ export function usePaletteActions({
   onSettings,
   onUsage,
   onSkills,
+  onTerminal,
   onToggleSidebar,
   onShortcuts,
 }: {
@@ -67,6 +68,8 @@ export function usePaletteActions({
   onSettings: () => void;
   onUsage: () => void;
   onSkills: () => void;
+  /** Opens the shell on the box, in the main pane. */
+  onTerminal: () => void;
   onToggleSidebar: () => void;
   onShortcuts: () => void;
 }): PaletteAction[] {
@@ -187,6 +190,13 @@ export function usePaletteActions({
   app({ id: "settings", label: "Settings", command: "settings", keywords: ["preferences"], run: onSettings });
   app({ id: "usage", label: "Usage", keywords: ["cost", "tokens", "limits"], run: onUsage });
   app({ id: "skills", label: "Skills", keywords: ["tools", "mcp"], run: onSkills });
+  app({
+    id: "terminal",
+    label: "Terminal",
+    command: "toggleTerminal",
+    keywords: ["shell", "box", "console", "tmux"],
+    run: onTerminal,
+  });
   app({
     id: "sidebar",
     label: "Toggle threads",
