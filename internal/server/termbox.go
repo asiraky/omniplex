@@ -182,6 +182,20 @@ func (s *Server) termCwd(ctx context.Context, sess *termSession) string {
 	return strings.TrimSpace(string(out))
 }
 
+// boxRunning is whether the box shell is still there.
+func (s *Server) boxRunning(ctx context.Context) bool {
+	if s.boxSocket == "" {
+		return false
+	}
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return s.boxCmd(ctx, tmux, "has-session", "-t", boxSession).Run() == nil
+}
+
 // killBox ends the box shell for every device. Their clients exit with it,
 // and their sockets are told the terminal exited.
 func (s *Server) killBox(ctx context.Context) {

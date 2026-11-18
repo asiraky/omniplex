@@ -57,7 +57,8 @@ import (
 // relative to, and for the box shell is $HOME. A path the shell printed after
 // a cd resolves against data, and opens as a path under root. Close 4000
 // "exited" means the process ended and its output was fully sent; 4404 "no
-// such terminal" answers an attach=1 for an id the server no longer has, and
+// such terminal" answers an attach=1 for an id the server no longer has (for
+// the box, only once the shell itself has ended: a lost client is replaced), and
 // ends a socket whose terminal was closed or revoked; 4400 "could not start"
 // means a new terminal failed to spawn (no such thread, no checkout, no pty)
 // and retrying will not help; its reason is "could not start", or "tmux is not
@@ -197,7 +198,10 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 		live = sess.ring.Total()
 		sess.mu.Unlock()
 	} else {
-		if attachOnly {
+		// A box client is only this device's view of the shell, lost to a
+		// restart or the idle TTL while the shell runs on; a reattach gets a
+		// new one. Only a shell that has really ended is reported gone.
+		if attachOnly && !(box && s.boxRunning(r.Context())) {
 			_ = ws.Close(termStatusMissing, "no such terminal")
 			return
 		}

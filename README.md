@@ -275,6 +275,11 @@ Symlink `go`, `node`, `npm`, `claude` and `codex` into `/usr/local/bin` and name
 that directory in the unit. Skip this and the server starts fine and reports
 every harness unavailable.
 
+Install tmux (`sudo apt install tmux`) for the sidebar's Terminal row, a shell
+on the box itself. tmux holds that shell, in a systemd scope of its own, so it
+survives a restart of the service. Without tmux the row opens on an error
+saying so.
+
 Keep `Delegate=yes` and `OOMPolicy=continue`. Omniplex caps each thread's
 processes at `-thread-memory` percent of RAM, and all threads together at
 `-threads-memory`, so a runaway type check or test run is killed on its own

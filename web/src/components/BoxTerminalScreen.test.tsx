@@ -6,7 +6,7 @@ import type { TerminalSurface } from "~/components/panel/TerminalSurface";
 import { endBoxShell } from "~/lib/termSocket";
 import { render, viewport } from "~/test/harness";
 
-import { BoxTerminalScreen, homeRelative } from "./BoxTerminalScreen";
+import { BoxTerminalScreen } from "./BoxTerminalScreen";
 
 type SurfaceProps = Parameters<typeof TerminalSurface>[0];
 const surface = vi.hoisted(() => ({ props: null as SurfaceProps | null }));
@@ -40,18 +40,6 @@ async function openEndConfirm() {
   fireEvent.click(await screen.findByRole("menuitem", { name: /End shell/ }));
   return screen.findByRole("dialog");
 }
-
-describe("homeRelative", () => {
-  it.each([
-    ["/home/me", "/home/me", "~"],
-    ["/home/me/code/x", "/home/me", "~/code/x"],
-    ["/home/me/code", "/home/me/", "~/code"],
-    ["/home/meadow", "/home/me", "/home/meadow"],
-    ["/etc", "/home/me", "/etc"],
-  ])("writes %s under %s as %s", (cwd, home, want) => {
-    expect(homeRelative(cwd, home)).toBe(want);
-  });
-});
 
 describe("BoxTerminalScreen", () => {
   it("shows where the shell is as it moves, with ~ for home", () => {

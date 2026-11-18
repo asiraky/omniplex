@@ -98,6 +98,48 @@ func TestBoxShellSurvivesARestart(t *testing.T) {
 	again.until(t, ctx, "val=42.")
 }
 
+// A screen left open across a restart reconnects with attach=1, for a client
+// the new server never had. The shell is still running, so it gets a new
+// client onto it, not word that the shell has ended.
+func TestBoxReattachAfterARestartFindsTheShell(t *testing.T) {
+	rig, _ := newBoxRig(t)
+	ctx := testCtx(t)
+
+	first := rig.dialBox(t, ctx, rig.client, "id=box")
+	first.input(t, ctx, "X=42; echo se\"\"t\n")
+	first.until(t, ctx, "set")
+	rig.removeAll()
+
+	restarted := newTermRig(t, time.Minute)
+	restarted.srv.boxSocket = rig.srv.boxSocket
+	again := restarted.dialBox(t, ctx, restarted.client, "id=box&attach=1&since=500")
+	again.input(t, ctx, "echo \"val=$X.\"\n")
+	again.until(t, ctx, "val=42.")
+	if len(again.syncs) == 0 || again.syncs[0] != 0 {
+		t.Fatalf("syncs %v, want the new client's stream from 0", again.syncs)
+	}
+}
+
+// Once the shell has ended, a reattach is told so rather than starting one.
+func TestBoxReattachAfterTheShellEndedIsGone(t *testing.T) {
+	rig, _ := newBoxRig(t)
+	ctx := testCtx(t)
+
+	first := rig.dialBox(t, ctx, rig.client, "id=box")
+	first.input(t, ctx, "echo se\"\"t\n")
+	first.until(t, ctx, "set")
+	rig.srv.killBox(ctx)
+	rig.removeAll()
+
+	again := &termReader{conn: rig.dialQuery(t, ctx, rig.client, "box=1&id=box&attach=1&since=500")}
+	if code := again.closed(t, ctx); code != termStatusMissing {
+		t.Fatalf("closed %d, want 4404", code)
+	}
+	if rig.srv.boxRunning(ctx) {
+		t.Fatal("the reattach started a new shell")
+	}
+}
+
 // A build started on the laptop is the same shell the phone opens.
 func TestBoxShellIsSharedAcrossDevices(t *testing.T) {
 	rig, _ := newBoxRig(t)

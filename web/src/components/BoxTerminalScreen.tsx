@@ -26,19 +26,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
+import { homeRelative } from "~/lib/homeRelative";
 import { endBoxShell, type TerminalTarget } from "~/lib/termSocket";
 import { useIsDesktop } from "~/useMediaQuery";
 
 // There is one box shell, so one id: every device attaches to the same one.
 const BOX_TERM_ID = "box";
 const BOX: TerminalTarget = { box: true };
-
-/** `cwd` as the prompt would write it: under `home`, with `~` for it. */
-export function homeRelative(cwd: string, home: string): string {
-  if (cwd === home) return "~";
-  const base = home.endsWith("/") ? home : `${home}/`;
-  return cwd.startsWith(base) ? `~/${cwd.slice(base.length)}` : cwd;
-}
 
 /**
  * The shell on the box itself, in the main pane: beside the sidebar on a

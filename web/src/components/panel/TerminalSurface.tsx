@@ -34,12 +34,9 @@ const SHELL_ENDED: Record<TermEnd, string> = {
 };
 
 // The box shell has no idle limit and outlives restarts, so gone means it
-// was ended: from another device, or by its tmux server going away.
-const BOX_ENDED: Record<TermEnd, string> = {
-  exited: "The shell exited.",
-  gone: "The box shell has ended.",
-  failed: "The shell could not start.",
-};
+// was ended: from another device, or by its tmux server going away. A lost
+// client of a running one is replaced, not reported.
+const BOX_ENDED: Record<TermEnd, string> = { ...SHELL_ENDED, gone: "The box shell has ended." };
 
 const LOGIN_ENDED: Record<TermEnd, string> = {
   exited: "The sign-in has ended.",
