@@ -41,6 +41,7 @@ func fakePi(t *testing.T, dir string, promptResponse string) string {
 DIR=%q
 printf '%%s\n' "$@" > "$DIR/args"
 printf '%%s' "$PI_TEST_MARKER" > "$DIR/env"
+printf '%%s' "$OMNIPLEX_PI_MCP" > "$DIR/mcp"
 while IFS= read -r line; do
   printf '%%s\n' "$line" >> "$DIR/lines"
   id=$(printf '%%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
