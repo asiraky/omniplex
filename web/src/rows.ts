@@ -102,9 +102,11 @@ export function buildRows(items: Item[], turns: Turn[], phase: string, artefacts
       // The answer is the turn's last piece of agent text. Tool calls that
       // trail it — work a steer cut short — fold with everything else.
       let answer: Item | undefined;
+      let answerAt = segment.length;
       for (let k = segment.length - 1; k >= 0; k--) {
         if (isAgentText(segment[k])) {
           answer = segment[k];
+          answerAt = k;
           break;
         }
       }
@@ -115,7 +117,7 @@ export function buildRows(items: Item[], turns: Turn[], phase: string, artefacts
       let hidden: Item[] = [];
       let folds = 0;
       const produced: Item[] = [];
-      const decided: Item[] = [];
+      const decidedAfter: Item[] = [];
       const spawns = segment.filter(isSpawn);
       const flush = () => {
         if (hidden.length > 0)
@@ -136,9 +138,16 @@ export function buildRows(items: Item[], turns: Turn[], phase: string, artefacts
           continue;
         }
         // A change the agent proposed was the user's decision: what they
-        // decided stays in view, under the answer.
+        // decided stays in view where the agent asked, splitting the fold,
+        // so the reply that follows it reads after it. One raised after the
+        // answer stays under it.
         if (it.kind === "card") {
-          decided.push(it);
+          if (k > answerAt) {
+            decidedAfter.push(it);
+            continue;
+          }
+          flush();
+          rows.push({ kind: "item", item: it });
           continue;
         }
         // The prompt stays where the reader can see what was asked.
@@ -172,7 +181,7 @@ export function buildRows(items: Item[], turns: Turn[], phase: string, artefacts
       if (answer) rows.push({ kind: "item", item: answer });
       if (answer && spawns.length > 0)
         rows.push({ kind: "jobs", id: `jobs-recap:${spawns[0].id}`, items: spawns, recap: true });
-      for (const it of decided) rows.push({ kind: "item", item: it });
+      for (const it of decidedAfter) rows.push({ kind: "item", item: it });
       if (cards.length > 0) rows.push({ kind: "artefacts", id: `artefacts:${cards[0].id}`, items: cards });
       i = j;
       continue;

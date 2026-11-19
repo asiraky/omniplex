@@ -261,6 +261,65 @@ func TestCompactBoundaryEmitsEvent(t *testing.T) {
 	}
 }
 
+// A compaction empties the window down to what it kept, and a /compact turn's
+// result, which follows with no request in between, must not put the
+// pre-compaction prompt size back.
+func TestCompactBoundaryDropsOccupancyToPostTokens(t *testing.T) {
+	s := newTestSession()
+	s.handleSDKMessage(rawSDK(t, map[string]any{
+		"type":  "context_usage",
+		"usage": map[string]any{"totalTokens": 24000, "rawMaxTokens": 120000, "maxTokens": 200000},
+	}))
+	s.handleSDKMessage(rawSDK(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{map[string]any{"type": "text"}},
+			"usage":   map[string]any{"input_tokens": 1000, "cache_read_input_tokens": 23000},
+		},
+	}))
+	lastUsage(t, s)
+
+	s.handleSDKMessage(rawSDK(t, map[string]any{
+		"type":             "system",
+		"subtype":          "compact_boundary",
+		"compact_metadata": map[string]any{"trigger": "manual", "pre_tokens": 24000, "post_tokens": 3300},
+	}))
+	if u := lastUsage(t, s); u.ContextUsed != 3300 || u.ContextWindow != 120000 {
+		t.Fatalf("after the boundary: used %d of %d, want 3300 of 120000", u.ContextUsed, u.ContextWindow)
+	}
+
+	s.handleSDKMessage(rawSDK(t, map[string]any{"type": "result", "stop_reason": "end_turn"}))
+	if u := lastUsage(t, s); u.ContextUsed != 3300 {
+		t.Fatalf("after the /compact result: used %d, want 3300", u.ContextUsed)
+	}
+}
+
+// A boundary that reports no post-compaction count leaves the meter alone.
+func TestCompactBoundaryWithoutPostTokensKeepsOccupancy(t *testing.T) {
+	s := newTestSession()
+	s.handleSDKMessage(rawSDK(t, map[string]any{
+		"type":  "context_usage",
+		"usage": map[string]any{"totalTokens": 24000, "rawMaxTokens": 120000},
+	}))
+	lastUsage(t, s)
+	s.handleSDKMessage(rawSDK(t, map[string]any{
+		"type":             "system",
+		"subtype":          "compact_boundary",
+		"compact_metadata": map[string]any{"trigger": "manual", "pre_tokens": 24000},
+	}))
+	for {
+		select {
+		case e := <-s.events:
+			if _, ok := e.Payload.(proto.UsageUpdatedPayload); ok {
+				t.Fatal("usage.updated emitted for a boundary with no post-compaction count")
+			}
+			continue
+		default:
+		}
+		break
+	}
+}
+
 // The fallback window follows the choice made at process start, not the
 // model's name: an Opus session started without the "[1m]" tag was booted with
 // CLAUDE_CODE_DISABLE_1M_CONTEXT=1, so it really is a 200k session, and a
