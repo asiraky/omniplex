@@ -44,13 +44,18 @@ export function ContextMeter({
   usage,
   model,
   compactAt,
+  bare = false,
 }: {
   usage: Usage;
   model?: string;
   /** An agent's own compaction point. It replaces the window as what the
       meter measures against, because it is the number the user chose. */
   compactAt?: number;
+  /** The ring alone, with the agent's count left to the popover: a phone's
+      toolbar has no room for both the count and the model's name. */
+  bare?: boolean;
 }) {
+  const counted = !!compactAt && !bare;
   const { open, setOpen, trigger, content } = useHoverPopover();
 
   const used = usage.contextUsed ?? 0;
@@ -99,7 +104,7 @@ export function ContextMeter({
         aria-label={hasPct ? `Context ${fmtPct(pct)} used` : "Context usage unavailable"}
         className={cn(
           "flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          compactAt ? "px-1.5" : "w-8",
+          counted ? "px-1.5" : "w-8",
           ringTone,
         )}
       >
@@ -119,7 +124,7 @@ export function ContextMeter({
         </svg>
         {/* An agent's compaction point is the user's own number, so the
             meter says it out loud rather than behind a tap. */}
-        {!!compactAt && (
+        {counted && (
           <span className="font-mono text-[11px] tabular-nums">
             {fmtTokens(used)} / {fmtTokens(compactAt)}
           </span>

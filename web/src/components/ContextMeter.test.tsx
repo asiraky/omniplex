@@ -53,6 +53,21 @@ describe("ContextMeter", () => {
     expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("50");
     expect(screen.getAllByText("60k / 120k").length).toBeGreaterThan(0);
   });
+
+  it("leaves a bare agent meter's count to its popover", () => {
+    render(
+      <ContextMeter
+        compactAt={120_000}
+        bare
+        usage={{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextUsed: 60_000, contextWindow: 167_000 }}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Context 50% used" });
+    expect(trigger.textContent).not.toContain("60k / 120k");
+    fireEvent.click(trigger);
+    expect(screen.getByText("Compacts at 120k, as set on the agent.")).toBeTruthy();
+  });
 });
 
 describe("agentCompactAt", () => {

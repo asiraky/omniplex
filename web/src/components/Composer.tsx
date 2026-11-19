@@ -460,7 +460,8 @@ export function Composer({
   // phone-width drawer would otherwise scroll them out of sight.
   const drawerTools = !fit.toolsInRow && tools?.("drawer");
   const meter = usage && (usage.contextUsed ?? 0) > 0 && (
-    <ContextMeter usage={usage} model={model} compactAt={compactAt} />
+    // A phone-width toolbar keeps the model's name over the agent's count.
+    <ContextMeter usage={usage} model={model} compactAt={compactAt} bare={fit.compactTrigger} />
   );
   const noMic = (
     <>
