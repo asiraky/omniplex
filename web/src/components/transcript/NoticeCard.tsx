@@ -65,7 +65,7 @@ export function NoticeCard({
 // so it carries the epoch and a link to that row, where the summary and what
 // the next epoch started from can be read.
 function CompactionNotice({ item }: { item: Item }) {
-  const { current, openAgent } = useAgentNav();
+  const { current, threadId, openAgent } = useAgentNav();
   const detail =
     item.preTokens && item.postTokens
       ? `${fmtTokens(item.preTokens)} → ${fmtTokens(item.postTokens)}`
@@ -83,7 +83,9 @@ function CompactionNotice({ item }: { item: Item }) {
         {epoch !== undefined && current && (
           <button
             type="button"
-            onClick={() => openAgent(current.id, "log", { epoch })}
+            // The thread goes along: this one may be archived, and the
+            // agent's live log has its own epoch of that number.
+            onClick={() => openAgent(current.id, "log", { ...(threadId ? { thread: threadId } : {}), epoch })}
             className="text-primary hit-44 relative font-medium hover:underline"
           >
             Inspect

@@ -945,6 +945,13 @@ export interface Agent {
   /** The prompt revision the live thread's process runs on; below promptRev
       while a restart onto the newer one waits. */
   livePromptRev?: number;
+  /** The live thread has a restart waiting for its turn to end: a saved
+      prompt (or, on Codex, compaction instructions) to bring in, or a
+      restart asked for by hand. */
+  restartPending?: boolean;
+  /** Moves whenever a row of the live log is added or updated, including a
+      summary or attachments that land after the row, at the turn's end. */
+  logVersion?: number;
   /** Compactions in the live thread so far: its current epoch. */
   epoch: number;
   /** Debug: write every model request whole to disk. */

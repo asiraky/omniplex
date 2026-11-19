@@ -6,7 +6,7 @@ import {
   CornerUpLeftIcon,
   MessageSquareIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { ErrorLine, LoadError, Loading } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
@@ -35,7 +35,7 @@ interface LogData {
 /**
  * The agent page's Log tab: one row per epoch, newest first, epoch 0 held at
  * the bottom. The list is metadata only; a row's bodies load the first time
- * it opens and are kept for as long as the tab is up. An archived thread's
+ * it opens and are kept until the row changes. An archived thread's
  * log replaces the live one while it is picked.
  */
 export function LogTab({ agent, api, focus }: { agent: Agent; api: AgentApi; focus?: AgentFocus }) {
@@ -47,14 +47,42 @@ export function LogTab({ agent, api, focus }: { agent: Agent; api: AgentApi; foc
   const [data, setData] = useState<LogData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  // The live log grows when the live thread compacts or is replaced; an
-  // archived one never changes.
-  const liveKey = threadId ? "" : `${agent.threadId ?? ""}:${agent.epoch}`;
+  const [showAll, setShowAll] = useState(false);
+  const [open, setOpen] = useState<Set<number>>(() => new Set());
+  const [sections, setSections] = useState<Record<string, boolean>>({});
+  const [details, setDetails] = useState<Record<number, Detail>>({});
+  const requested = useRef(new Set<number>());
+  // Each row as last listed. A row can change after it is first logged
+  // (Claude's summary and attachments land at the turn's end), and a body
+  // fetched before that is dropped so it loads again.
+  const listed = useRef(new Map<number, string>());
+
+  // The live log moves when the live thread compacts, is replaced, or has a
+  // row filled in; an archived one never changes.
+  const liveKey = threadId ? "" : `${agent.threadId ?? ""}:${agent.epoch}:${agent.logVersion ?? ""}`;
   useEffect(() => {
     let live = true;
     setError(null);
     apiRef.current.log(agent.id, threadId).then(
-      (res) => live && setData({ asked: threadId, compactions: res.compactions, archived: res.archived }),
+      (res) => {
+        if (!live) return;
+        const changed: number[] = [];
+        for (const r of res.compactions) {
+          const sig = rowSig(r);
+          const was = listed.current.get(r.id);
+          if (was !== undefined && was !== sig) changed.push(r.id);
+          listed.current.set(r.id, sig);
+        }
+        if (changed.length > 0) {
+          for (const id of changed) requested.current.delete(id);
+          setDetails((d) => {
+            const next = { ...d };
+            for (const id of changed) delete next[id];
+            return next;
+          });
+        }
+        setData({ asked: threadId, compactions: res.compactions, archived: res.archived });
+      },
       (e: unknown) => live && setError(errorText(e)),
     );
     return () => {
@@ -62,34 +90,36 @@ export function LogTab({ agent, api, focus }: { agent: Agent; api: AgentApi; foc
     };
   }, [apiRef, agent.id, threadId, liveKey, attempt]);
 
-  const [showAll, setShowAll] = useState(false);
-  const [open, setOpen] = useState<Set<number>>(() => new Set());
-  const [sections, setSections] = useState<Record<string, boolean>>({});
-  const [details, setDetails] = useState<Record<number, Detail>>({});
-  const requested = useRef(new Set<number>());
+  const load = useCallback(
+    (id: number) => {
+      if (requested.current.has(id)) return;
+      requested.current.add(id);
+      setDetails((d) => ({ ...d, [id]: { state: "loading" } }));
+      apiRef.current.compaction(agent.id, id).then(
+        (detail) => setDetails((d) => ({ ...d, [id]: { state: "ok", detail } })),
+        (e: unknown) => {
+          requested.current.delete(id);
+          setDetails((d) => ({ ...d, [id]: { state: "error", message: errorText(e) } }));
+        },
+      );
+    },
+    [apiRef, agent.id],
+  );
 
-  function load(id: number) {
-    if (requested.current.has(id)) return;
-    requested.current.add(id);
-    setDetails((d) => ({ ...d, [id]: { state: "loading" } }));
-    apiRef.current.compaction(agent.id, id).then(
-      (detail) => setDetails((d) => ({ ...d, [id]: { state: "ok", detail } })),
-      (e: unknown) => {
-        requested.current.delete(id);
-        setDetails((d) => ({ ...d, [id]: { state: "error", message: errorText(e) } }));
-      },
-    );
-  }
+  // Every open row has its bodies, or is fetching them: on opening, and again
+  // when the row changed under a body already fetched. A failed fetch waits
+  // for Retry.
+  useEffect(() => {
+    for (const id of open) if (!details[id]) load(id);
+  }, [open, details, load]);
 
   function toggle(row: CompactionRow) {
-    const opening = !open.has(row.id);
     setOpen((s) => {
       const next = new Set(s);
-      if (opening) next.add(row.id);
-      else next.delete(row.id);
+      if (next.has(row.id)) next.delete(row.id);
+      else next.add(row.id);
       return next;
     });
-    if (opening) load(row.id);
   }
 
   function pickThread(id: string | undefined) {
@@ -97,30 +127,40 @@ export function LogTab({ agent, api, focus }: { agent: Agent; api: AgentApi; foc
     setShowAll(false);
   }
 
-  // An Inspect link lands here with an epoch: open that row of the live log,
+  // An Inspect link lands here with an epoch, and the thread it was in when
+  // that is not the live one: show that thread's log, then open the row,
   // paging back to it if it is older than the first page.
-  const rowEls = useRef(new Map<number, HTMLElement>());
-  const focused = useRef<number | undefined>(undefined);
-  useEffect(() => {
-    const epoch = focus?.epoch;
-    if (epoch === undefined || focused.current === epoch) return;
-    if (threadId !== undefined) {
-      setThreadId(undefined);
-      return;
+  const focusThread = focus?.thread && focus.thread !== agent.threadId ? focus.thread : undefined;
+  const focusKey = focus?.epoch !== undefined ? `${focusThread ?? ""}:${focus.epoch}` : undefined;
+  const [seenFocus, setSeenFocus] = useState<string | undefined>(undefined);
+  const [pendingEpoch, setPendingEpoch] = useState<number | undefined>(undefined);
+  if (focusKey !== seenFocus) {
+    setSeenFocus(focusKey);
+    if (focus?.epoch !== undefined) {
+      pickThread(focusThread);
+      setPendingEpoch(focus.epoch);
     }
-    if (!data || data.asked !== undefined) return;
-    const row = data.compactions.find((r) => r.epoch === epoch);
-    if (!row) return;
-    focused.current = epoch;
-    if (!logRows(data.compactions, false).shown.includes(row) && epoch !== 0) setShowAll(true);
-    setOpen((s) => new Set(s).add(row.id));
-    load(row.id);
-    requestAnimationFrame(() => rowEls.current.get(row.id)?.scrollIntoView?.({ block: "start" }));
-    // load and the refs are stable in effect; the epoch and the data decide.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focus?.epoch, data, threadId]);
+  }
 
   const current = data && data.asked === threadId ? data : null;
+  const [scrollTo, setScrollTo] = useState<{ id: number } | null>(null);
+  if (pendingEpoch !== undefined && current) {
+    const row = current.compactions.find((r) => r.epoch === pendingEpoch);
+    // Not listed yet: the next refetch may bring it.
+    if (row) {
+      setPendingEpoch(undefined);
+      if (!logRows(current.compactions, false).shown.includes(row) && row.epoch !== 0) setShowAll(true);
+      setOpen((s) => new Set(s).add(row.id));
+      setScrollTo({ id: row.id });
+    }
+  }
+  const rowEls = useRef(new Map<number, HTMLElement>());
+  useEffect(() => {
+    if (!scrollTo) return;
+    const frame = requestAnimationFrame(() => rowEls.current.get(scrollTo.id)?.scrollIntoView?.({ block: "start" }));
+    return () => cancelAnimationFrame(frame);
+  }, [scrollTo]);
+
   const viewing = threadId ? current?.archived.find((t) => t.threadId === threadId) : undefined;
 
   let body: ReactNode;
@@ -201,6 +241,11 @@ export function LogTab({ agent, api, focus }: { agent: Agent; api: AgentApi; foc
       <RawLog agent={agent} api={api} />
     </div>
   );
+}
+
+/** What a listed row says about itself; a change means its bodies changed too. */
+function rowSig(r: CompactionRow): string {
+  return JSON.stringify([r.summaryChars, r.instructionsChars, r.attachments, r.preTokens, r.postTokens, r.durationMs]);
 }
 
 function archivedLabel(t: ArchivedAgentThread): string {
@@ -339,9 +384,9 @@ function LogRow({
         <NotReported harness={harness} />
       ) : (
         <>
-          {d.attachments.map((a, i) => (
+          {d.attachments.map((a) => (
             <Item
-              key={`${a.kind}:${a.name}:${i}`}
+              key={`${a.kind}:${a.name}`}
               kind={a.kind === "file" ? "re-read" : a.kind}
               name={a.name}
               chars={a.chars}
@@ -428,9 +473,9 @@ function LogRow({
               d.system?.length ? `${fmtChars(d.system.reduce((s, p) => s + p.chars, 0))} chars` : "",
               () =>
                 d.system?.length ? (
-                  d.system.map((p, i) => (
+                  d.system.map((p) => (
                     <Item
-                      key={`${p.kind}:${i}`}
+                      key={`${p.kind}:${p.name}`}
                       kind={p.kind}
                       name={p.name}
                       chars={p.chars}
@@ -623,8 +668,13 @@ function Archived({
 /** The debug switch beside the view it exists to check. Read at process start, like compact-at. */
 function RawLog({ agent, api }: { agent: Agent; api: AgentApi }) {
   const supported = agent.harness !== "pi";
+  // A flip stands until the saved value catches up with it.
   const [picked, setPicked] = useState<boolean | null>(null);
-  useEffect(() => setPicked(null), [agent.rawLog]);
+  const [pickedFor, setPickedFor] = useState(agent.rawLog);
+  if (pickedFor !== agent.rawLog) {
+    setPickedFor(agent.rawLog);
+    setPicked(null);
+  }
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const on = picked ?? !!agent.rawLog;

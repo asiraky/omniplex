@@ -72,10 +72,10 @@ describe("NoticeCard compaction", () => {
   const compaction = (over: Partial<Item> = {}) =>
     notice({ id: "compact:9", noticeKind: "compaction", trigger: "auto", ...over });
   const agent = { id: "ag1", name: "backlog" } as Agent;
-  const withAgent = (item: Item, current?: Agent) => {
+  const withAgent = (item: Item, current?: Agent, threadId?: string) => {
     const openAgent = vi.fn();
     render(
-      <AgentNavContext.Provider value={{ current, openAgent, openThread: () => {} }}>
+      <AgentNavContext.Provider value={{ current, threadId, openAgent, openThread: () => {} }}>
         <NoticeCard item={item} />
       </AgentNavContext.Provider>,
     );
@@ -86,6 +86,12 @@ describe("NoticeCard compaction", () => {
     const openAgent = withAgent(compaction({ epoch: 46 }), agent);
     fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     expect(openAgent).toHaveBeenCalledWith("ag1", "log", { epoch: 46 });
+  });
+
+  it("opens the log of the thread the notice is in, an archived one included", () => {
+    const openAgent = withAgent(compaction({ epoch: 2 }), { ...agent, threadId: "live" }, "old");
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    expect(openAgent).toHaveBeenCalledWith("ag1", "log", { thread: "old", epoch: 2 });
   });
 
   it("has nothing to inspect on a thread no agent logs", () => {

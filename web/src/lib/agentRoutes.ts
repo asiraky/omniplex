@@ -3,7 +3,7 @@ import { AGENT_TABS, type AgentFocus, type AgentTab } from "./agentNav";
 // The agent pages' URLs. They are main-column pages beside the sidebar, with
 // paths of their own so a reload, a shared link and Back all land on them:
 //
-//   /agents/<id>/<tab>[?epoch=3|?rev=4]   an agent's page, on one tab
+//   /agents/<id>/<tab>[?thread=<id>&epoch=3|?rev=4]   an agent's page, on one tab
 //   /agents/new[?project=<id>]            the New agent form
 
 export type AgentPage =
@@ -25,6 +25,8 @@ export function parseAgentPage(pathname: string, search = ""): AgentPage | null 
   // A tab this build does not know (an old link) still opens the agent.
   const tab = (AGENT_TABS as readonly string[]).includes(parts[1]) ? (parts[1] as AgentTab) : "prompt";
   const focus: AgentFocus = {};
+  const thread = q.get("thread");
+  if (thread) focus.thread = thread;
   const epoch = whole(q.get("epoch"));
   const rev = whole(q.get("rev"));
   if (epoch !== undefined) focus.epoch = epoch;
@@ -38,6 +40,7 @@ export function agentPagePath(page: AgentPage): string {
     return `${PREFIX}new${page.projectId ? `?project=${encodeURIComponent(page.projectId)}` : ""}`;
   }
   const q = new URLSearchParams();
+  if (page.focus?.thread) q.set("thread", page.focus.thread);
   if (page.focus?.epoch !== undefined) q.set("epoch", String(page.focus.epoch));
   if (page.focus?.rev !== undefined) q.set("rev", String(page.focus.rev));
   const query = q.toString();

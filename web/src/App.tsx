@@ -256,8 +256,8 @@ export function App() {
     [showThread, openAgent],
   );
   const agentNav = useMemo<AgentNav>(
-    () => ({ current, openAgent, openThread: (id) => showThread(id) }),
-    [current, openAgent, showThread],
+    () => ({ current, threadId: activeId ?? undefined, openAgent, openThread: (id) => showThread(id) }),
+    [current, activeId, openAgent, showThread],
   );
   // New thread and a server-side swap both give an agent a new live thread;
   // the user watching the old one goes with it. On an agent page the URL is

@@ -2,7 +2,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { render, viewport } from "~/test/harness";
+import { render, viewport, wrap } from "~/test/harness";
 import type { AgentApi } from "~/lib/agentApi";
 import type { Agent, AgentRevision, CompactionDetail, CompactionRow } from "~/protocol";
 
@@ -128,6 +128,64 @@ describe("LogTab", () => {
     await screen.findByText("summary 102");
     expect(epochs(container)).toContain(1);
     expect(rowButton(container, 2).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("refetches the list when the log moves and reloads an open row that changed", async () => {
+    let summaryChars = 0;
+    const log = vi.fn(async () => ({ compactions: [row(0), row(2, { summaryChars })], archived: [] }));
+    const compaction = vi.fn(async () => ({ ...row(2), summary: summaryChars ? "late summary" : undefined }));
+    const api = mockApi({ log, compaction });
+    const { container, rerender } = render(<LogTab agent={agent({ logVersion: 1 })} api={api} />);
+
+    await waitFor(() => expect(rowButton(container, 2)).toBeTruthy());
+    fireEvent.click(rowButton(container, 2));
+    await waitFor(() => expect(compaction).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("late summary")).toBeNull();
+
+    // Claude's summary lands at the turn's end, after the row was logged.
+    summaryChars = 12;
+    rerender(wrap(<LogTab agent={agent({ logVersion: 2 })} api={api} />));
+    await screen.findByText("late summary");
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(compaction).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps an open row's body when the log moves but the row did not", async () => {
+    const log = vi.fn(async () => ({ compactions: [row(0), row(2)], archived: [] }));
+    const compaction = vi.fn(async () => ({ ...row(2), summary: "the summary body" }));
+    const api = mockApi({ log, compaction });
+    const { container, rerender } = render(<LogTab agent={agent({ logVersion: 1 })} api={api} />);
+
+    await waitFor(() => expect(rowButton(container, 2)).toBeTruthy());
+    fireEvent.click(rowButton(container, 2));
+    await screen.findByText("the summary body");
+    rerender(wrap(<LogTab agent={agent({ logVersion: 2 })} api={api} />));
+    await waitFor(() => expect(log).toHaveBeenCalledTimes(2));
+    expect(compaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens an archived thread's row when the focus names that thread", async () => {
+    const log = vi.fn(async (_: string, threadId?: string) => ({
+      compactions: threadId === "old" ? [row(0, { threadId: "old" }), row(1, { id: 900, threadId: "old" })] : [row(0), row(1)],
+      archived: [{ threadId: "old", title: "Before", createdAt: 0, closedAt: 1, compactions: 1 }],
+    }));
+    const compaction = vi.fn(async (_: string, id: number) => ({ ...row(1, { id }), summary: `summary ${id}` }));
+    const api = mockApi({ log, compaction });
+    render(<LogTab agent={agent()} api={api} focus={{ thread: "old", epoch: 1 }} />);
+
+    await screen.findByText("summary 900");
+    expect(log).toHaveBeenLastCalledWith("a1", "old");
+    expect(compaction).toHaveBeenCalledWith("a1", 900);
+    expect(compaction).not.toHaveBeenCalledWith("a1", 101);
+  });
+
+  it("reads a focus on the live thread as the live log", async () => {
+    const log = vi.fn(async () => ({ compactions: [row(0), row(1)], archived: [] }));
+    const compaction = vi.fn(async (_: string, id: number) => ({ ...row(1), summary: `summary ${id}` }));
+    render(<LogTab agent={agent()} api={mockApi({ log, compaction })} focus={{ thread: "t1", epoch: 1 }} />);
+
+    await screen.findByText("summary 101");
+    expect(log).toHaveBeenCalledWith("a1", undefined);
   });
 
   it("reloads the log for an archived thread when one is picked", async () => {
