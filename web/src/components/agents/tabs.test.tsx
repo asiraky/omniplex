@@ -6,6 +6,7 @@ import { render, viewport, wrap } from "~/test/harness";
 import type { AgentApi } from "~/lib/agentApi";
 import type { Agent, AgentRevision, CompactionDetail, CompactionRow } from "~/protocol";
 
+import { AgentPage } from "./AgentPage";
 import { CompactionTab } from "./CompactionTab";
 import { LogTab } from "./LogTab";
 import { PromptTab } from "./PromptTab";
@@ -64,6 +65,13 @@ function mockApi(over: Partial<AgentApi> = {}): AgentApi {
     compaction: vi.fn(),
     ...over,
   } as unknown as AgentApi;
+}
+
+/** A promise the test settles, for a save still out on a slow link. */
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
 }
 
 const epochs = (container: HTMLElement) =>
@@ -338,6 +346,127 @@ describe("PromptTab", () => {
     render(<PromptTab agent={agent({ livePromptRev: 1 })} api={mockApi()} />);
     await screen.findByRole("region", { name: "History" });
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("sends one save for a second Enter while the first is still out", async () => {
+    const out = deferred<{ revision: AgentRevision; restart: "now" }>();
+    const saveRevision = vi.fn(() => out.promise);
+    render(<PromptTab agent={agent()} api={mockApi({ saveRevision })} />);
+    await typeInto("edited\n");
+    const reason = screen.getByRole("textbox", { name: "Reason" });
+    fireEvent.keyDown(reason, { key: "Enter" });
+    fireEvent.keyDown(reason, { key: "Enter" });
+    expect(saveRevision).toHaveBeenCalledOnce();
+
+    out.resolve({ revision: rev(3, "edited\n"), restart: "now" });
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Reason" })).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps text typed while a save was out, as an edit over the revision it wrote", async () => {
+    const out = deferred<{ revision: AgentRevision; restart: "now" }>();
+    const saveRevision = vi.fn((): Promise<{ revision: AgentRevision; restart: "now" }> => out.promise);
+    render(<PromptTab agent={agent()} api={mockApi({ saveRevision })} />);
+    const box = await typeInto("mine\n");
+    fireEvent.click(screen.getByRole("button", { name: /save as r3/i }));
+    fireEvent.change(box, { target: { value: "mine, more\n" } });
+
+    out.resolve({ revision: rev(3, "mine\n"), restart: "now" });
+    const again = await screen.findByRole("button", { name: /save as r4/i });
+    expect(box.value).toBe("mine, more\n");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    saveRevision.mockImplementation(async () => ({ revision: rev(4, "mine, more\n"), restart: "now" as const }));
+    fireEvent.click(again);
+    await waitFor(() => expect(saveRevision).toHaveBeenLastCalledWith("a1", "prompt", "mine, more\n", "", 3));
+  });
+
+  it("keeps an unsaved edit and its reason across a trip to another tab", async () => {
+    const api = mockApi();
+    const page = (tab: "prompt" | "log" | "compact") => (
+      <AgentPage
+        agent={agent()}
+        loaded
+        tab={tab}
+        api={api}
+        projects={[]}
+        harnesses={[]}
+        sidebarOpen
+        onShowSidebar={vi.fn()}
+        onBack={vi.fn()}
+        onOpenThread={vi.fn()}
+        onTab={vi.fn()}
+        onAction={vi.fn()}
+      />
+    );
+    const { rerender } = render(page("prompt"));
+    await typeInto("mine\n");
+    fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: "tighter" } });
+
+    rerender(wrap(page("log")));
+    expect(screen.queryByRole("textbox", { name: "System prompt" })).toBeNull();
+    rerender(wrap(page("prompt")));
+    const box = (await screen.findByRole("textbox", { name: "System prompt" })) as HTMLTextAreaElement;
+    expect(box.value).toBe("mine\n");
+    expect((screen.getByRole("textbox", { name: "Reason" }) as HTMLInputElement).value).toBe("tighter");
+
+    // The Compaction tab has its own text, not the prompt's edit.
+    rerender(wrap(page("compact")));
+    const compact = (await screen.findByRole("textbox", { name: "Compaction instructions" })) as HTMLTextAreaElement;
+    await waitFor(() => expect(compact.value).toBe("new line\n"));
+  });
+
+  it("says when the history failed to refresh, and retries it", async () => {
+    let list = [rev(1, "old line\n"), rev(2, "new line\n")];
+    let fail = false;
+    const revisions = vi.fn(async () => {
+      if (fail) throw new Error("connection lost");
+      return list;
+    });
+    const api = mockApi({ revisions });
+    const { rerender } = render(<PromptTab agent={agent()} api={api} />);
+    await screen.findByRole("region", { name: "History" });
+
+    fail = true;
+    list = [...list, rev(3, "theirs\n")];
+    rerender(wrap(<PromptTab agent={agent({ promptRev: 3 })} api={api} />));
+    expect(await screen.findByText(/did not refresh.*connection lost/)).toBeTruthy();
+
+    fail = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.queryByText(/did not refresh/)).toBeNull());
+    expect(within(screen.getByRole("region", { name: "History" })).getByText("r3")).toBeTruthy();
+  });
+
+  it("fetches the new head when a save is refused as stale, and offers to keep the edit over it", async () => {
+    let list = [rev(1, "old line\n"), rev(2, "new line\n")];
+    let fail = false;
+    const revisions = vi.fn(async () => {
+      if (fail) throw new Error("connection lost");
+      return list;
+    });
+    const saveRevision = vi.fn(async (_a: string, _k: string, _b: string, _r: string, base: number) => {
+      if (base < 3) throw new Error("The prompt changed while you were editing: r3 is the latest. Review it, then save again.");
+      return { revision: rev(4, "mine\n"), restart: "now" as const };
+    });
+    const api = mockApi({ revisions, saveRevision });
+    const { rerender } = render(<PromptTab agent={agent()} api={api} />);
+    await screen.findByRole("region", { name: "History" });
+
+    // r3 lands, but the refetch it causes fails on a dropped link.
+    fail = true;
+    list = [...list, rev(3, "theirs\n")];
+    rerender(wrap(<PromptTab agent={agent({ promptRev: 3 })} api={api} />));
+    await screen.findByText(/did not refresh/);
+    fail = false;
+
+    await typeInto("mine\n");
+    fireEvent.click(screen.getByRole("button", { name: /save as r3/i }));
+    expect(await screen.findByText(/r3 landed while you were editing/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Keep my edit" }));
+    fireEvent.click(screen.getByRole("button", { name: /save as r4/i }));
+    await waitFor(() => expect(saveRevision).toHaveBeenLastCalledWith("a1", "prompt", "mine\n", "", 3));
   });
 
   it.each([

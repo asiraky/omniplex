@@ -1,5 +1,5 @@
 import { ArrowLeftIcon, Maximize2Icon, Undo2Icon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { ErrorLine, LoadError, Loading, Segmented } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
@@ -25,6 +25,15 @@ import { useLatest } from "~/useLatest";
 import { compactApplies, compactUse, diffStat, fmtDay, revLabel } from "./agentText";
 import { BodyText, DiffBox, WhoChip } from "./parts";
 import { PreambleDialog } from "./shared";
+
+type Draft = { text: string; base: number };
+type Kept = { draft: Draft | null; reason: string };
+
+/**
+ * Unsaved edits by agent and kind, held by the agent page so a trip to another
+ * tab and back finds them. Without one an edit lives as long as the editor.
+ */
+export const RevisionDrafts = createContext<Map<string, Kept> | null>(null);
 
 /**
  * The Prompt and Compaction tabs: an editor on the latest revision, the
@@ -77,14 +86,21 @@ export function RevisionsEditor({
   // under it (an agent's approved edit, a save on another device) leaves the
   // text alone but says so, and the save names that base so the server can
   // refuse rather than drop the newer revision.
-  const [draft, setDraft] = useState<{ text: string; base: number } | null>(null);
+  const drafts = useContext(RevisionDrafts);
+  const draftKey = `${agent.id}:${kind}`;
+  const [draft, setDraft] = useState<Draft | null>(() => drafts?.get(draftKey)?.draft ?? null);
   // A draft typed back to the text it started from is no edit, whatever has landed since.
   const editing = draft && draft.text !== revs?.find((r) => r.n === draft.base)?.body ? draft : null;
   const edit = (text: string) => setDraft({ text, base: editing?.base ?? current?.n ?? headRev });
   const body = editing?.text ?? current?.body ?? "";
   const dirty = editing !== null && editing.text !== (current?.body ?? "");
   const stale = editing !== null && dirty && !!current && editing.base !== current.n;
-  const [reason, setReason] = useState("");
+  const [reason, setReason] = useState(() => drafts?.get(draftKey)?.reason ?? "");
+  useEffect(() => {
+    if (!drafts) return;
+    if (draft || reason) drafts.set(draftKey, { draft, reason });
+    else drafts.delete(draftKey);
+  }, [drafts, draftKey, draft, reason]);
   const nextN = (current?.n ?? 0) + 1;
 
   const [selected, setSelected] = useState<number | null>(focus?.rev ?? null);
@@ -115,7 +131,13 @@ export function RevisionsEditor({
     if (!restartPending) setPendingRev(null);
   }
 
-  async function write(text: string, why: string, baseRev: number): Promise<boolean> {
+  // A second Enter in the Reason field lands before the first save answers on
+  // a slow link; it would send the same base and be refused as stale.
+  const inFlight = useRef(false);
+  /** The revision the save wrote, or null if it failed. */
+  async function write(text: string, why: string, baseRev: number): Promise<number | null> {
+    if (inFlight.current) return null;
+    inFlight.current = true;
     setSaving(true);
     setSaveError(null);
     try {
@@ -128,26 +150,42 @@ export function RevisionsEditor({
       else if (res.restart === "pending") toast.success(`Saved ${saved}. The thread restarts on it when the current turn ends.`);
       else if (!isPrompt) toast.success(`Saved ${saved}. ${compactApplies(agent.harness, false)}`);
       else toast.success(agent.threadId ? `Saved ${saved}.` : `Saved ${saved}. It applies when a thread starts.`);
-      return true;
+      return res.revision.n;
     } catch (e) {
       setSaveError(errorText(e));
-      return false;
+      // A refusal as stale means a newer head this tab has not seen; fetch it
+      // so the editor says so and offers to keep the edit over it.
+      setAttempt((n) => n + 1);
+      return null;
     } finally {
+      inFlight.current = false;
       setSaving(false);
     }
   }
 
   async function save() {
-    if (await write(body, reason.trim(), editing?.base ?? current?.n ?? headRev)) {
-      setDraft(null);
-      setReason("");
+    const sent = body;
+    const why = reason;
+    const n = await write(sent, why.trim(), editing?.base ?? current?.n ?? headRev);
+    if (n === null) return;
+    // Text typed while the save was out is kept, as an edit over what it wrote.
+    const settle = (d: Draft | null) => (!d || d.text === sent ? null : { ...d, base: n });
+    const settleReason = (r: string) => (r === why ? "" : r);
+    setDraft(settle);
+    setReason(settleReason);
+    // The tab may have been left while the save was out; its kept edit settles too.
+    const kept = drafts?.get(draftKey);
+    if (kept) {
+      const next = { draft: settle(kept.draft), reason: settleReason(kept.reason) };
+      if (next.draft || next.reason) drafts!.set(draftKey, next);
+      else drafts!.delete(draftKey);
     }
   }
 
   const [revertTarget, setRevertTarget] = useState<AgentRevision | null>(null);
   async function revert() {
     if (!revertTarget) return;
-    if (await write(revertTarget.body, `Revert to ${label(revertTarget.n)}`, current?.n ?? headRev)) {
+    if ((await write(revertTarget.body, `Revert to ${label(revertTarget.n)}`, current?.n ?? headRev)) !== null) {
       setRevertTarget(null);
       setSelected(null);
     }
@@ -292,6 +330,12 @@ export function RevisionsEditor({
     <div className="mx-auto w-full max-w-6xl px-4 py-5 md:px-8 md:py-6">
       <div className="grid gap-8 md:grid-cols-[minmax(0,1fr)_17rem] lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div ref={paneRef} className="min-w-0 scroll-mt-4">
+          {loadError && revs && (
+            <LoadError
+              message={`The history did not refresh, so it may be behind. ${loadError}`}
+              onRetry={() => setAttempt((n) => n + 1)}
+            />
+          )}
           {pane}
         </div>
         {revs && (

@@ -19,9 +19,14 @@ vi.mock("./LogTab", () => ({ LogTab: () => <p>log tab</p> }));
 // The picker has its own tests; here it only has to switch harness.
 vi.mock("~/components/ModelPicker", () => ({
   ModelPicker: ({ onChange }: { onChange: (next: { harness: string; instance: string; model: string }) => void }) => (
-    <button type="button" onClick={() => onChange({ harness: "codex", instance: "codex", model: "gpt" })}>
-      Pick Codex
-    </button>
+    <>
+      <button type="button" onClick={() => onChange({ harness: "codex", instance: "codex", model: "gpt" })}>
+        Pick Codex
+      </button>
+      <button type="button" onClick={() => onChange({ harness: "pi", instance: "pi", model: "pi-model" })}>
+        Pick Pi
+      </button>
+    </>
   ),
 }));
 
@@ -237,6 +242,28 @@ describe("NewAgent", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
     await waitFor(() => expect(props.api.create).toHaveBeenCalled());
     expect(props.api.create).toHaveBeenCalledWith(expect.objectContaining({ harness: "codex", mode: "full-access" }));
+  });
+
+  it("offers no compact-at for Pi, and drops one picked under another harness", async () => {
+    const pi = {
+      id: "pi",
+      name: "Pi",
+      models: [{ id: "pi-model", label: "Pi", default: true }],
+      permissionModes: [],
+      availability: { state: "ready" },
+      instances: [{ id: "pi", driver: "pi", displayName: "Pi", enabled: true, availability: { state: "ready" } }],
+    } as unknown as HarnessMeta;
+    const { props } = open({ harnesses: [...harnesses, pi] });
+    type("Name", "triage");
+    type("System prompt", "# Triage");
+    fireEvent.click(screen.getByRole("radio", { name: "120k" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pick Pi" }));
+    expect(screen.queryByRole("radiogroup", { name: "Compact at" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    await waitFor(() => expect(props.api.create).toHaveBeenCalled());
+    const args = vi.mocked(props.api.create).mock.calls[0][0];
+    expect(args.harness).toBe("pi");
+    expect(args.compactAt).toBeUndefined();
   });
 
   it("is done with the form once the agent is saved, even when its thread failed to start", async () => {

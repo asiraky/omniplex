@@ -7,6 +7,7 @@ import {
   RotateCwIcon,
   SquarePenIcon,
 } from "lucide-react";
+import { useState } from "react";
 
 import { IconButton } from "~/components/IconButton";
 import { Loading, Segmented } from "~/components/tools/parts";
@@ -26,6 +27,7 @@ import { AgentSettingsTab } from "./AgentSettingsTab";
 import { CompactionTab } from "./CompactionTab";
 import { LogTab } from "./LogTab";
 import { PromptTab } from "./PromptTab";
+import { RevisionDrafts } from "./RevisionsEditor";
 
 /** What the page asks App to do with the agent; App holds the dialogs, which the sidebar opens too. */
 export type AgentPageAction = "restart" | "newThread" | "archive";
@@ -77,6 +79,8 @@ export function AgentPage({
   const isDesktop = useIsDesktop();
   const project = projects.find((p) => p.id === agent?.projectId);
   const live = !!agent?.threadId;
+  // Unsaved Prompt and Compaction edits, kept while the page is up so another tab and back finds them.
+  const [drafts] = useState(() => new Map());
 
   return (
     <section aria-label={agent ? `Agent ${agent.name}` : "Agent"} className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -155,26 +159,33 @@ export function AgentPage({
             </div>
           </div>
           {/* Keyed by tab so each one opens at its top, not at the last one's scroll. */}
-          <div key={tab} role="tabpanel" aria-label={TABS.find((t) => t.id === tab)?.label} className="scroll-thin min-h-0 flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]">
-            {tab === "prompt" ? (
-              <PromptTab agent={agent} api={api} focus={focus} />
-            ) : tab === "compact" ? (
-              <CompactionTab agent={agent} api={api} focus={focus} />
-            ) : tab === "log" ? (
-              // Keyed by agent: a thread picked on one agent's log is not the next one's.
-              <LogTab key={agent.id} agent={agent} api={api} focus={focus} />
-            ) : (
-              <AgentSettingsTab
-                agent={agent}
-                api={api}
-                projects={projects}
-                harnesses={harnesses}
-                onOpenTab={onTab}
-                onNewThread={() => onAction(agent, "newThread")}
-                onArchive={() => onAction(agent, "archive")}
-              />
-            )}
-          </div>
+          <RevisionDrafts value={drafts}>
+            <div
+              key={tab}
+              role="tabpanel"
+              aria-label={TABS.find((t) => t.id === tab)?.label}
+              className="scroll-thin min-h-0 flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]"
+            >
+              {tab === "prompt" ? (
+                <PromptTab agent={agent} api={api} focus={focus} />
+              ) : tab === "compact" ? (
+                <CompactionTab agent={agent} api={api} focus={focus} />
+              ) : tab === "log" ? (
+                // Keyed by agent: a thread picked on one agent's log is not the next one's.
+                <LogTab key={agent.id} agent={agent} api={api} focus={focus} />
+              ) : (
+                <AgentSettingsTab
+                  agent={agent}
+                  api={api}
+                  projects={projects}
+                  harnesses={harnesses}
+                  onOpenTab={onTab}
+                  onNewThread={() => onAction(agent, "newThread")}
+                  onArchive={() => onAction(agent, "archive")}
+                />
+              )}
+            </div>
+          </RevisionDrafts>
         </>
       )}
     </section>
