@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/asiraky/omniplex/internal/project"
@@ -54,12 +55,12 @@ func TestRevisionsNumberPerKindAndListNewestFirst(t *testing.T) {
 	ctx := context.Background()
 	a := newTestAgent(t, s)
 
-	r2, err := s.AddAgentRevision(ctx, a.ID, RevisionPrompt, "be terser", AuthorAgent, "you said so")
+	r2, err := s.AddAgentRevision(ctx, a.ID, RevisionPrompt, "be terser", AuthorAgent, "you said so", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r3, _ := s.AddAgentRevision(ctx, a.ID, RevisionPrompt, "be terse", AuthorUser, "revert")
-	c2, _ := s.AddAgentRevision(ctx, a.ID, RevisionCompact, "less", AuthorUser, "")
+	r3, _ := s.AddAgentRevision(ctx, a.ID, RevisionPrompt, "be terse", AuthorUser, "revert", 0)
+	c2, _ := s.AddAgentRevision(ctx, a.ID, RevisionCompact, "less", AuthorUser, "", 0)
 	if r2.N != 2 || r3.N != 3 || c2.N != 2 {
 		t.Fatalf("numbers = r%d r%d c%d, want r2 r3 c2", r2.N, r3.N, c2.N)
 	}
@@ -76,10 +77,10 @@ func TestRevisionsNumberPerKindAndListNewestFirst(t *testing.T) {
 		t.Fatalf("agent revs = r%d c%d, want r3 c2", got.PromptRev, got.CompactRev)
 	}
 
-	if _, err := s.AddAgentRevision(ctx, a.ID, "notes", "x", AuthorUser, ""); err == nil {
+	if _, err := s.AddAgentRevision(ctx, a.ID, "notes", "x", AuthorUser, "", 0); err == nil {
 		t.Fatal("an unknown kind was saved")
 	}
-	if _, err := s.AddAgentRevision(ctx, "nobody", RevisionPrompt, "x", AuthorUser, ""); !errors.Is(err, ErrNotFound) {
+	if _, err := s.AddAgentRevision(ctx, "nobody", RevisionPrompt, "x", AuthorUser, "", 0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("revision of a missing agent: err = %v, want not found", err)
 	}
 }
@@ -88,14 +89,14 @@ func TestArchivedAgentsLeaveTheListButStayReadable(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	a := newTestAgent(t, s)
-	a.Name, a.Model, a.CompactAt, a.RawLog = "Renamed", "opus", 120000, true
-	if err := s.UpdateAgent(ctx, a); err != nil {
+	name, model, at, raw := "Renamed", "opus", int64(120000), true
+	if err := s.PatchAgent(ctx, a.ID, AgentPatch{Name: &name, Model: &model, CompactAt: &at, RawLog: &raw}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetAgentThread(ctx, a.ID, "t1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetAgentLivePromptRev(ctx, a.ID, 1); err != nil {
+	if err := s.SetAgentLiveRevs(ctx, a.ID, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	list, _ := s.ListAgents(ctx)
@@ -228,5 +229,177 @@ func TestArchivedAgentThreadsAreTheAgentsOtherThreads(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ThreadID != "old" || got[0].Compactions != 2 || got[0].ClosedAt == 0 {
 		t.Fatalf("archived = %+v, want old with two compactions", got)
+	}
+}
+
+func TestARevisionOnAStaleBaseIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind string
+		base int
+		want string
+	}{
+		{"no base", RevisionPrompt, 0, ""},
+		{"the head", RevisionPrompt, 2, ""},
+		{"a prompt behind the head", RevisionPrompt, 1, "The prompt changed while you were editing: r2 is the latest. Review it, then save again."},
+		{"instructions behind the head", RevisionCompact, 1, "The compaction instructions changed while you were editing: c2 is the latest. Review it, then save again."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTestStore(t)
+			ctx := context.Background()
+			a := newTestAgent(t, s)
+			if _, err := s.AddAgentRevision(ctx, a.ID, tc.kind, "second", AuthorUser, "", 0); err != nil {
+				t.Fatal(err)
+			}
+			_, err := s.AddAgentRevision(ctx, a.ID, tc.kind, "third", AuthorUser, "", tc.base)
+			var moved *RevisionMovedError
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("err = %v, want saved", err)
+			case tc.want != "" && (!errors.As(err, &moved) || err.Error() != tc.want):
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			if got, _ := s.LatestAgentRevision(ctx, a.ID, tc.kind); (got.N == 3) != (tc.want == "") {
+				t.Fatalf("head = %d after the save", got.N)
+			}
+		})
+	}
+}
+
+func TestTheLogVersionMovesWithTheLog(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	a := newTestAgent(t, s)
+	mustCreateThread(t, s, "t1")
+	_ = s.SetAgentThread(ctx, a.ID, "t1")
+	version := func() int64 { got, _ := s.Agent(ctx, a.ID); return got.LogVersion }
+
+	var row Compaction
+	for _, step := range []struct {
+		name  string
+		moves bool
+		do    func() error
+	}{
+		{"epoch 0", true, func() (err error) {
+			row, err = s.AddCompaction(ctx, Compaction{AgentID: a.ID, ThreadID: "t1", Trigger: "start"})
+			return err
+		}},
+		{"the first message", true, func() error { _, err := s.FillStartMessage(ctx, "t1", "hello"); return err }},
+		{"a second first message", false, func() error {
+			if ok, err := s.FillStartMessage(ctx, "t1", "again"); ok || err != nil {
+				return fmt.Errorf("filled again: %v, %v", ok, err)
+			}
+			return nil
+		}},
+		{"a boundary", true, func() error { return s.SetCompactionBoundary(ctx, row.ID, 7) }},
+		{"detail", true, func() error { return s.FileCompactionDetail(ctx, "t1", true, "carry on", nil) }},
+		{"a compaction", true, func() error {
+			_, err := s.AddCompaction(ctx, Compaction{AgentID: a.ID, ThreadID: "t1", Trigger: "auto"})
+			return err
+		}},
+	} {
+		before := version()
+		if err := step.do(); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		if moved := version() != before; moved != step.moves {
+			t.Fatalf("%s: version moved %v, want %v", step.name, moved, step.moves)
+		}
+	}
+	if ok, err := s.FillStartMessage(ctx, "no-such-thread", "x"); ok || err != nil {
+		t.Fatalf("filling a thread with no log = %v, %v; want nothing", ok, err)
+	}
+}
+
+func TestLiveSettingsWriteOnlyTheirColumns(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	a := newTestAgent(t, s)
+	_ = s.SetAgentThread(ctx, a.ID, "t1")
+	name := "Renamed"
+	if err := s.PatchAgent(ctx, a.ID, AgentPatch{Name: &name}); err != nil {
+		t.Fatal(err)
+	}
+	model, effort := "opus", ""
+	if ok, err := s.SetAgentLiveSettings(ctx, "t1", &model, nil, &effort); !ok || err != nil {
+		t.Fatalf("live settings = %v, %v", ok, err)
+	}
+	got, _ := s.Agent(ctx, a.ID)
+	if got.Name != "Renamed" || got.Model != "opus" || got.Workspace != "local" {
+		t.Fatalf("agent = %+v, want the name kept and the model taken", got)
+	}
+	if ok, err := s.SetAgentLiveSettings(ctx, "someone-elses", &model, nil, nil); ok || err != nil {
+		t.Fatalf("another thread's settings = %v, %v; want nothing written", ok, err)
+	}
+}
+
+func TestRestartPendingReportsWhenItChanges(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	a := newTestAgent(t, s)
+	_ = s.SetAgentThread(ctx, a.ID, "t1")
+	for _, step := range []struct {
+		pending, changed bool
+	}{{true, true}, {true, false}, {false, true}, {false, false}} {
+		changed, err := s.SetThreadRestartPending(ctx, "t1", step.pending)
+		if err != nil || changed != step.changed {
+			t.Fatalf("set %v = %v, %v; want changed %v", step.pending, changed, err, step.changed)
+		}
+		if got, _ := s.Agent(ctx, a.ID); got.RestartPending != step.pending {
+			t.Fatalf("pending = %v, want %v", got.RestartPending, step.pending)
+		}
+	}
+	_, _ = s.SetThreadRestartPending(ctx, "t1", true)
+	_ = s.SetAgentThread(ctx, a.ID, "t2")
+	if got, _ := s.Agent(ctx, a.ID); got.RestartPending {
+		t.Fatal("a new live thread kept the old one's pending restart")
+	}
+}
+
+func TestDeletingAProjectTakesItsArchivedAgentsOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		archive bool
+		plain   bool
+		want    error
+	}{
+		{"a live agent", false, false, ErrProjectHasAgents},
+		{"an archived agent", true, false, nil},
+		{"a thread of its own", true, true, ErrProjectInUse},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTestStore(t)
+			ctx := context.Background()
+			a := newTestAgent(t, s)
+			if err := s.CreateThread(ctx, ThreadMeta{ID: "t1", ProjectID: "p1", AgentID: a.ID, Cwd: "/tmp", Harness: "h", Phase: "closed"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.AddCompaction(ctx, Compaction{AgentID: a.ID, ThreadID: "t1", Trigger: "start"}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.plain {
+				if err := s.CreateThread(ctx, ThreadMeta{ID: "mine", ProjectID: "p1", Cwd: "/tmp", Harness: "h", Phase: "idle"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.archive {
+				if err := s.ArchiveAgent(ctx, a.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.DeleteProject(ctx, "p1"); !errors.Is(err, tc.want) {
+				t.Fatalf("delete = %v, want %v", err, tc.want)
+			}
+			_, projectErr := s.Project(ctx, "p1")
+			_, agentErr := s.Agent(ctx, a.ID)
+			_, threadErr := s.Thread(ctx, "t1")
+			revs, _ := s.AgentRevisions(ctx, a.ID, RevisionPrompt)
+			rows, _ := s.ThreadCompactions(ctx, "t1")
+			gone := errors.Is(projectErr, ErrNotFound) && errors.Is(agentErr, ErrNotFound) && errors.Is(threadErr, ErrNotFound) && len(revs) == 0 && len(rows) == 0
+			kept := projectErr == nil && agentErr == nil && threadErr == nil && len(revs) == 1 && len(rows) == 1
+			if tc.want == nil && !gone || tc.want != nil && !kept {
+				t.Fatalf("project %v agent %v thread %v, %d revisions %d rows after delete %v", projectErr, agentErr, threadErr, len(revs), len(rows), tc.want)
+			}
+		})
 	}
 }

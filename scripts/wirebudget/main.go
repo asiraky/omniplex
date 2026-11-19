@@ -62,7 +62,7 @@ type sizes struct{ decoded, wire int }
 // set, noted beside each. Raising one is a decision: say in the PR why the
 // payload has to be bigger.
 var (
-	welcomeBudget  = sizes{decoded: 78_000, wire: 11_000}  // 67.9 KB, 9.6 KB
+	welcomeBudget  = sizes{decoded: 78_000, wire: 11_000}  // 73.5 KB, 10.6 KB
 	snapshotBudget = sizes{decoded: 211_000, wire: 52_000} // 183.6 KB, 45.2 KB
 	pageBudget     = sizes{decoded: 189_000, wire: 49_000} // 164.0 KB, 42.6 KB
 )
@@ -278,7 +278,7 @@ func seed(ctx context.Context, st *store.Store) error {
 		if err != nil {
 			return err
 		}
-		if _, err := st.AddAgentRevision(ctx, ag.ID, store.RevisionPrompt, sentence(r, 220), store.AuthorAgent, sentence(r, 8)); err != nil {
+		if _, err := st.AddAgentRevision(ctx, ag.ID, store.RevisionPrompt, sentence(r, 220), store.AuthorAgent, sentence(r, 8), 0); err != nil {
 			return err
 		}
 		threadID := fmt.Sprintf("agent-thread-%d", i)
@@ -301,8 +301,15 @@ func seed(ctx context.Context, st *store.Store) error {
 		if err := st.SetAgentThread(ctx, ag.ID, threadID); err != nil {
 			return err
 		}
-		if err := st.SetAgentLivePromptRev(ctx, ag.ID, 2); err != nil {
+		if err := st.SetAgentLiveRevs(ctx, ag.ID, 2, 1); err != nil {
 			return err
+		}
+		// Half wait on a restart onto a newer revision, which the frame
+		// carries; the rest leave it out.
+		if i%2 == 0 {
+			if _, err := st.SetThreadRestartPending(ctx, threadID, true); err != nil {
+				return err
+			}
 		}
 	}
 

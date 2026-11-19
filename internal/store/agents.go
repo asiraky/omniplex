@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -37,6 +38,9 @@ CREATE TABLE IF NOT EXISTS agents (
   kickoff         TEXT NOT NULL DEFAULT '',
   thread_id       TEXT NOT NULL DEFAULT '',
   live_prompt_rev INTEGER NOT NULL DEFAULT 0,
+  live_compact_rev INTEGER NOT NULL DEFAULT 0,
+  restart_pending INTEGER NOT NULL DEFAULT 0,
+  log_version     INTEGER NOT NULL DEFAULT 0,
   raw_log         INTEGER NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL,
   archived_at     INTEGER NOT NULL DEFAULT 0
@@ -105,6 +109,16 @@ type Agent struct {
 	// LivePromptRev is the prompt revision the live thread's process was
 	// started on; below PromptRev while a restart onto the newer one waits.
 	LivePromptRev int `json:"livePromptRev,omitempty"`
+	// LiveCompactRev is the compaction instructions revision the live
+	// thread's process was started on: what a harness that reads them at
+	// start compacts with.
+	LiveCompactRev int `json:"-"`
+	// RestartPending is set while the live thread has a restart waiting for
+	// its turn to end.
+	RestartPending bool `json:"restartPending,omitempty"`
+	// LogVersion changes whenever a row of the agent's log is added or
+	// changed, so a client knows to read the log again.
+	LogVersion int64 `json:"logVersion"`
 	// Epoch is how many times the live thread has compacted.
 	Epoch      int   `json:"epoch"`
 	RawLog     bool  `json:"rawLog,omitempty"`
@@ -164,7 +178,7 @@ func (s *Store) initAgents() error {
 // agentColumns reads an agent with its derived numbers. The epoch counts the
 // live thread's compactions; epoch 0 is not one.
 const agentColumns = `a.id, a.project_id, a.name, a.harness, a.instance, a.model, a.effort, a.mode, a.folder_id, a.workspace,
-	a.compact_at, a.kickoff, a.thread_id, a.live_prompt_rev, a.raw_log, a.created_at, a.archived_at,
+	a.compact_at, a.kickoff, a.thread_id, a.live_prompt_rev, a.live_compact_rev, a.restart_pending, a.log_version, a.raw_log, a.created_at, a.archived_at,
 	COALESCE((SELECT MAX(n) FROM agent_revisions r WHERE r.agent_id = a.id AND r.kind = 'prompt'), 0),
 	COALESCE((SELECT MAX(n) FROM agent_revisions r WHERE r.agent_id = a.id AND r.kind = 'compact'), 0),
 	COALESCE((SELECT MAX(epoch) FROM compactions c WHERE c.thread_id = a.thread_id AND a.thread_id != ''), 0)`
@@ -172,7 +186,7 @@ const agentColumns = `a.id, a.project_id, a.name, a.harness, a.instance, a.model
 func scanAgent(sc interface{ Scan(...any) error }) (Agent, error) {
 	var a Agent
 	err := sc.Scan(&a.ID, &a.ProjectID, &a.Name, &a.Harness, &a.Instance, &a.Model, &a.Effort, &a.Mode, &a.FolderID, &a.Workspace,
-		&a.CompactAt, &a.Kickoff, &a.ThreadID, &a.LivePromptRev, &a.RawLog, &a.CreatedAt, &a.ArchivedAt,
+		&a.CompactAt, &a.Kickoff, &a.ThreadID, &a.LivePromptRev, &a.LiveCompactRev, &a.RestartPending, &a.LogVersion, &a.RawLog, &a.CreatedAt, &a.ArchivedAt,
 		&a.PromptRev, &a.CompactRev, &a.Epoch)
 	return a, err
 }
@@ -252,13 +266,98 @@ func (s *Store) ListAgents(ctx context.Context) ([]Agent, error) {
 	return out, rows.Err()
 }
 
-// UpdateAgent writes an agent's settings: everything the user edits on the
-// agent page. Its project, harness, thread and revisions are not settings and
-// are left alone.
-func (s *Store) UpdateAgent(ctx context.Context, a Agent) error {
-	return s.execOne(ctx,
-		`UPDATE agents SET name=?, instance=?, model=?, effort=?, mode=?, folder_id=?, workspace=?, compact_at=?, kickoff=?, raw_log=? WHERE id=?`,
-		a.Name, a.Instance, a.Model, a.Effort, a.Mode, a.FolderID, a.Workspace, a.CompactAt, a.Kickoff, a.RawLog, a.ID)
+// AgentPatch is a change to an agent's settings, everything the user edits
+// on the agent page; nil fields stay as they are.
+type AgentPatch struct {
+	Name      *string `json:"name,omitempty"`
+	Model     *string `json:"model,omitempty"`
+	Effort    *string `json:"effort,omitempty"`
+	Mode      *string `json:"mode,omitempty"`
+	FolderID  *string `json:"folderId,omitempty"`
+	Workspace *string `json:"workspace,omitempty"`
+	CompactAt *int64  `json:"compactAt,omitempty"`
+	Kickoff   *string `json:"kickoff,omitempty"`
+	RawLog    *bool   `json:"rawLog,omitempty"`
+}
+
+// Apply is a with the patch's fields set.
+func (p AgentPatch) Apply(a Agent) Agent {
+	set := func(dst *string, src *string) {
+		if src != nil {
+			*dst = *src
+		}
+	}
+	set(&a.Name, p.Name)
+	set(&a.Model, p.Model)
+	set(&a.Effort, p.Effort)
+	set(&a.Mode, p.Mode)
+	set(&a.FolderID, p.FolderID)
+	set(&a.Workspace, p.Workspace)
+	set(&a.Kickoff, p.Kickoff)
+	if p.CompactAt != nil {
+		a.CompactAt = *p.CompactAt
+	}
+	if p.RawLog != nil {
+		a.RawLog = *p.RawLog
+	}
+	return a
+}
+
+// PatchAgent writes only the settings the patch has, so a change the live
+// thread writes through at the same time (SetAgentLiveSettings) is not
+// overwritten with what was read before it.
+func (s *Store) PatchAgent(ctx context.Context, id string, p AgentPatch) error {
+	var sets []string
+	var args []any
+	col := func(name string, v any) {
+		sets = append(sets, name+"=?")
+		args = append(args, v)
+	}
+	if p.Name != nil {
+		col("name", *p.Name)
+	}
+	if p.Model != nil {
+		col("model", *p.Model)
+	}
+	if p.Effort != nil {
+		col("effort", *p.Effort)
+	}
+	if p.Mode != nil {
+		col("mode", *p.Mode)
+	}
+	if p.FolderID != nil {
+		col("folder_id", *p.FolderID)
+	}
+	if p.Workspace != nil {
+		col("workspace", *p.Workspace)
+	}
+	if p.CompactAt != nil {
+		col("compact_at", *p.CompactAt)
+	}
+	if p.Kickoff != nil {
+		col("kickoff", *p.Kickoff)
+	}
+	if p.RawLog != nil {
+		col("raw_log", *p.RawLog)
+	}
+	if len(sets) == 0 {
+		_, err := s.Agent(ctx, id)
+		return err
+	}
+	return s.execOne(ctx, `UPDATE agents SET `+strings.Join(sets, ", ")+` WHERE id=?`, append(args, id)...)
+}
+
+// SetAgentLiveSettings saves a setting changed on a thread to its agent,
+// while that thread is still the agent's live one; nil leaves a setting as
+// it is. It reports whether an agent took it.
+func (s *Store) SetAgentLiveSettings(ctx context.Context, threadID string, model, mode, effort *string) (bool, error) {
+	err := s.execOne(ctx,
+		`UPDATE agents SET model = COALESCE(?, model), mode = COALESCE(?, mode), effort = COALESCE(?, effort)
+		 WHERE thread_id = ? AND thread_id != ''`, model, mode, effort, threadID)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // ArchiveAgent takes an agent out of the list. Its rows stay.
@@ -266,15 +365,27 @@ func (s *Store) ArchiveAgent(ctx context.Context, id string) error {
 	return s.execOne(ctx, `UPDATE agents SET archived_at=? WHERE id=? AND archived_at = 0`, proto.NowMillis(), id)
 }
 
-// SetAgentThread records the agent's live thread; "" for none.
+// SetAgentThread records the agent's live thread; "" for none. A restart
+// the old one had waiting is not the new one's.
 func (s *Store) SetAgentThread(ctx context.Context, id, threadID string) error {
-	return s.execOne(ctx, `UPDATE agents SET thread_id=? WHERE id=?`, threadID, id)
+	return s.execOne(ctx, `UPDATE agents SET thread_id=?, restart_pending=0 WHERE id=?`, threadID, id)
 }
 
-// SetAgentLivePromptRev records the prompt revision the live thread's process
-// started on.
-func (s *Store) SetAgentLivePromptRev(ctx context.Context, id string, rev int) error {
-	return s.execOne(ctx, `UPDATE agents SET live_prompt_rev=? WHERE id=?`, rev, id)
+// SetAgentLiveRevs records the prompt and compaction instructions revisions
+// the live thread's process started on.
+func (s *Store) SetAgentLiveRevs(ctx context.Context, id string, promptRev, compactRev int) error {
+	return s.execOne(ctx, `UPDATE agents SET live_prompt_rev=?, live_compact_rev=? WHERE id=?`, promptRev, compactRev, id)
+}
+
+// SetThreadRestartPending mirrors a thread's waiting restart onto the agent
+// whose live thread it is. It reports whether an agent's flag changed; a
+// thread that is no agent's live one changes nothing.
+func (s *Store) SetThreadRestartPending(ctx context.Context, threadID string, pending bool) (bool, error) {
+	err := s.execOne(ctx, `UPDATE agents SET restart_pending=? WHERE thread_id=? AND thread_id != '' AND restart_pending != ?`, pending, threadID, pending)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // execOne runs an update that must hit one row: ErrNotFound when it hit none.
@@ -293,9 +404,26 @@ func (s *Store) execOne(ctx context.Context, q string, args ...any) error {
 	return nil
 }
 
+// RevisionMovedError refuses a revision written against one that is no
+// longer the latest of its kind: someone saved another in between.
+type RevisionMovedError struct {
+	Kind string
+	Head int
+}
+
+func (e *RevisionMovedError) Error() string {
+	noun, letter := "prompt", "r"
+	if e.Kind == RevisionCompact {
+		noun, letter = "compaction instructions", "c"
+	}
+	return fmt.Sprintf("The %s changed while you were editing: %s%d is the latest. Review it, then save again.", noun, letter, e.Head)
+}
+
 // AddAgentRevision saves a new revision of one of an agent's texts, numbered
-// one past the highest of its kind.
-func (s *Store) AddAgentRevision(ctx context.Context, agentID, kind, body, author, reason string) (AgentRevision, error) {
+// one past the highest of its kind. A base above 0 is the revision the edit
+// started from: when another has been saved since, the save is refused with
+// a *RevisionMovedError, checked in the same transaction as the write.
+func (s *Store) AddAgentRevision(ctx context.Context, agentID, kind, body, author, reason string, base int) (AgentRevision, error) {
 	if kind != RevisionPrompt && kind != RevisionCompact {
 		return AgentRevision{}, fmt.Errorf("unknown revision kind %q", kind)
 	}
@@ -316,6 +444,15 @@ func (s *Store) AddAgentRevision(ctx context.Context, agentID, kind, body, autho
 	}
 	if exists == 0 {
 		return r, fmt.Errorf("%w: agent %s", ErrNotFound, agentID)
+	}
+	if base > 0 {
+		var head int
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(n), 0) FROM agent_revisions WHERE agent_id = ? AND kind = ?`, agentID, kind).Scan(&head); err != nil {
+			return r, err
+		}
+		if head != base {
+			return r, &RevisionMovedError{Kind: kind, Head: head}
+		}
 	}
 	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO agent_revisions (agent_id, kind, n, body, author, reason, created_at)
@@ -345,6 +482,19 @@ func (s *Store) AgentRevisions(ctx context.Context, agentID, kind string) ([]Age
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// AgentRevision is revision n of one kind. ErrNotFound when there is none.
+func (s *Store) AgentRevision(ctx context.Context, agentID, kind string, n int) (AgentRevision, error) {
+	var r AgentRevision
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, kind, n, body, author, reason, created_at FROM agent_revisions
+		 WHERE agent_id = ? AND kind = ? AND n = ?`, agentID, kind, n).
+		Scan(&r.ID, &r.Kind, &r.N, &r.Body, &r.Author, &r.Reason, &r.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return r, fmt.Errorf("%w: %s revision %d of agent %s", ErrNotFound, kind, n, agentID)
+	}
+	return r, err
 }
 
 // LatestAgentRevision is the current text of one kind. ErrNotFound when the
@@ -378,7 +528,12 @@ func (s *Store) AddCompaction(ctx context.Context, c Compaction) (Compaction, er
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err = s.db.QueryRowContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return c, err
+	}
+	defer tx.Rollback()
+	err = tx.QueryRowContext(ctx,
 		`INSERT INTO compactions (agent_id, thread_id, epoch, trigger, pre_tokens, post_tokens, duration_ms, prompt_rev, compact_rev, instructions, summary, attachments, boundary_seq, created_at)
 		 VALUES (?, ?, CASE WHEN ? = 'start' THEN 0 ELSE COALESCE((SELECT MAX(epoch) FROM compactions WHERE thread_id = ?), 0) + 1 END,
 		         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -386,14 +541,69 @@ func (s *Store) AddCompaction(ctx context.Context, c Compaction) (Compaction, er
 		c.AgentID, c.ThreadID, c.Trigger, c.ThreadID,
 		c.Trigger, c.PreTokens, c.PostTokens, c.DurationMs, c.PromptRev, c.CompactRev, c.Instructions, c.Summary, string(attachments), c.BoundarySeq, c.CreatedAt).
 		Scan(&c.ID, &c.Epoch)
+	if err != nil {
+		return c, err
+	}
+	if _, err := tx.ExecContext(ctx, bumpLogVersion+`?`, c.AgentID); err != nil {
+		return c, err
+	}
 	c.SummaryChars, c.InstructionsChars = len([]rune(c.Summary)), len([]rune(c.Instructions))
-	return c, err
+	return c, tx.Commit()
+}
+
+// bumpLogVersion, with the agent's id after it, marks the agent's log
+// changed (Agent.LogVersion).
+const bumpLogVersion = `UPDATE agents SET log_version = log_version + 1 WHERE id = `
+
+// changeLog updates one compaction row, the one row finds, and marks its
+// agent's log changed, together: update is "SET ... WHERE id = ?" with its
+// own arguments before the row's id. It reports whether the update changed
+// the row; ErrNotFound when row finds none.
+func (s *Store) changeLog(ctx context.Context, row string, rowArgs []any, update string, args ...any) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var id int64
+	if err := tx.QueryRowContext(ctx, row, rowArgs...).Scan(&id); errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	} else if err != nil {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE compactions `+update, append(args, id)...)
+	if err != nil {
+		return false, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, bumpLogVersion+`(SELECT agent_id FROM compactions WHERE id = ?)`, id); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 // SetCompactionBoundary records the seq of the compaction notice in the
 // thread, once it has one.
 func (s *Store) SetCompactionBoundary(ctx context.Context, id, seq int64) error {
-	return s.execOne(ctx, `UPDATE compactions SET boundary_seq=? WHERE id=?`, seq, id)
+	_, err := s.changeLog(ctx, `SELECT id FROM compactions WHERE id = ?`, []any{id}, `SET boundary_seq=? WHERE id=?`, seq)
+	return err
+}
+
+// FillStartMessage puts the first message sent to a thread on its epoch 0
+// row, when that row has none: the thread was started with no first message.
+// It reports whether it did. A thread with no epoch 0 row is no agent's, and
+// gets false.
+func (s *Store) FillStartMessage(ctx context.Context, threadID, text string) (bool, error) {
+	ok, err := s.changeLog(ctx, `SELECT id FROM compactions WHERE thread_id = ? AND epoch = 0`, []any{threadID},
+		`SET summary=? WHERE id=? AND summary = ''`, text)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return ok, err
 }
 
 // FileCompactionDetail fills in what a harness said after the fact about the
@@ -417,9 +627,9 @@ func (s *Store) FileCompactionDetail(ctx context.Context, threadID string, start
 	if summary != "" {
 		text = summary
 	}
-	return s.execOne(ctx,
-		`UPDATE compactions SET summary = COALESCE(?, summary), attachments = COALESCE(?, attachments) WHERE id = (`+target+`)`,
-		text, blob, threadID)
+	_, err := s.changeLog(ctx, target, []any{threadID},
+		`SET summary = COALESCE(?, summary), attachments = COALESCE(?, attachments) WHERE id = ?`, text, blob)
+	return err
 }
 
 // compactionColumns are a row without its bodies, the sizes in their place.
