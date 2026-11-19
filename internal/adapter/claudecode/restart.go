@@ -39,10 +39,10 @@ func restartPrompt(configDir, cwd, raw, prompt string) error {
 	}
 	file, err := findConversation(configDir, cwd, id)
 	if err != nil {
-		return fmt.Errorf("restart: look for Claude Code's transcript for this conversation: %w", err)
+		return fmt.Errorf("look for Claude Code's transcript for this conversation: %w", err)
 	}
 	if file == "" {
-		return errors.New("restart: Claude Code has no transcript for this conversation, so the new system prompt can't be applied")
+		return errors.New("Claude Code has no transcript for this conversation, so the new system prompt can't be applied")
 	}
 	return rewritePromptSnapshots(file, prompt)
 }
@@ -57,16 +57,16 @@ func rewritePromptSnapshots(file, prompt string) error {
 	// replaced by a copy where the link was.
 	path, err := filepath.EvalSymlinks(file)
 	if err != nil {
-		return fmt.Errorf("restart: open Claude Code's transcript: %w", err)
+		return fmt.Errorf("open Claude Code's transcript: %w", err)
 	}
 	in, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("restart: open Claude Code's transcript: %w", err)
+		return fmt.Errorf("open Claude Code's transcript: %w", err)
 	}
 	defer in.Close()
 	info, err := in.Stat()
 	if err != nil {
-		return fmt.Errorf("restart: open Claude Code's transcript: %w", err)
+		return fmt.Errorf("open Claude Code's transcript: %w", err)
 	}
 
 	dir := filepath.Dir(path)
@@ -93,7 +93,7 @@ func rewritePromptSnapshots(file, prompt string) error {
 	for {
 		line, rerr := r.ReadBytes('\n')
 		if rerr != nil && !errors.Is(rerr, io.EOF) {
-			return fmt.Errorf("restart: read Claude Code's transcript: %w", rerr)
+			return fmt.Errorf("read Claude Code's transcript: %w", rerr)
 		}
 		if len(line) > 0 {
 			out, changed, err := rewriteSnapshotLine(line, prompt)
@@ -112,7 +112,7 @@ func rewritePromptSnapshots(file, prompt string) error {
 		}
 	}
 	if found == 0 {
-		return errors.New("restart: Claude Code's transcript for this conversation has no prompt snapshot, so the new system prompt can't be applied")
+		return errors.New("Claude Code's transcript for this conversation has no prompt snapshot, so the new system prompt can't be applied")
 	}
 	if err := w.Flush(); err != nil {
 		return cantWrite(err)
@@ -126,7 +126,7 @@ func rewritePromptSnapshots(file, prompt string) error {
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		_ = os.Remove(tmp.Name())
 		done = true
-		return fmt.Errorf("restart: can't replace Claude Code's transcript, so the new system prompt can't be applied: %w", err)
+		return fmt.Errorf("can't replace Claude Code's transcript, so the new system prompt can't be applied: %w", err)
 	}
 	done = true
 	// The rename is only durable once the directory is; losing it to a crash
@@ -181,7 +181,7 @@ func rewriteSnapshotLine(line []byte, prompt string) ([]byte, bool, error) {
 // replacePrompt is a snapshot's systemPrompt with omniplex's own block, the
 // first, replaced by prompt. Claude Code's blocks after it are kept.
 func replacePrompt(raw json.RawMessage, prompt string) (json.RawMessage, error) {
-	unrecognised := errors.New("restart: Claude Code's transcript has a prompt snapshot in a form omniplex doesn't recognise, so the new system prompt can't be applied")
+	unrecognised := errors.New("Claude Code's transcript has a prompt snapshot in a form omniplex doesn't recognise, so the new system prompt can't be applied")
 	enc, err := encodeVerbatim(prompt)
 	if err != nil {
 		return nil, err
@@ -215,11 +215,11 @@ func encodeVerbatim(v any) (json.RawMessage, error) {
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(v); err != nil {
-		return nil, fmt.Errorf("restart: encode Claude Code's prompt snapshot: %w", err)
+		return nil, fmt.Errorf("encode Claude Code's prompt snapshot: %w", err)
 	}
 	return bytes.TrimRight(b.Bytes(), "\n"), nil
 }
 
 func cantWrite(err error) error {
-	return fmt.Errorf("restart: can't write Claude Code's transcript, so the new system prompt can't be applied: %w", err)
+	return fmt.Errorf("can't write Claude Code's transcript, so the new system prompt can't be applied: %w", err)
 }
