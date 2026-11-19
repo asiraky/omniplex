@@ -50,6 +50,7 @@ const (
 	fixtureProjects = 4
 	sidebarThreads  = 120
 	fixtureTurns    = 60
+	fixtureAgents   = 6
 	fixtureThread   = "fixture-thread"
 )
 
@@ -261,6 +262,46 @@ func seed(ctx context.Context, st *store.Store) error {
 			Phase:            "idle",
 			CreatedAt:        epoch + int64(i)*60_000, UpdatedAt: epoch + int64(i)*60_000,
 		}); err != nil {
+			return err
+		}
+	}
+
+	// Agents ride the welcome frame whole, each with a live thread a few
+	// compactions in and a prompt revision or two past its first.
+	for i := range fixtureAgents {
+		p := i % fixtureProjects
+		ag, err := st.CreateAgent(ctx, store.Agent{
+			ProjectID: fmt.Sprintf("project-%d", p), Name: sentence(r, 2+r.IntN(2)), Harness: "claude", Instance: "claude",
+			Model: "claude-opus-5-5", Effort: "high", Mode: "default", FolderID: fmt.Sprintf("project-%d-main", p),
+			Workspace: "local", CompactAt: 160_000, Kickoff: sentence(r, 12),
+		}, sentence(r, 200), sentence(r, 60))
+		if err != nil {
+			return err
+		}
+		if _, err := st.AddAgentRevision(ctx, ag.ID, store.RevisionPrompt, sentence(r, 220), store.AuthorAgent, sentence(r, 8)); err != nil {
+			return err
+		}
+		threadID := fmt.Sprintf("agent-thread-%d", i)
+		if err := st.CreateThread(ctx, store.ThreadMeta{
+			ID: threadID, Cwd: filepath.Join(home, fmt.Sprintf("project-%d", p)), Harness: "claude", ProviderInstance: "claude",
+			Title: ag.Name, ProjectID: ag.ProjectID, FolderID: ag.FolderID, AgentID: ag.ID, WorkspaceMode: "local",
+			Model: "claude-opus-5-5", Mode: "default", Effort: "high", Phase: "idle", CreatedAt: epoch, UpdatedAt: epoch,
+		}); err != nil {
+			return err
+		}
+		for e := range 4 {
+			trigger := "auto"
+			if e == 0 {
+				trigger = "start"
+			}
+			if _, err := st.AddCompaction(ctx, store.Compaction{AgentID: ag.ID, ThreadID: threadID, Trigger: trigger, PreTokens: 160_000, PromptRev: 2, CompactRev: 1}); err != nil {
+				return err
+			}
+		}
+		if err := st.SetAgentThread(ctx, ag.ID, threadID); err != nil {
+			return err
+		}
+		if err := st.SetAgentLivePromptRev(ctx, ag.ID, 2); err != nil {
 			return err
 		}
 	}
