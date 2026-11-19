@@ -19,10 +19,12 @@ function renderHeader({
   isDesktop,
   activeId = "a",
   onFind = () => {},
+  harness = {},
 }: {
   isDesktop: boolean;
   activeId?: string | null;
   onFind?: () => void;
+  harness?: Partial<ThreadHarness>;
 }) {
   const link = { copied: false, copy: vi.fn() };
   render(
@@ -36,7 +38,7 @@ function renderHeader({
         creating={false}
         isDesktop={isDesktop}
         onSetPinned={() => {}}
-        harness={{ modeOptions: [] } as unknown as ThreadHarness}
+        harness={{ modeOptions: [], ...harness } as unknown as ThreadHarness}
         copy={{ copied: false, copyAll: async () => {} }}
         link={link}
         panel={{ open: false, toggle: () => {}, show: () => {} } as unknown as PanelControls}
@@ -102,5 +104,70 @@ describe("ThreadHeader: find in thread", () => {
 
     fireEvent.click(await screen.findByRole("menuitem", { name: "Copy thread link" }));
     await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+});
+
+describe("ThreadHeader: restart", () => {
+  const openMenu = () =>
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More thread actions" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+  const restartable = (over: Partial<ThreadHarness> = {}) => ({
+    canRestart: true,
+    restartPending: false,
+    restarting: false,
+    restartThread: vi.fn(),
+    cancelRestart: vi.fn(),
+    ...over,
+  });
+
+  it("restarts from the phone menu", async () => {
+    viewport("phone");
+    const harness = restartable();
+    renderHeader({ isDesktop: false, harness });
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Restart thread" }));
+    expect(harness.restartThread).toHaveBeenCalledOnce();
+    expect(harness.cancelRestart).not.toHaveBeenCalled();
+  });
+
+  it("takes back a restart waiting on the turn from the phone menu", async () => {
+    viewport("phone");
+    const harness = restartable({ restartPending: true });
+    renderHeader({ isDesktop: false, harness });
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Cancel restart" }));
+    expect(harness.cancelRestart).toHaveBeenCalledOnce();
+    expect(harness.restartThread).not.toHaveBeenCalled();
+  });
+
+  it("is not offered where the thread cannot restart", async () => {
+    viewport("phone");
+    renderHeader({ isDesktop: false, harness: restartable({ canRestart: false }) });
+    openMenu();
+    await screen.findByRole("menuitem", { name: "Find in thread" });
+    expect(screen.queryByRole("menuitem", { name: /restart/i })).toBeNull();
+  });
+
+  it("cannot be asked for twice while one is under way", async () => {
+    viewport("phone");
+    const harness = restartable({ restarting: true });
+    renderHeader({ isDesktop: false, harness });
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Restarting thread/ }));
+    expect(harness.restartThread).not.toHaveBeenCalled();
+  });
+
+  it("restarts from the desktop bar", () => {
+    const harness = restartable();
+    renderHeader({ isDesktop: true, harness });
+    fireEvent.click(screen.getByRole("button", { name: "Restart thread" }));
+    expect(harness.restartThread).toHaveBeenCalledOnce();
+  });
+
+  it("disables the desktop button while a restart is under way", () => {
+    renderHeader({ isDesktop: true, harness: restartable({ restarting: true }) });
+    expect((screen.getByRole("button", { name: "Restarting thread" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

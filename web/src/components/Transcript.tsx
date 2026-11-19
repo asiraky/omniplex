@@ -39,6 +39,7 @@ import { EmptyTranscript } from "./transcript/EmptyTranscript";
 import { FindRevealProvider, type Reveal } from "./transcript/findReveal";
 import { MergedCard } from "./transcript/MergedCard";
 import { QueuedPrompts } from "./transcript/QueuedPrompts";
+import { RestartStatus } from "./transcript/RestartStatus";
 import type { ScrollPosition } from "./transcript/scrollAnchor";
 import { transcriptState, type TranscriptState } from "./transcript/transcriptState";
 import { TranscriptRow } from "./transcript/TranscriptRow";
@@ -175,6 +176,12 @@ type TranscriptProps = {
   describeSettings?: (model: string, effort: string) => string;
   /** Why the running turn has gone quiet (retrying, compacting), if it has. */
   turnStatus?: TurnStatus | null;
+  /** A restart waits on the running turn to end. */
+  restartPending?: boolean;
+  /** A restart asked for here is under way. */
+  restarting?: boolean;
+  /** Takes back a restart that is waiting on the turn. */
+  onCancelRestart?: () => void;
   /** Find in thread. Omitted or closed, there is no bar and no searching. */
   find?: ThreadFindControls;
 };
@@ -345,6 +352,9 @@ function TranscriptBody({
   describeSettings,
   turnStatus,
   find,
+  restartPending = false,
+  restarting = false,
+  onCancelRestart,
   ...interruptedProps
 }: TranscriptProps & { state: TranscriptState; store: ThreadStore }) {
   // Follow the tail unless the reader has scrolled up; the button below is
@@ -479,6 +489,7 @@ function TranscriptBody({
             {/* Shown whatever else the tail is doing: a retry or a compaction is
                 exactly when a live tool line or half-streamed text looks hung. */}
             <TurnStatusLine status={turnStatus} running={state.phase === "turn"} />
+            <RestartStatus pending={restartPending} restarting={restarting} onCancel={onCancelRestart} />
 
             {interrupted && (
               <Suspense fallback={null}>

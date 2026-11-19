@@ -10,6 +10,7 @@ import {
   PinIcon,
   PinOffIcon,
   PlugIcon,
+  RotateCwIcon,
   SearchIcon,
   XIcon,
 } from "lucide-react";
@@ -39,6 +40,7 @@ import {
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { Spinner } from "./ui/spinner";
 
 // The permission-mode switcher is parked, not removed: changing modes mid-chat
 // is not something we want to offer right now, and hiding it is cheaper to
@@ -57,6 +59,7 @@ type Actions = {
   onShowMcp: () => void;
   /** Opens the transcript's find bar, which takes focus. */
   onFind: () => void;
+  harness: ThreadHarness;
 };
 
 /** Copying a thread's /thread/<id> link, and whether one was just copied. */
@@ -103,7 +106,7 @@ export function ThreadHeader({
   // The attached thread, as far as the bar shows it: a frame that changes
   // neither field leaves the header alone.
   const thread = useThread(useThreadStore(), headerFields, shallow);
-  const actions = thread && { activeId, meta, onSetPinned, copy, link, panel, onShowMcp, onFind };
+  const actions = thread && { activeId, meta, onSetPinned, copy, link, panel, onShowMcp, onFind, harness };
   return (
     <header className="px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
       <div className="flex items-center gap-2">
@@ -256,9 +259,23 @@ function threadPin({ activeId, meta, onSetPinned }: Actions) {
   return { pinned, toggle };
 }
 
+// Restarting the harness on the setup as it is now, or taking back one that
+// waits on the running turn: the same toggle in either layout.
+function threadRestart({ harness }: Actions) {
+  if (!harness.canRestart) return null;
+  const { restartPending: pending, restarting } = harness;
+  return {
+    pending,
+    restarting,
+    label: pending ? "Cancel restart" : restarting ? "Restarting thread" : "Restart thread",
+    run: pending ? harness.cancelRestart : harness.restartThread,
+  };
+}
+
 function DesktopActions({ actions }: { actions: Actions }) {
   const { activeId, copy, link, panel } = actions;
   const pin = threadPin(actions);
+  const restart = threadRestart(actions);
   return (
     <>
       {pin.toggle && (
@@ -288,6 +305,17 @@ function DesktopActions({ actions }: { actions: Actions }) {
         </IconButton>
       )}
 
+      {restart && (
+        <IconButton
+          label={restart.label}
+          onClick={restart.run}
+          disabled={restart.restarting}
+          className={cn(restart.pending && "bg-accent")}
+        >
+          {restart.restarting ? <Spinner /> : <RotateCwIcon />}
+        </IconButton>
+      )}
+
       <IconButton
         label={panel.open ? "Hide the panel" : "Show the panel"}
         shortcut="togglePanel"
@@ -307,6 +335,7 @@ function DesktopActions({ actions }: { actions: Actions }) {
 function PhoneActions({ actions }: { actions: Actions }) {
   const { activeId, copy, link, panel, onShowMcp, onFind } = actions;
   const pin = threadPin(actions);
+  const restart = threadRestart(actions);
   // Set by "Find in thread", read as the menu closes in its wake.
   const finding = useRef(false);
   return (
@@ -364,14 +393,18 @@ function PhoneActions({ actions }: { actions: Actions }) {
             {link.copied ? "Thread link copied" : "Copy thread link"}
           </DropdownMenuItem>
         )}
+        {(pin.toggle || restart) && <DropdownMenuSeparator />}
         {pin.toggle && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={pin.toggle}>
-              {pin.pinned ? <PinOffIcon /> : <PinIcon />}
-              {pin.pinned ? "Unpin thread" : "Pin thread"}
-            </DropdownMenuItem>
-          </>
+          <DropdownMenuItem onSelect={pin.toggle}>
+            {pin.pinned ? <PinOffIcon /> : <PinIcon />}
+            {pin.pinned ? "Unpin thread" : "Pin thread"}
+          </DropdownMenuItem>
+        )}
+        {restart && (
+          <DropdownMenuItem onSelect={restart.run} disabled={restart.restarting}>
+            {restart.restarting ? <Spinner /> : <RotateCwIcon />}
+            {restart.restarting ? "Restarting thread…" : restart.label}
+          </DropdownMenuItem>
         )}
       </DropdownMenuContent>
     </DropdownMenu>

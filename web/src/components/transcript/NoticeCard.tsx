@@ -2,6 +2,7 @@ import {
   ArchiveIcon,
   ArrowRightLeftIcon,
   OctagonXIcon,
+  RotateCwIcon,
   SparklesIcon,
   TriangleAlertIcon,
 } from "lucide-react";
@@ -11,8 +12,8 @@ import { cn } from "~/lib/utils";
 import type { Item } from "~/protocol";
 
 // A system event as one quiet centered line in the flow: a switch of model or
-// effort, of account, a compaction boundary, or something a harness extension
-// warned about. The reader mostly needs to know it happened, not to stop and
+// effort, of account, a restart, a compaction boundary, or something a harness
+// extension warned about. The reader mostly needs to know it happened, not to stop and
 // read it.
 export function NoticeCard({
   item,
@@ -55,6 +56,7 @@ export function NoticeCard({
       </div>
     );
   }
+  if (item.noticeKind === "restart") return <RestartNotice item={item} />;
   const detail =
     item.preTokens && item.postTokens
       ? `${fmtTokens(item.preTokens)} → ${fmtTokens(item.postTokens)}`
@@ -86,6 +88,32 @@ function NotifyNotice({ item }: { item: Item }) {
           <span className="sr-only">{error ? "Error: " : "Warning: "}</span>
           {item.text}
         </span>
+      </div>
+    </div>
+  );
+}
+
+// Where the harness came back up on the setup as it is now: replies below this
+// line had the new system prompt, MCP servers and skills. A failed restart
+// says why in the server's own words, so it wraps like an extension's message
+// rather than overflowing a phone, and is the one notice drawn as an error:
+// the thread is still on its old setup, which the reader has to know.
+function RestartNotice({ item }: { item: Item }) {
+  if (!item.text) {
+    return (
+      <div className="fade-in flex justify-center">
+        <div className="text-muted-foreground flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px]">
+          <RotateCwIcon className="size-3.5 shrink-0" />
+          <span>Thread restarted</span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="fade-in flex justify-center">
+      <div className="border-destructive/40 text-destructive flex max-w-full items-start gap-1.5 rounded-lg border px-3 py-1 text-[12px]">
+        <OctagonXIcon className="mt-0.5 size-3.5 shrink-0" />
+        <span className="min-w-0 break-words whitespace-pre-wrap">Restart failed: {item.text}</span>
       </div>
     </div>
   );

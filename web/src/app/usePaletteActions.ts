@@ -33,6 +33,7 @@ export function usePaletteActions({
   onTogglePanel,
   onOpenDiff,
   onStopTurn,
+  restart,
   onNewThreadHere,
   onNewAssistant,
   onNewProject,
@@ -61,6 +62,16 @@ export function usePaletteActions({
   onTogglePanel: () => void;
   onOpenDiff: () => void;
   onStopTurn: () => void;
+  /** Restarting the open thread's harness, where the server would take it. */
+  restart: {
+    can: boolean;
+    /** One waits on the running turn, and the row takes it back. */
+    pending: boolean;
+    /** One asked for is under way. */
+    restarting: boolean;
+    onRestart: () => void;
+    onCancel: () => void;
+  };
   onNewThreadHere: () => void;
   /** An assistant chat outside any project; `private` starts it kept off disk. */
   onNewAssistant: (isPrivate: boolean) => void;
@@ -134,6 +145,18 @@ export function usePaletteActions({
       run: onTogglePanel,
     });
     thread({ id: "diff", label: "Open diff", command: "openDiff", keywords: ["changes"], run: onOpenDiff });
+    if (restart.can && !restart.restarting) {
+      thread(
+        restart.pending
+          ? { id: "cancel-restart", label: "Cancel restart", keywords: ["restart", "reload"], run: restart.onCancel }
+          : {
+              id: "restart",
+              label: "Restart thread",
+              keywords: ["reload", "relaunch", "system prompt", "mcp", "skills"],
+              run: restart.onRestart,
+            },
+      );
+    }
     if (turnRunning) {
       thread({
         id: "stop",

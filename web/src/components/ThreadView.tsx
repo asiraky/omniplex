@@ -300,6 +300,9 @@ export function ThreadView({
                   onCardSignIn={setSignIn}
                   describeSettings={describe}
                   turnStatus={turnStatus}
+                  restartPending={harness.restartPending}
+                  restarting={harness.restarting}
+                  onCancelRestart={harness.cancelRestart}
                   find={findControls}
                 />
               </PromptFocusContext.Provider>
