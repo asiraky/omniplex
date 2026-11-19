@@ -245,7 +245,10 @@ export function RevisionsEditor({
               variant="ghost"
               size="sm"
               className="h-11 md:h-8"
-              onClick={() => setDraft((d) => d && { ...d, base: current.n })}
+              onClick={() => {
+                setDraft((d) => d && { ...d, base: current.n });
+                setSaveError(null);
+              }}
             >
               Keep my edit
             </Button>

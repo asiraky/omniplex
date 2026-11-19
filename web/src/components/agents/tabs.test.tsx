@@ -249,6 +249,24 @@ describe("PromptTab", () => {
     expect(screen.getByRole("button", { name: "Editor" })).toBeTruthy();
   });
 
+  it("drops a stale-revision refusal once the edit is kept over the new head", async () => {
+    const saveRevision = vi.fn(async () => {
+      throw new Error("The prompt changed while you were editing: r3 is the latest. Review it, then save again.");
+    });
+    let list = [rev(1, "old line\n"), rev(2, "new line\n")];
+    const api = mockApi({ saveRevision, revisions: vi.fn(async () => list) });
+    const { rerender } = render(<PromptTab agent={agent()} api={api} />);
+    await typeInto("mine\n");
+    list = [...list, rev(3, "theirs\n")];
+    rerender(wrap(<PromptTab agent={agent({ promptRev: 3 })} api={api} />));
+    const notice = await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: /save as r4/i }));
+    expect(await screen.findByText(/r3 is the latest/)).toBeTruthy();
+
+    fireEvent.click(within(notice).getByRole("button", { name: "Keep my edit" }));
+    expect(screen.queryByText(/r3 is the latest/)).toBeNull();
+  });
+
   it("saves on the new head once the edit is kept over it", async () => {
     const saveRevision = vi.fn(async () => ({ revision: rev(4, "mine\n"), restart: "now" as const }));
     let list = [rev(1, "old line\n"), rev(2, "new line\n")];
