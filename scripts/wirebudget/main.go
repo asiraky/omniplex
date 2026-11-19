@@ -274,7 +274,7 @@ func seed(ctx context.Context, st *store.Store) error {
 			ProjectID: fmt.Sprintf("project-%d", p), Name: sentence(r, 2+r.IntN(2)), Harness: "claude", Instance: "claude",
 			Model: "claude-opus-5-5", Effort: "high", Mode: "default", FolderID: fmt.Sprintf("project-%d-main", p),
 			Workspace: "local", CompactAt: 160_000, Kickoff: sentence(r, 12),
-		}, sentence(r, 200), sentence(r, 60))
+		}, sentence(r, 200), sentence(r, 60), "")
 		if err != nil {
 			return err
 		}
