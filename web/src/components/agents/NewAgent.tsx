@@ -238,7 +238,10 @@ export function NewAgent({
                   .filter(Boolean)
                   .join(" ")}
               >
-                <Select value={d.mode || modes[0].id} onValueChange={(v) => set({ mode: v })}>
+                {/* Radix's hidden native select reports "" when the value and the
+                    options change in one render, as they do on a harness switch,
+                    which would undo the switch's "do everything". No mode is "". */}
+                <Select value={d.mode || modes[0].id} onValueChange={(v) => v && set({ mode: v })}>
                   <SelectTrigger aria-label="Permissions" className="h-11 w-full md:h-9">
                     <SelectValue />
                   </SelectTrigger>

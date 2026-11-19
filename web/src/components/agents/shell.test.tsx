@@ -16,6 +16,14 @@ vi.mock("~/lib/toast", () => ({ toast }));
 vi.mock("./PromptTab", () => ({ PromptTab: ({ agent }: { agent: Agent }) => <p>prompt of {agent.name}</p> }));
 vi.mock("./CompactionTab", () => ({ CompactionTab: () => <p>compaction tab</p> }));
 vi.mock("./LogTab", () => ({ LogTab: () => <p>log tab</p> }));
+// The picker has its own tests; here it only has to switch harness.
+vi.mock("~/components/ModelPicker", () => ({
+  ModelPicker: ({ onChange }: { onChange: (next: { harness: string; instance: string; model: string }) => void }) => (
+    <button type="button" onClick={() => onChange({ harness: "codex", instance: "codex", model: "gpt" })}>
+      Pick Codex
+    </button>
+  ),
+}));
 
 const agent = (over: Partial<Agent> = {}): Agent => ({
   id: "a1",
@@ -55,6 +63,18 @@ const harnesses = [
     ],
     availability: { state: "ready" },
     instances: [{ id: "claude", driver: "claude", displayName: "Claude Code", enabled: true, availability: { state: "ready" } }],
+  },
+  {
+    id: "codex",
+    name: "Codex",
+    models: [{ id: "gpt", label: "GPT", default: true }],
+    permissionModes: [
+      { id: "untrusted", label: "Manual", level: "ask" },
+      { id: "on-request", label: "Edits", level: "edits", default: true },
+      { id: "full-access", label: "Bypass", level: "all" },
+    ],
+    availability: { state: "ready" },
+    instances: [{ id: "codex", driver: "codex", displayName: "Codex", enabled: true, availability: { state: "ready" } }],
   },
 ] as unknown as HarnessMeta[];
 
@@ -207,6 +227,16 @@ describe("NewAgent", () => {
     expect(api.create).toHaveBeenCalledWith(
       expect.objectContaining({ kickoff: "Poll now.", start: true, compactAt: 120_000, workspace: "managed" }),
     );
+  });
+
+  it("starts another harness on its own do-everything mode", async () => {
+    const { props } = open();
+    type("Name", "triage");
+    type("System prompt", "# Triage");
+    fireEvent.click(screen.getByRole("button", { name: "Pick Codex" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    await waitFor(() => expect(props.api.create).toHaveBeenCalled());
+    expect(props.api.create).toHaveBeenCalledWith(expect.objectContaining({ harness: "codex", mode: "full-access" }));
   });
 
   it("keeps the form open with the error when creating fails", async () => {
