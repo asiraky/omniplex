@@ -3,7 +3,7 @@ import { AGENT_TABS, type AgentFocus, type AgentTab } from "./agentNav";
 // The agent pages' URLs. They are main-column pages beside the sidebar, with
 // paths of their own so a reload, a shared link and Back all land on them:
 //
-//   /agents/<id>/<tab>[?thread=<id>&epoch=3|?rev=4]   an agent's page, on one tab
+//   /agents/<id>/<tab>[?thread=<id>[&epoch=3]|?rev=4]   an agent's page, on one tab
 //   /agents/new[?project=<id>]            the New agent form
 
 export type AgentPage =

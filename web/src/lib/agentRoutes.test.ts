@@ -14,6 +14,7 @@ describe("agent page URLs", () => {
     { kind: "agent", agentId: "a1", tab: "prompt" },
     { kind: "agent", agentId: "a/b", tab: "log", focus: { epoch: 3 } },
     { kind: "agent", agentId: "a1", tab: "log", focus: { thread: "t/1 2", epoch: 0 } },
+    { kind: "agent", agentId: "a1", tab: "log", focus: { thread: "old" } },
     { kind: "agent", agentId: "a1", tab: "compact", focus: { rev: 4 } },
     { kind: "agent", agentId: "a1", tab: "settings" },
   ])("reads back what it writes: %o", (page) => {

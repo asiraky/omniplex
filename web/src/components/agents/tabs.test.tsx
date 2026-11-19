@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { render, viewport, wrap } from "~/test/harness";
 import type { AgentApi } from "~/lib/agentApi";
+import { AgentNavContext, type AgentNav } from "~/lib/agentNav";
 import type { Agent, AgentRevision, CompactionDetail, CompactionRow } from "~/protocol";
 
 import { AgentPage } from "./AgentPage";
@@ -121,7 +122,8 @@ describe("LogTab", () => {
     const summary = await screen.findByRole("region", { name: "Summary" });
     expect(within(summary).getByText(/not reported by codex/i)).toBeTruthy();
 
-    const instructions = screen.getByRole("region", { name: "Instructions sent" });
+    // Codex ignores them when it compacts remotely, so the row does not say they were sent.
+    const instructions = screen.getByRole("region", { name: "Instructions" });
     fireEvent.click(within(instructions).getByRole("button"));
     expect(within(instructions).getByText(/not reported by codex/i)).toBeTruthy();
     expect(screen.getByText(/token counts not reported by codex/i)).toBeTruthy();
@@ -208,6 +210,67 @@ describe("LogTab", () => {
     const archived = await screen.findByRole("region", { name: "Archived threads" });
     fireEvent.click(within(archived).getAllByRole("button")[0]);
     await waitFor(() => expect(log).toHaveBeenLastCalledWith("a1", "old"));
+  });
+
+  describe("the archived thread on show, in the URL", () => {
+    const oldThread = { threadId: "old", title: "Before", createdAt: 0, closedAt: 1, compactions: 1 };
+    const navMock = (): AgentNav => ({ openAgent: vi.fn(), openThread: vi.fn() });
+    const withNav = (nav: AgentNav, focus?: { thread?: string }, api = mockApi()) =>
+      render(
+        <AgentNavContext.Provider value={nav}>
+          <LogTab agent={agent()} api={api} focus={focus} />
+        </AgentNavContext.Provider>,
+      );
+
+    it("puts a picked thread in the URL, and takes it out for the live log", async () => {
+      const nav = navMock();
+      const log = vi.fn(async () => ({ compactions: [row(0)], archived: [oldThread] }));
+      withNav(nav, undefined, mockApi({ log }));
+
+      const archived = await screen.findByRole("region", { name: "Archived threads" });
+      fireEvent.click(within(archived).getAllByRole("button")[0]);
+      expect(nav.openAgent).toHaveBeenLastCalledWith("a1", "log", { thread: "old" });
+      fireEvent.click(await screen.findByRole("button", { name: /live log/i }));
+      expect(nav.openAgent).toHaveBeenLastCalledWith("a1", "log", undefined);
+    });
+
+    it("opens on the thread the URL names, its own thread a tap away", async () => {
+      const nav = navMock();
+      const log = vi.fn(async () => ({ compactions: [row(0)], archived: [oldThread] }));
+      withNav(nav, { thread: "old" }, mockApi({ log }));
+
+      // The bar over the log, ahead of the list's own button for each thread.
+      fireEvent.click((await screen.findAllByRole("button", { name: "Open archived thread" }))[0]);
+      expect(log).toHaveBeenCalledWith("a1", "old");
+      expect(log).not.toHaveBeenCalledWith("a1", undefined);
+      expect(nav.openThread).toHaveBeenCalledWith("old");
+    });
+
+    it("falls back to the live log for a thread that is not this agent's", async () => {
+      const nav = navMock();
+      const log = vi.fn(async (_: string, threadId?: string) => {
+        if (threadId) throw new Error("thread not found");
+        return { compactions: [row(0), row(2)], archived: [oldThread] };
+      });
+      const { container } = withNav(nav, { thread: "bogus" }, mockApi({ log }));
+
+      await waitFor(() => expect(epochs(container)).toEqual([2, 0]));
+      expect(screen.queryByRole("button", { name: /live log/i })).toBeNull();
+      expect(nav.openAgent).toHaveBeenCalledWith("a1", "log");
+    });
+
+    it("keeps an archived thread whose log failed to load, to retry", async () => {
+      const nav = navMock();
+      const log = vi.fn(async (_: string, threadId?: string) => {
+        if (threadId) throw new Error("connection lost");
+        return { compactions: [row(0)], archived: [oldThread] };
+      });
+      withNav(nav, { thread: "old" }, mockApi({ log }));
+
+      await screen.findByText(/connection lost/i);
+      expect(screen.getByRole("button", { name: /live log/i })).toBeTruthy();
+      expect(nav.openAgent).not.toHaveBeenCalled();
+    });
   });
 
   it("turns raw request logging on for Claude, and offers no switch that does nothing elsewhere", async () => {

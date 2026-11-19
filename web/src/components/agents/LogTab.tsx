@@ -40,6 +40,7 @@ interface LogData {
  */
 export function LogTab({ agent, api, focus }: { agent: Agent; api: AgentApi; focus?: AgentFocus }) {
   const nav = useAgentNav();
+  const navRef = useLatest(nav);
   const apiRef = useLatest(api);
   const harness = harnessName(agent.harness);
 
@@ -63,6 +64,7 @@ export function LogTab({ agent, api, focus }: { agent: Agent; api: AgentApi; foc
   useEffect(() => {
     let live = true;
     setError(null);
+    const fail = (e: unknown) => live && setError(errorText(e));
     apiRef.current.log(agent.id, threadId).then(
       (res) => {
         if (!live) return;
@@ -83,12 +85,25 @@ export function LogTab({ agent, api, focus }: { agent: Agent; api: AgentApi; foc
         }
         setData({ asked: threadId, compactions: res.compactions, archived: res.archived });
       },
-      (e: unknown) => live && setError(errorText(e)),
+      (e: unknown) => {
+        if (!live) return;
+        if (!threadId) return fail(e);
+        // A thread the URL names that is not one of this agent's (a mangled
+        // or stale link) falls back to the live log. One that is, on a link
+        // that dropped, keeps its place and offers Retry.
+        apiRef.current.log(agent.id).then((res) => {
+          if (!live) return;
+          if (res.archived.some((t) => t.threadId === threadId)) return fail(e);
+          setThreadId(undefined);
+          setData({ asked: undefined, compactions: res.compactions, archived: res.archived });
+          navRef.current.openAgent(agent.id, "log");
+        }, () => fail(e));
+      },
     );
     return () => {
       live = false;
     };
-  }, [apiRef, agent.id, threadId, liveKey, attempt]);
+  }, [apiRef, navRef, agent.id, threadId, liveKey, attempt]);
 
   const load = useCallback(
     (id: number) => {
@@ -122,24 +137,29 @@ export function LogTab({ agent, api, focus }: { agent: Agent; api: AgentApi; foc
     });
   }
 
-  function pickThread(id: string | undefined) {
+  function showThread(id: string | undefined) {
     setThreadId(id);
     setShowAll(false);
   }
 
-  // An Inspect link lands here with an epoch, and the thread it was in when
-  // that is not the live one: show that thread's log, then open the row,
-  // paging back to it if it is older than the first page.
+  // The archived thread on show is in the URL, so a reload or a shared link
+  // keeps it.
+  function pickThread(id: string | undefined) {
+    showThread(id);
+    nav.openAgent(agent.id, "log", id ? { thread: id } : undefined);
+  }
+
+  // The URL names the thread on show, the live one when it names none or the
+  // live one. An Inspect link adds an epoch: show that thread's log, then
+  // open the row, paging back to it if it is older than the first page.
   const focusThread = focus?.thread && focus.thread !== agent.threadId ? focus.thread : undefined;
-  const focusKey = focus?.epoch !== undefined ? `${focusThread ?? ""}:${focus.epoch}` : undefined;
+  const focusKey = `${focusThread ?? ""}:${focus?.epoch ?? ""}`;
   const [seenFocus, setSeenFocus] = useState<string | undefined>(undefined);
   const [pendingEpoch, setPendingEpoch] = useState<number | undefined>(undefined);
   if (focusKey !== seenFocus) {
     setSeenFocus(focusKey);
-    if (focus?.epoch !== undefined) {
-      pickThread(focusThread);
-      setPendingEpoch(focus.epoch);
-    }
+    showThread(focusThread);
+    setPendingEpoch(focus?.epoch);
   }
 
   const current = data && data.asked === threadId ? data : null;
@@ -176,6 +196,7 @@ export function LogTab({ agent, api, focus }: { agent: Agent; api: AgentApi; foc
         row={r}
         harness={harness}
         claude={agent.harness === "claude"}
+        codex={agent.harness === "codex"}
         open={open.has(r.id)}
         onToggle={() => toggle(r)}
         detail={details[r.id]}
@@ -224,13 +245,14 @@ export function LogTab({ agent, api, focus }: { agent: Agent; api: AgentApi; foc
             <ArrowLeftIcon className="size-3.5" />
             Live log
           </Button>
-          <span className="min-w-0 flex-1 truncate text-[12.5px]">
+          {/* On a phone the label takes a line of its own, the buttons the one under it. */}
+          <span className="min-w-0 flex-1 truncate px-1 text-[12.5px] max-md:order-first max-md:basis-full md:px-0">
             <ArchiveIcon className="text-muted-foreground mr-1.5 inline size-3.5 align-[-2px]" aria-hidden />
             {viewing ? archivedLabel(viewing) : "Archived thread"}
           </span>
-          <Button variant="outline" size="sm" className="h-11 md:h-8" onClick={() => nav.openThread(threadId)}>
+          <Button variant="outline" size="sm" className="h-11 max-md:ml-auto md:h-8" onClick={() => nav.openThread(threadId)}>
             <MessageSquareIcon className="size-3.5" />
-            Open thread
+            Open archived thread
           </Button>
         </div>
       )}
@@ -339,6 +361,7 @@ function LogRow({
   row,
   harness,
   claude,
+  codex,
   open,
   onToggle,
   detail,
@@ -352,6 +375,8 @@ function LogRow({
   row: CompactionRow;
   harness: string;
   claude: boolean;
+  /** Codex ignores the instructions when it compacts remotely, so its rows do not claim they were sent. */
+  codex: boolean;
   open: boolean;
   onToggle: () => void;
   detail?: Detail;
@@ -365,11 +390,18 @@ function LogRow({
   const start = row.epoch === 0;
   // Summary opens by default on a compaction, the system prompt on epoch 0:
   // each is what that row is usually opened to read.
-  const section = (name: string, title: string, size: string, children: () => ReactNode, byDefault = false) => {
+  const section = (
+    name: string,
+    title: string,
+    size: string,
+    children: () => ReactNode,
+    byDefault = false,
+    note?: string,
+  ) => {
     const key = `${row.id}:${name}`;
     const on = sections[key] ?? byDefault;
     return (
-      <Fold title={title} size={size} open={on} onOpenChange={(o) => onSection(key, o)}>
+      <Fold title={title} note={note} size={size} open={on} onOpenChange={(o) => onSection(key, o)}>
         {on && children()}
       </Fold>
     );
@@ -453,9 +485,11 @@ function LogRow({
             )}
             {section(
               "instructions",
-              "Instructions sent",
+              codex ? "Instructions" : "Instructions sent",
               `c${row.compactRev}${d.instructions ? ` · ${fmtChars(d.instructions.length)} chars` : ""}`,
               () => (d.instructions ? <BodyText>{d.instructions}</BodyText> : <NotReported harness={harness} />),
+              false,
+              codex ? "Ignored if Codex compacted remotely" : undefined,
             )}
             {section(
               "attachments",
@@ -523,10 +557,11 @@ function LogRow({
             {tok(row.preTokens)} → {tok(row.postTokens)}
           </span>
         )}
-        <span className={cn("text-muted-foreground font-mono text-[11px] whitespace-nowrap", start && "max-md:hidden")}>
+        {/* A phone has room for one of the two: the revisions, on every row alike. */}
+        <span className="text-muted-foreground font-mono text-[11px] whitespace-nowrap">
           r{row.promptRev} · c{row.compactRev}
         </span>
-        <span className={cn("text-muted-foreground font-mono text-[11px] whitespace-nowrap", !start && "max-md:hidden")}>
+        <span className="text-muted-foreground font-mono text-[11px] whitespace-nowrap max-md:hidden">
           {fmtDay(row.createdAt)}
         </span>
         <ChevronDownIcon
@@ -554,12 +589,15 @@ function RevLink({ onClick, children }: { onClick: () => void; children: ReactNo
 /** A foldable part of an opened row, its size at the right so it can be judged before opening. */
 function Fold({
   title,
+  note,
   size,
   open,
   onOpenChange,
   children,
 }: {
   title: string;
+  /** A caveat under the title, read before opening. */
+  note?: string;
   size: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -574,7 +612,10 @@ function Fold({
         className="focus-visible:ring-ring flex min-h-11 w-full items-center gap-2 rounded-md text-left text-[13px] outline-none focus-visible:ring-2 md:min-h-9"
       >
         <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} aria-hidden />
-        <span className="flex-1">{title}</span>
+        <span className="min-w-0 flex-1">
+          {title}
+          {note && <span className="text-muted-foreground block text-[11.5px] leading-snug">{note}</span>}
+        </span>
         {size && <span className="text-muted-foreground font-mono text-[11px]">{size}</span>}
       </button>
       {open && <div className="pb-3">{children}</div>}
@@ -652,7 +693,7 @@ function Archived({
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label="Open thread"
+                aria-label="Open archived thread"
                 className="mr-0.5 md:size-8"
                 onClick={() => onOpen(t.threadId)}
               >
