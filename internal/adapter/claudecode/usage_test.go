@@ -237,6 +237,7 @@ func TestCompactBoundaryEmitsEvent(t *testing.T) {
 			"trigger":     "auto",
 			"pre_tokens":  180000,
 			"post_tokens": 42000,
+			"duration_ms": 50471,
 		},
 	}))
 
@@ -255,8 +256,8 @@ func TestCompactBoundaryEmitsEvent(t *testing.T) {
 	if got == nil {
 		t.Fatal("no context.compacted emitted")
 	}
-	if got.Trigger != "auto" || got.PreTokens != 180000 || got.PostTokens != 42000 {
-		t.Fatalf("payload = %+v, want auto 180000→42000", *got)
+	if got.Trigger != "auto" || got.PreTokens != 180000 || got.PostTokens != 42000 || got.DurationMs != 50471 {
+		t.Fatalf("payload = %+v, want auto 180000→42000 in 50471ms", *got)
 	}
 }
 

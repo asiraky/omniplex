@@ -302,6 +302,9 @@ const session = query({
     ...(config.instructions ? { systemPrompt: config.instructions } : {}),
     // A private thread: no transcript under ~/.claude/projects.
     ...(config.ephemeral ? { persistSession: false } : {}),
+    // The host's inline settings (an agent's PreCompact hook). Claude Code
+    // layers them over the user's own settings; hooks add up, not replace.
+    ...(config.settings ? { settings: config.settings } : {}),
     ...harnessRuntime,
     includePartialMessages: true,
     canUseTool,
