@@ -114,7 +114,8 @@ export function CommandPalette({
     step?.kind === "workspace" ? { projectId: step.project.id, folderId: step.folder.id } : null,
   );
   const active = threads.find((t) => t.id === activeId);
-  const canRename = !!onRename && !!active;
+  // An agent's thread takes the agent's name, which changes on its page.
+  const canRename = !!onRename && !!active && !active.agentId;
 
   const go = (next: View) => {
     setView(next);

@@ -289,6 +289,15 @@ describe("CommandPalette: root", () => {
     expect(props.onOpenChange).not.toHaveBeenCalled();
   });
 
+  it("offers no rename on an agent's thread", () => {
+    setup({
+      onRename: vi.fn(),
+      threads: threads.map((t) => (t.id === "active" ? { ...t, agentId: "ag1" } : t)),
+    });
+    type("rename");
+    expect(rowNames()).toEqual([]);
+  });
+
   it("offers no rename without a handler", () => {
     setup();
     type("rename");

@@ -6,7 +6,8 @@ import { createThreadStore, ThreadStoreContext } from "~/app/threadStore";
 import type { PanelControls } from "~/app/usePanel";
 import type { ThreadHarness } from "~/app/useThreadHarness";
 import { render, viewport } from "~/test/harness";
-import type { ThreadMeta, ThreadState } from "~/protocol";
+import { AgentNavContext, type AgentNav } from "~/lib/agentNav";
+import type { Agent, ThreadMeta, ThreadState } from "~/protocol";
 
 import { ThreadHeader } from "./ThreadHeader";
 
@@ -22,6 +23,7 @@ function renderHeader({
   harness = {},
   parent,
   onOpenThread,
+  nav = { openAgent: () => {}, openThread: () => {} },
 }: {
   isDesktop: boolean;
   activeId?: string | null;
@@ -29,29 +31,32 @@ function renderHeader({
   harness?: Partial<ThreadHarness>;
   parent?: ThreadMeta;
   onOpenThread?: (id: string) => void;
+  nav?: AgentNav;
 }) {
   const link = { copied: false, copy: vi.fn() };
   render(
-    <ThreadStoreContext.Provider value={createThreadStore(state)}>
-      <ThreadHeader
-        sidebarOpen
-        onShowSidebar={() => {}}
-        activeId={activeId}
-        meta={activeId ? meta : undefined}
-        onRename={() => {}}
-        creating={false}
-        isDesktop={isDesktop}
-        onSetPinned={() => {}}
-        harness={{ modeOptions: [], ...harness } as unknown as ThreadHarness}
-        copy={{ copied: false, copyAll: async () => {} }}
-        link={link}
-        panel={{ open: false, toggle: () => {}, show: () => {} } as unknown as PanelControls}
-        onShowMcp={() => {}}
-        onFind={onFind}
-        parent={parent}
-        onOpenThread={onOpenThread}
-      />
-    </ThreadStoreContext.Provider>,
+    <AgentNavContext.Provider value={nav}>
+      <ThreadStoreContext.Provider value={createThreadStore(state)}>
+        <ThreadHeader
+          sidebarOpen
+          onShowSidebar={() => {}}
+          activeId={activeId}
+          meta={activeId ? meta : undefined}
+          onRename={() => {}}
+          creating={false}
+          isDesktop={isDesktop}
+          onSetPinned={() => {}}
+          harness={{ modeOptions: [], ...harness } as unknown as ThreadHarness}
+          copy={{ copied: false, copyAll: async () => {} }}
+          link={link}
+          panel={{ open: false, toggle: () => {}, show: () => {} } as unknown as PanelControls}
+          onShowMcp={() => {}}
+          onFind={onFind}
+          parent={parent}
+          onOpenThread={onOpenThread}
+        />
+      </ThreadStoreContext.Provider>
+    </AgentNavContext.Provider>,
   );
   return link;
 }
@@ -189,5 +194,99 @@ describe("ThreadHeader: delegated by", () => {
   it("has no link when the parent is not listed", () => {
     renderHeader({ isDesktop: true, onOpenThread: vi.fn() });
     expect(screen.queryByRole("button", { name: /Delegated by/ })).toBeNull();
+  });
+});
+
+describe("ThreadHeader: an agent's thread", () => {
+  const agent: Agent = {
+    id: "ag1",
+    projectId: "p1",
+    name: "backlog",
+    harness: "claude",
+    workspace: "local",
+    kickoff: "Start the backlog loop.",
+    threadId: "a",
+    promptRev: 7,
+    compactRev: 3,
+    livePromptRev: 7,
+    epoch: 46,
+    createdAt: 0,
+  };
+  const navFor = (over: Partial<Agent> = {}) => ({
+    current: { ...agent, ...over },
+    openAgent: vi.fn(),
+    openThread: vi.fn(),
+  });
+  const openMenu = () =>
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More thread actions" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+  it("titles the thread with the agent, which opens the agent's page", () => {
+    const nav = navFor();
+    renderHeader({ isDesktop: true, nav });
+    fireEvent.click(screen.getByRole("button", { name: /backlog/ }));
+    expect(nav.openAgent).toHaveBeenCalledWith("ag1", "prompt");
+    expect(screen.queryByRole("button", { name: "Rename thread" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Pin thread/ })).toBeNull();
+  });
+
+  it("shows the revision a restart is waiting to bring in", () => {
+    renderHeader({ isDesktop: true, nav: navFor({ livePromptRev: 7, promptRev: 8 }) });
+    expect(screen.getByRole("button", { name: /backlog/ }).textContent).toMatch(/r7.*r8/);
+  });
+
+  it("offers the agent's tabs, restart and new thread from the phone menu, but no pin", async () => {
+    viewport("phone");
+    const nav = navFor();
+    renderHeader({ isDesktop: false, nav, harness: { canRestart: true, restartThread: vi.fn() } });
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Log/ }));
+    expect(nav.openAgent).toHaveBeenCalledWith("ag1", "log");
+    openMenu();
+    await screen.findByRole("menuitem", { name: /Restart thread/ });
+    expect(screen.getByRole("menuitem", { name: /New thread/ })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /Pin thread/ })).toBeNull();
+  });
+
+  it("starts a new thread on the kickoff and opens it", async () => {
+    viewport("phone");
+    const nav = navFor();
+    const command = vi.fn(async () => ({ threadId: "b" }));
+    renderHeader({ isDesktop: false, nav, harness: { command } });
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: /New thread/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Archive and start" }));
+    await waitFor(() => expect(nav.openThread).toHaveBeenCalledWith("b"));
+    expect(command).toHaveBeenCalledWith("agent_new_thread", {
+      agentId: "ag1",
+      firstMessage: "Start the backlog loop.",
+    });
+  });
+
+  it("sends the first message as edited for this start", async () => {
+    const nav = navFor();
+    const command = vi.fn(async () => ({ threadId: "b" }));
+    renderHeader({ isDesktop: true, nav, harness: { command } });
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Agent actions" }), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /New thread/ }));
+    fireEvent.change(await screen.findByLabelText("First message"), { target: { value: "Only #812 today." } });
+    fireEvent.click(screen.getByRole("button", { name: "Archive and start" }));
+    await waitFor(() => expect(nav.openThread).toHaveBeenCalledWith("b"));
+    expect(command).toHaveBeenCalledWith("agent_new_thread", { agentId: "ag1", firstMessage: "Only #812 today." });
+  });
+
+  it("keeps the dialog and says why when the server refuses", async () => {
+    const nav = navFor();
+    const command = vi.fn(async () => {
+      throw new Error("agent is archived");
+    });
+    renderHeader({ isDesktop: true, nav, harness: { command } });
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Agent actions" }), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /New thread/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Archive and start" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("agent is archived");
+    expect(nav.openThread).not.toHaveBeenCalled();
   });
 });

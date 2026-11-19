@@ -56,6 +56,20 @@ describe("usePaletteActions: copy thread link", () => {
   });
 });
 
+describe("usePaletteActions: agent threads", () => {
+  it("offers no pin or delete on an agent's thread", () => {
+    const { list } = actions({ meta: { id: "a", title: "One", headSeq: 1, agentId: "ag1" } as ThreadMeta });
+    expect(list.some((a) => a.id === "pin" || a.id === "delete")).toBe(false);
+    expect(list.some((a) => a.id === "copy-link")).toBe(true);
+  });
+
+  it("still offers them on any other thread", () => {
+    const { list } = actions({});
+    expect(list.some((a) => a.id === "pin")).toBe(true);
+    expect(list.some((a) => a.id === "delete")).toBe(true);
+  });
+});
+
 describe("usePaletteActions: restart thread", () => {
   const restart = (over: Partial<Args["restart"]>) => ({
     can: true,
