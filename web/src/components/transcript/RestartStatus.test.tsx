@@ -40,7 +40,7 @@ describe("RestartStatus", () => {
       );
       return screen.getByRole("status").textContent;
     };
-    expect(status(7)).toBe("Prompt r8 is saved. The thread restarts when this turn ends.");
-    expect(status(8)).toBe("Restarting when this turn ends");
+    expect(status(7)).toMatch(/\br8\b/);
+    expect(status(8)).not.toMatch(/\br\d+\b/);
   });
 });

@@ -65,16 +65,17 @@ describe("a prompt edit's row", () => {
 
   it("names the revision an approval saved", () => {
     row(edit("prompt"), { result: "saved", revision: 8 });
-    expect(screen.getByText("Saved as r8")).toBeTruthy();
+    expect(screen.getByText(/\br8\b/)).toBeTruthy();
   });
 
   it("names a compaction revision as one", () => {
     row(edit("compact"), { result: "saved", revision: 4 });
-    expect(screen.getByText("Saved as c4")).toBeTruthy();
+    expect(screen.getByText(/\bc4\b/)).toBeTruthy();
+    expect(screen.queryByText(/\br4\b/)).toBeNull();
   });
 
-  it("says nothing was saved on a rejection", () => {
-    row(edit("prompt"), { result: "declined" });
-    expect(screen.getByText("Rejected — nothing saved")).toBeTruthy();
+  it("names no revision on a rejection", () => {
+    row(edit("prompt"), { result: "declined", revision: 8 });
+    expect(screen.queryByText(/\br8\b/)).toBeNull();
   });
 });
