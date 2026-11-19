@@ -337,6 +337,10 @@ const cardCommandTimeout = 2 * time.Minute
 // snapshot to put the files back (up to two more).
 const rewindCommandTimeout = 5 * time.Minute
 
+// restartCommandTimeout is for a restart, which stops the harness and starts
+// a new one; a slow harness start alone can take a minute or more.
+const restartCommandTimeout = 5 * time.Minute
+
 func timeoutFor(command string) time.Duration {
 	switch command {
 	case "stage_skills", "stage_update":
@@ -345,6 +349,8 @@ func timeoutFor(command string) time.Duration {
 		return cardCommandTimeout
 	case "rewind_thread":
 		return rewindCommandTimeout
+	case "restart_thread":
+		return restartCommandTimeout
 	}
 	return commandTimeout
 }
@@ -770,6 +776,27 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"instance": a.Instance}, nil
+
+	case "restart_thread":
+		var a restartArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		pending, err := c.srv.mgr.RestartThread(ctx, a.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"pending": pending}, nil
+
+	case "cancel_restart":
+		var a restartArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.CancelRestart(ctx, a.ThreadID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
 
 	case "set_effort":
 		var a setEffortArgs

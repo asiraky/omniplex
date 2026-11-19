@@ -20,6 +20,17 @@ const (
 	// account of the same harness. It changes who the next turn is billed to,
 	// not the conversation, so it is a line in the timeline and nothing more.
 	ThreadAccountChanged = "thread.account_changed"
+	// ThreadRestartRequested is a restart asked for while the thread was busy:
+	// it waits for the turn, and whatever else the process is in the middle
+	// of, to end. ThreadRestartCancelled takes it back before it happens.
+	ThreadRestartRequested = "thread.restart_requested"
+	ThreadRestartCancelled = "thread.restart_cancelled"
+	// ThreadRestarted marks the point where the harness process was replaced
+	// by a new one on the same conversation, which picks up the thread's
+	// current setup: system prompt, MCP servers, skills. Like an account
+	// change it is a line in the timeline; it also ends a requested restart,
+	// whether it worked or not.
+	ThreadRestarted = "thread.restarted"
 	// ThreadRewound cuts the thread back to just before a turn: that turn and
 	// everything after it leave the transcript, and the harness has already
 	// forgotten them by the time this is written.
@@ -363,6 +374,22 @@ type ThreadAccountChangedPayload struct {
 	To       string `json:"to"`
 	FromName string `json:"fromName,omitempty"`
 	ToName   string `json:"toName,omitempty"`
+}
+
+// ThreadRestartRequestedPayload carries nothing: the request is the event.
+type ThreadRestartRequestedPayload struct{}
+
+// ThreadRestartCancelledPayload says why a requested restart will not happen,
+// when anyone gave a reason.
+type ThreadRestartCancelledPayload struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// ThreadRestartedPayload is empty for a restart that worked. Error is why one
+// failed: the old process is gone either way, and the next command that needs
+// a harness resumes the conversation the ordinary way.
+type ThreadRestartedPayload struct {
+	Error string `json:"error,omitempty"`
 }
 
 type ThreadClosedPayload struct {
