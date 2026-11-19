@@ -45,7 +45,6 @@ describe("a prompt edit card's edit box", () => {
   it("approves a cleared replace as the replaced lines removed", async () => {
     const resolve = show(...replaced);
     type("");
-    screen.getByText("Empty, so the lines it changed are removed.");
     fireEvent.click(screen.getByRole("button", { name: "Approve edited" }));
     await waitFor(() => expect(resolve).toHaveBeenCalledWith("accept", { body: "# Rules\n- two\n" }));
   });

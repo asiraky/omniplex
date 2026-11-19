@@ -1160,7 +1160,7 @@ func (r *toolRig) agentThread(prompt, compact string) (threadID, agentID string)
 	if err := r.st.CreateProject(ctx, p); err != nil {
 		r.t.Fatal(err)
 	}
-	ag, err := r.st.CreateAgent(ctx, store.Agent{ProjectID: p.ID, Name: "Triage", Harness: r.ctl.id}, prompt, compact)
+	ag, err := r.st.CreateAgent(ctx, store.Agent{ProjectID: p.ID, Name: "Triage", Harness: r.ctl.id}, prompt, compact, "")
 	if err != nil {
 		r.t.Fatal(err)
 	}

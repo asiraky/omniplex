@@ -115,6 +115,8 @@ export function createArgs(d: AgentDraft): NewAgent {
     ...(kickoff ? { kickoff } : {}),
     prompt: d.prompt,
     compact: d.compact,
+    // c1's history says whether it is still Omniplex's text.
+    ...(d.compact === DEFAULT_COMPACT ? { compactReason: "Omniplex default" } : {}),
     start: !!kickoff,
   };
 }

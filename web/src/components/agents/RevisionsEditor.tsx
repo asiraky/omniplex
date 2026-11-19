@@ -1,5 +1,5 @@
 import { ArrowLeftIcon, Maximize2Icon, Undo2Icon } from "lucide-react";
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { ErrorLine, LoadError, Loading, Segmented } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
@@ -24,16 +24,9 @@ import { useIsDesktop } from "~/useMediaQuery";
 import { useLatest } from "~/useLatest";
 import { compactApplies, compactUse, diffStat, fmtDay, revLabel } from "./agentText";
 import { BodyText, DiffBox, WhoChip } from "./parts";
+import { RevisionDrafts, type Draft, type Kept } from "./revisionDrafts";
 import { PreambleDialog } from "./shared";
 
-type Draft = { text: string; base: number };
-type Kept = { draft: Draft | null; reason: string };
-
-/**
- * Unsaved edits by agent and kind, held by the agent page so a trip to another
- * tab and back finds them. Without one an edit lives as long as the editor.
- */
-export const RevisionDrafts = createContext<Map<string, Kept> | null>(null);
 
 /**
  * The Prompt and Compaction tabs: an editor on the latest revision, the

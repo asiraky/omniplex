@@ -144,7 +144,7 @@ func TestWelcomeCarriesTheAgents(t *testing.T) {
 	if err := st.CreateProject(ctx, project.Project{ID: "p1", Name: "p1"}); err != nil {
 		t.Fatal(err)
 	}
-	ag, err := st.CreateAgent(ctx, store.Agent{ProjectID: "p1", Name: "Backlog", Harness: "busy-test", Workspace: "local"}, "be terse", "")
+	ag, err := st.CreateAgent(ctx, store.Agent{ProjectID: "p1", Name: "Backlog", Harness: "busy-test", Workspace: "local"}, "be terse", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -27,7 +27,7 @@ import { AgentSettingsTab } from "./AgentSettingsTab";
 import { CompactionTab } from "./CompactionTab";
 import { LogTab } from "./LogTab";
 import { PromptTab } from "./PromptTab";
-import { RevisionDrafts } from "./RevisionsEditor";
+import { RevisionDrafts } from "./revisionDrafts";
 
 /** What the page asks App to do with the agent; App holds the dialogs, which the sidebar opens too. */
 export type AgentPageAction = "restart" | "newThread" | "archive";

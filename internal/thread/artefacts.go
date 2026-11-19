@@ -160,19 +160,26 @@ func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, met
 // the start: the harness would compact on whatever the file held before, or
 // on its default, and the log would record instructions it never read.
 func agentSetup(ctx context.Context, st *store.Store, meta store.ThreadMeta, x *extras, logf func(string, ...any)) {
+	// An agent that is gone leaves its thread a plain one. One that cannot be
+	// read fails the start: a thread that came up without its standing rules
+	// would look like the agent and not be it.
 	ag, err := st.Agent(ctx, meta.AgentID)
-	if err != nil {
+	if errors.Is(err, store.ErrNotFound) {
 		logf("agent %s of %s: %v", meta.AgentID, meta.ID, err)
+		return
+	}
+	if err != nil {
+		x.err = fmt.Errorf("reading agent %s: %w", meta.AgentID, err)
 		return
 	}
 	prompt, err := st.LatestAgentRevision(ctx, ag.ID, store.RevisionPrompt)
 	if err != nil {
-		logf("prompt of agent %s: %v", ag.ID, err)
+		x.err = fmt.Errorf("reading agent %s's prompt: %w", ag.ID, err)
 		return
 	}
 	compact, err := st.LatestAgentRevision(ctx, ag.ID, store.RevisionCompact)
 	if err != nil {
-		logf("compaction instructions of agent %s: %v", ag.ID, err)
+		x.err = fmt.Errorf("reading agent %s's compaction instructions: %w", ag.ID, err)
 		return
 	}
 	x.instructions = composeAgentInstructions(prompt.Body)

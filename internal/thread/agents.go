@@ -87,7 +87,10 @@ type NewAgent struct {
 	RawLog    bool   `json:"rawLog,omitempty"`
 	Prompt    string `json:"prompt"`
 	Compact   string `json:"compact"`
-	Start     bool   `json:"start"`
+	// CompactReason is c1's reason, which says whether it is Omniplex's
+	// default; empty is "Initial instructions".
+	CompactReason string `json:"compactReason,omitempty"`
+	Start         bool   `json:"start"`
 }
 
 // AgentPatch is the settings save_agent changes; nil fields stay as they
@@ -246,7 +249,7 @@ func (m *Manager) CreateAgent(ctx context.Context, n NewAgent) (store.Agent, Age
 	if err := m.checkCompactLength(ag.Harness, n.Compact); err != nil {
 		return store.Agent{}, AgentStart{}, err
 	}
-	ag, err := m.store.CreateAgent(ctx, ag, n.Prompt, n.Compact)
+	ag, err := m.store.CreateAgent(ctx, ag, n.Prompt, n.Compact, n.CompactReason)
 	if err != nil {
 		return store.Agent{}, AgentStart{}, err
 	}

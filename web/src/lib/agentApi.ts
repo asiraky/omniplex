@@ -25,6 +25,8 @@ export interface NewAgent {
   kickoff?: string;
   prompt: string;
   compact: string;
+  /** c1's reason; the server says "Initial instructions" without one. */
+  compactReason?: string;
   /** Start the first thread now, with kickoff as its first message. */
   start: boolean;
 }

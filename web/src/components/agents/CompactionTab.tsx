@@ -7,7 +7,7 @@ import { fmtTokens } from "~/lib/format";
 import { toast } from "~/lib/toast";
 import { errorText } from "~/lib/utils";
 import type { Agent } from "~/protocol";
-import { CLAUDE_MIN_COMPACT_AT, COMPACT_PRESETS, compactRole, harnessName } from "./agentText";
+import { CLAUDE_MIN_COMPACT_AT, COMPACT_PRESETS, compactRole, harnessName, takesCompactAt } from "./agentText";
 import { InfoBox } from "./parts";
 import { RevisionsEditor } from "./RevisionsEditor";
 
@@ -59,7 +59,7 @@ type Choice = "default" | `${number}`;
  * for the next start or restart, and the toast says so.
  */
 function CompactAt({ agent, api }: { agent: Agent; api: AgentApi }) {
-  const supported = agent.harness !== "pi";
+  const supported = takesCompactAt(agent.harness);
   const saved = agent.compactAt ?? 0;
   const [picked, setPicked] = useState<Choice | null>(null);
   const choice: Choice = picked ?? (saved ? `${saved}` : "default");

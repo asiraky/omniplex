@@ -16,7 +16,7 @@ func newTestAgent(t *testing.T, s *Store) Agent {
 	if err := s.CreateProject(ctx, project.Project{ID: "p1", Name: "P"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	a, err := s.CreateAgent(ctx, Agent{ProjectID: "p1", Name: "Backlog", Harness: "claude", Workspace: "local"}, "be terse", "keep state")
+	a, err := s.CreateAgent(ctx, Agent{ProjectID: "p1", Name: "Backlog", Harness: "claude", Workspace: "local"}, "be terse", "keep state", "")
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestCreatingAnAgentSavesItsFirstRevisions(t *testing.T) {
 
 func TestCreatingAnAgentInAMissingProjectFails(t *testing.T) {
 	s := openTestStore(t)
-	_, err := s.CreateAgent(context.Background(), Agent{ProjectID: "gone", Name: "x", Harness: "claude"}, "", "")
+	_, err := s.CreateAgent(context.Background(), Agent{ProjectID: "gone", Name: "x", Harness: "claude"}, "", "", "")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want not found", err)
 	}
@@ -268,17 +268,17 @@ func TestARevisionOnAStaleBaseIsRefused(t *testing.T) {
 
 func TestARevisionSameAsTheHeadIsRefused(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		kind string
-		body string
-		base int
-		want string // "" saves
+		name    string
+		kind    string
+		body    string
+		base    int
+		refused bool
 	}{
-		{"the head's prompt", RevisionPrompt, "second", 2, "The prompt is already this text, as r2. Nothing to save."},
-		{"the head's instructions", RevisionCompact, "second", 0, "The compaction instructions are already this text, as c2. Nothing to save."},
-		{"the head's text on a stale base", RevisionPrompt, "second", 1, "The prompt is already this text, as r2. Nothing to save."},
-		{"an older revision's text", RevisionPrompt, "be terse", 2, ""},
-		{"the head's text with whitespace changed", RevisionPrompt, "second\n", 2, ""},
+		{"the head's prompt", RevisionPrompt, "second", 2, true},
+		{"the head's instructions", RevisionCompact, "second", 0, true},
+		{"the head's text on a stale base", RevisionPrompt, "second", 1, true},
+		{"an older revision's text", RevisionPrompt, "be terse", 2, false},
+		{"the head's text with whitespace changed", RevisionPrompt, "second\n", 2, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := openTestStore(t)
@@ -290,16 +290,37 @@ func TestARevisionSameAsTheHeadIsRefused(t *testing.T) {
 			got, err := s.AddAgentRevision(ctx, a.ID, tc.kind, tc.body, AuthorAgent, "", tc.base)
 			var unchanged *RevisionUnchangedError
 			switch {
-			case tc.want == "" && (err != nil || got.N != 3):
+			case !tc.refused && (err != nil || got.N != 3):
 				t.Fatalf("save = r%d, %v; want r3", got.N, err)
-			case tc.want != "" && (!errors.As(err, &unchanged) || err.Error() != tc.want || got.N != 0):
-				t.Fatalf("save = r%d, %v; want refused with %q", got.N, err, tc.want)
+			case tc.refused && (!errors.As(err, &unchanged) || unchanged.Kind != tc.kind || unchanged.Head != 2 || got.N != 0):
+				t.Fatalf("save = r%d, %v; want refused as the same as %s 2", got.N, err, tc.kind)
 			}
 			head, _ := s.LatestAgentRevision(ctx, a.ID, tc.kind)
-			if want := map[bool]int{true: 2, false: 3}[tc.want != ""]; head.N != want {
+			if want := map[bool]int{true: 2, false: 3}[tc.refused]; head.N != want {
 				t.Fatalf("head = %d, want %d", head.N, want)
 			}
 		})
+	}
+}
+
+func TestCompactionInstructionsKeepTheReasonTheyWereCreatedWith(t *testing.T) {
+	for _, tc := range []struct{ given, want string }{
+		{"", "Initial instructions"},
+		{"Omniplex default", "Omniplex default"},
+	} {
+		s := openTestStore(t)
+		ctx := context.Background()
+		if err := s.CreateProject(ctx, project.Project{ID: "p1", Name: "P"}); err != nil {
+			t.Fatal(err)
+		}
+		a, err := s.CreateAgent(ctx, Agent{ProjectID: "p1", Name: "x", Harness: "claude"}, "be terse", "keep state", tc.given)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c1, _ := s.LatestAgentRevision(ctx, a.ID, RevisionCompact)
+		if c1.Reason != tc.want {
+			t.Fatalf("c1 reason given %q = %q, want %q", tc.given, c1.Reason, tc.want)
+		}
 	}
 }
 

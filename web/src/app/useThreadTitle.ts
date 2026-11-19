@@ -24,13 +24,28 @@ export function useThreadTitle(
   // reconnect, which is when telling them apart matters most.
   const title = useThread(threadStore, titleOf);
   const needsAttention = useThread(threadStore, needsAttentionOf);
-  useDocumentTitle(
-    pageTitle !== undefined
-      ? { title: pageTitle }
-      : activeId
-        ? { title: agentName || threadTitle(meta, title), needsAttention }
-        : null,
-  );
+  useDocumentTitle(tabTitle({ activeId, meta, title, needsAttention, agentName, pageTitle }));
+}
+
+/** What the tab says: the page's own title, else the attached thread's. */
+export function tabTitle({
+  activeId,
+  meta,
+  title,
+  needsAttention,
+  agentName,
+  pageTitle,
+}: {
+  activeId: string | null;
+  meta: ThreadMeta | undefined;
+  title: string | undefined;
+  needsAttention: boolean;
+  agentName?: string;
+  pageTitle?: string;
+}): { title: string; needsAttention?: boolean } | null {
+  if (pageTitle !== undefined) return { title: pageTitle };
+  if (!activeId) return null;
+  return { title: agentName || threadTitle(meta, title), needsAttention };
 }
 
 const titleOf = (state: ThreadState | null) => state?.title;
