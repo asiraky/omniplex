@@ -2005,3 +2005,22 @@ func TestRestartDoesNotLiftALimitHold(t *testing.T) {
 		t.Fatal("a restart lifted the limit's hold")
 	}
 }
+
+// A compaction notice on an agent's thread carries the epoch the host stamped
+// on it, which is what its Inspect link opens; one on any other thread has
+// none.
+func TestCompactionNoticeCarriesItsEpoch(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: "auto", PreTokens: 160000, Epoch: 3, CompactionID: 9}))
+	s.Apply(event(t, 2, proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: "manual"}))
+
+	if len(s.Items) != 2 {
+		t.Fatalf("items = %+v, want two notices", s.Items)
+	}
+	if s.Items[0].Epoch != 3 || s.Items[0].PreTokens != 160000 {
+		t.Fatalf("agent notice = %+v, want epoch 3", s.Items[0])
+	}
+	if s.Items[1].Epoch != 0 {
+		t.Fatalf("plain notice epoch = %d, want none", s.Items[1].Epoch)
+	}
+}

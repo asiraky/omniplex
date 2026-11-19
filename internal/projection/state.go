@@ -225,6 +225,9 @@ type Item struct {
 	Trigger    string        `json:"trigger,omitempty"` // auto | manual
 	PreTokens  int64         `json:"preTokens,omitempty"`
 	PostTokens int64         `json:"postTokens,omitempty"`
+	// Epoch is a compaction notice's number in its agent's log, on an agent's
+	// thread only: what the notice's Inspect link opens.
+	Epoch int `json:"epoch,omitempty"`
 	// Level is a notify notice's severity, warning or error; Text is the
 	// extension's message.
 	Level string `json:"level,omitempty"`
@@ -1327,6 +1330,7 @@ func (s *State) Apply(ev proto.Event) {
 			it.Trigger = p.Trigger
 			it.PreTokens = p.PreTokens
 			it.PostTokens = p.PostTokens
+			it.Epoch = p.Epoch
 		})
 
 	case proto.ArtefactShown:
