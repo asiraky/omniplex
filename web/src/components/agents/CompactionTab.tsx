@@ -7,7 +7,8 @@ import { fmtTokens } from "~/lib/format";
 import { toast } from "~/lib/toast";
 import { errorText } from "~/lib/utils";
 import type { Agent } from "~/protocol";
-import { CLAUDE_MIN_COMPACT_AT, COMPACT_PRESETS, compactRole, harnessName, takesCompactAt } from "./agentText";
+import { COMPACT_PRESETS, compactRole, harnessName } from "./agentText";
+import { CLAUDE_MIN_COMPACT_AT, takesCompactAt } from "./compactAt";
 import { InfoBox } from "./parts";
 import { RevisionsEditor } from "./RevisionsEditor";
 

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createThreadStore, ThreadStoreContext } from "~/app/threadStore";
@@ -288,7 +288,7 @@ describe("ThreadHeader: an agent's thread", () => {
     renderHeader({ isDesktop: true, nav: navFor(), harness: { canRestart: true, restartThread, command } });
     fireEvent.click(screen.getByRole("button", { name: "Restart" }));
     expect(command).not.toHaveBeenCalled();
-    fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Restart" }));
     await waitFor(() => expect(command).toHaveBeenCalledWith("restart_thread", { threadId: "a" }));
     expect(restartThread).not.toHaveBeenCalled();
   });

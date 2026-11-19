@@ -32,9 +32,8 @@ import { useThreadSelection, type DraftPreset } from "./app/useThreadSelection";
 import { useThreadTitle } from "./app/useThreadTitle";
 import { useTranscriptCopy } from "./app/useTranscriptCopy";
 import { useWire } from "./app/useWire";
-import { ArchiveAgentDialog, RestartAgentDialog } from "./components/agents/AgentDialogs";
 import type { AgentPageAction } from "./components/agents/AgentPage";
-import { NewAgentThreadDialog } from "./components/agents/NewAgentThreadDialog";
+import { ArchiveAgentDialog, NewAgentThreadDialog, RestartAgentDialog } from "./components/agents/lazyDialogs";
 import { AppDialogs } from "./components/AppDialogs";
 import { DeleteThreadDialog } from "./components/DeleteThreadDialog";
 import { EmptyState } from "./components/EmptyState";
@@ -783,20 +782,24 @@ export function App() {
             </Suspense>
           )}
 
-          {agentDialog?.kind === "newThread" && dialogAgent && (
-            <NewAgentThreadDialog agent={dialogAgent} command={command} onClose={() => setAgentDialog(null)} />
-          )}
-          {agentDialog?.kind === "restart" && dialogAgent && (
-            <RestartAgentDialog agent={dialogAgent} command={command} onClose={() => setAgentDialog(null)} />
-          )}
-          {agentDialog?.kind === "archive" && dialogAgent && (
-            <ArchiveAgentDialog
-              agent={dialogAgent}
-              api={agentsApi}
-              open
-              onOpenChange={(open) => !open && setAgentDialog(null)}
-              onArchived={() => afterArchive(dialogAgent)}
-            />
+          {agentDialog && dialogAgent && (
+            <Suspense fallback={null}>
+              {agentDialog.kind === "newThread" && (
+                <NewAgentThreadDialog agent={dialogAgent} command={command} onClose={() => setAgentDialog(null)} />
+              )}
+              {agentDialog.kind === "restart" && (
+                <RestartAgentDialog agent={dialogAgent} command={command} onClose={() => setAgentDialog(null)} />
+              )}
+              {agentDialog.kind === "archive" && (
+                <ArchiveAgentDialog
+                  agent={dialogAgent}
+                  api={agentsApi}
+                  open
+                  onOpenChange={(open) => !open && setAgentDialog(null)}
+                  onArchived={() => afterArchive(dialogAgent)}
+                />
+              )}
+            </Suspense>
           )}
 
           {/* Put away rather than unmounted under the box terminal and the agent

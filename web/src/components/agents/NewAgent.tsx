@@ -38,7 +38,8 @@ import {
   saveDraft,
   type AgentDraft,
 } from "./agentForm";
-import { CLAUDE_MIN_COMPACT_AT, COMPACT_PRESETS, compactRole, takesCompactAt } from "./agentText";
+import { COMPACT_PRESETS, compactRole } from "./agentText";
+import { CLAUDE_MIN_COMPACT_AT, takesCompactAt } from "./compactAt";
 import { PreambleDialog, ScopeSelect } from "./shared";
 
 /**

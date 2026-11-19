@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { render } from "~/test/harness";
 import type { Agent } from "~/protocol";
 
-import { agentCompactAt } from "./agents/agentText";
+import { agentCompactAt } from "./agents/compactAt";
 import { ContextMeter } from "./ContextMeter";
 
 describe("ContextMeter", () => {

@@ -22,7 +22,7 @@ import {
   TerminalIcon,
   XIcon,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { Suspense, useRef, useState } from "react";
 
 import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import type { PanelControls } from "~/app/usePanel";
@@ -36,8 +36,7 @@ import { cn } from "~/lib/utils";
 import type { Agent, ThreadMeta, ThreadState } from "~/protocol";
 import { useShortcutLabel } from "~/useShortcuts";
 
-import { RestartAgentDialog } from "./agents/AgentDialogs";
-import { NewAgentThreadDialog } from "./agents/NewAgentThreadDialog";
+import { NewAgentThreadDialog, RestartAgentDialog } from "./agents/lazyDialogs";
 import { ExtensionStatuses } from "./ExtensionStatuses";
 import { IconButton } from "./IconButton";
 import { TitleEditor } from "./TitleEditor";
@@ -216,11 +215,15 @@ export function ThreadHeader({
       {/* A phone's row is the title and one menu, with no room between: the
           chips take a line of their own, there only while there are any. */}
       {actions && !isDesktop && <ExtensionStatuses statuses={thread.extensionStatuses} inline={false} />}
-      {agent && !archived && newThreadOpen && (
-        <NewAgentThreadDialog agent={agent} command={harness.command} onClose={() => setNewThreadOpen(false)} />
-      )}
-      {agent && !archived && restartOpen && (
-        <RestartAgentDialog agent={agent} command={harness.command} onClose={() => setRestartOpen(false)} />
+      {agent && !archived && (newThreadOpen || restartOpen) && (
+        <Suspense fallback={null}>
+          {newThreadOpen && (
+            <NewAgentThreadDialog agent={agent} command={harness.command} onClose={() => setNewThreadOpen(false)} />
+          )}
+          {restartOpen && (
+            <RestartAgentDialog agent={agent} command={harness.command} onClose={() => setRestartOpen(false)} />
+          )}
+        </Suspense>
       )}
     </header>
   );

@@ -1,4 +1,4 @@
-import type { Agent, AgentTextKind, CompactionRow } from "~/protocol";
+import type { AgentTextKind, CompactionRow } from "~/protocol";
 import { diffLines } from "~/lib/lineDiff";
 import type { DiffLine } from "~/lib/patch";
 
@@ -70,23 +70,6 @@ export function compactApplies(harness: string, live: boolean): string {
     default:
       return "It applies at the next compaction, with no restart.";
   }
-}
-
-/** Claude Code will not compact earlier than this, whatever it is told. */
-export const CLAUDE_MIN_COMPACT_AT = 100_000;
-
-/** Whether a harness takes a compact-at threshold. Pi compacts on its own terms and ignores one. */
-export function takesCompactAt(harness: string): boolean {
-  return harness !== "pi";
-}
-
-/**
- * Where an agent's thread compacts, as its harness will take it; undefined for
- * the harness default, and for a harness that ignores the setting.
- */
-export function agentCompactAt(agent: Agent | undefined): number | undefined {
-  if (!agent?.compactAt || agent.compactAt <= 0 || !takesCompactAt(agent.harness)) return undefined;
-  return agent.harness === "claude" ? Math.max(agent.compactAt, CLAUDE_MIN_COMPACT_AT) : agent.compactAt;
 }
 
 /** A character count the way the log shows sizes: 56, 0.7k, 14.8k, 120k. */
