@@ -113,7 +113,7 @@ func (a *Actor) Transcript(ctx context.Context, since, maxChars int) (turns []Tu
 				if len(out) > 0 {
 					break
 				}
-				t.Reply = keepTail(t.Reply, maxChars-utf8.RuneCountInString(t.Prompt))
+				t.Reply = KeepTail(t.Reply, maxChars-utf8.RuneCountInString(t.Prompt))
 				size = maxChars
 			}
 			out = append(out, t)
@@ -154,9 +154,9 @@ func turnDigest(s *projection.State, i int, parts []string) TurnDigest {
 	return TurnDigest{Index: i, ID: t.ID, Prompt: t.Prompt, Reply: strings.Join(parts, "\n\n"), StopReason: t.StopReason, Error: t.Error, Done: t.Done}
 }
 
-// keepTail cuts text to at most n runes, keeping its end behind a "…". The
+// KeepTail cuts text to at most n runes, keeping its end behind a "…". The
 // end is where a turn says what it found; the start is how it got there.
-func keepTail(text string, n int) string {
+func KeepTail(text string, n int) string {
 	if utf8.RuneCountInString(text) <= n {
 		return text
 	}

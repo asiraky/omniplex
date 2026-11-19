@@ -61,12 +61,6 @@ export function sidebarThreads(threads: ThreadMeta[], tree = threadTree(threads)
   return threads.filter((t) => rowOf(tree, t.id) === t.id);
 }
 
-/** The thread that delegated this one, when it is still in the list. */
-export function listedParent(tree: ThreadTree, t: ThreadMeta | undefined): ThreadMeta | undefined {
-  if (!t?.parentId || t.parentId === t.id) return undefined;
-  return tree.byId.get(t.parentId);
-}
-
 export interface Descendant {
   thread: ThreadMeta;
   /** 0 for a direct child. */

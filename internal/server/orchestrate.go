@@ -557,16 +557,6 @@ func (l look) header() string {
 	return fmt.Sprintf("%s %q (%s): %s, %d %s", l.meta.ID, l.title(), model, statusWord(l.att, l.d), l.d.Turns, plural(l.d.Turns, "turn", "turns"))
 }
 
-// keepTail cuts text to at most n runes, keeping its end: where a reply
-// says what it found.
-func keepTail(text string, n int) string {
-	if utf8.RuneCountInString(text) <= n {
-		return text
-	}
-	r := []rune(text)
-	return "…" + string(r[len(r)-max(n-1, 0):])
-}
-
 // ---- thread_list, thread_read, task_status ----
 
 func (s *Server) threadList(ctx context.Context, t toolThread) (string, error) {
@@ -681,7 +671,7 @@ func (s *Server) taskStatus(ctx context.Context, t toolThread, body []byte) (str
 	if st, done := finished(l.att, l.d, s.orch.since(meta.ID)); done && l.d.Last != nil {
 		reply := l.d.Last.Reply
 		cut := utf8.RuneCountInString(reply) > statusReply
-		fmt.Fprintf(&b, "\n\nLast reply (%s):\n%s", st, cmp.Or(keepTail(reply, statusReply), "(no reply)"))
+		fmt.Fprintf(&b, "\n\nLast reply (%s):\n%s", st, cmp.Or(thread.KeepTail(reply, statusReply), "(no reply)"))
 		if cut {
 			fmt.Fprintf(&b, "\n\nThat is its end; thread_read with id %s has all of it.", meta.ID)
 		} else {
@@ -746,7 +736,7 @@ func (s *Server) threadInterrupt(ctx context.Context, t toolThread, body []byte)
 		return "", err
 	}
 	// Dropped first, so the stop it makes is never news.
-	s.orch.delivered(meta.ID)
+	s.orch.abandon(meta.ID)
 	if actor, ok := s.mgr.Peek(meta.ID); ok {
 		if err := actor.Cancel(ctx); err != nil && !errors.Is(err, thread.ErrClosed) {
 			return "", err
@@ -771,7 +761,7 @@ func (s *Server) stopDescendants(ctx context.Context, id string) (int, error) {
 		return 0, err
 	}
 	for _, m := range desc {
-		s.orch.delivered(m.ID)
+		s.orch.abandon(m.ID)
 		if a, ok := s.mgr.Peek(m.ID); ok {
 			if err := a.Cancel(ctx); err != nil && !errors.Is(err, thread.ErrClosed) {
 				s.logf("stop delegated thread %s: %v", m.ID, err)
@@ -932,7 +922,7 @@ func (s *Server) checkWait(ctx context.Context, ids []string) ([]waited, bool, e
 			return nil, false, err
 		}
 		w := waited{l: l, status: "working"}
-		if st, ok := finished(l.att, l.d, s.orch.since(id)); ok {
+		if st, ok := finished(l.att, l.d, s.orch.since(id)); ok && !s.orch.busy(id) {
 			w.status, w.done = st, true
 		} else {
 			all = false
@@ -960,7 +950,7 @@ func inline(id, reply string, budget *int) string {
 		return reply
 	}
 	if *budget >= 512 {
-		out := keepTail(reply, *budget) + "\n… (its start is cut: use thread_read with id " + id + " to read the whole result.)"
+		out := thread.KeepTail(reply, *budget) + "\n… (its start is cut: use thread_read with id " + id + " to read the whole result.)"
 		*budget = 0
 		return out
 	}
@@ -1317,6 +1307,9 @@ type orchestrator struct {
 	mu sync.Mutex
 	// owed is keyed by child.
 	owed map[string]owed
+	// abandoned is the delegated threads stopped from above: owed nothing
+	// until something sends them work again.
+	abandoned map[string]bool
 	// held counts waits on a thread: its result goes to the wait, not a wake.
 	held map[string]int
 	// asked is the questions already told to the parent, by child.
@@ -1335,7 +1328,7 @@ type orchestrator struct {
 }
 
 func newOrchestrator(s *Server) *orchestrator {
-	o := &orchestrator{s: s, watched: s.watched, kick: make(chan struct{}, 1), owed: map[string]owed{}, held: map[string]int{}, asked: map[string]map[string]bool{}, batches: map[string]*wakeBatch{}, pushed: map[string]string{}}
+	o := &orchestrator{s: s, watched: s.watched, kick: make(chan struct{}, 1), owed: map[string]owed{}, abandoned: map[string]bool{}, held: map[string]int{}, asked: map[string]map[string]bool{}, batches: map[string]*wakeBatch{}, pushed: map[string]string{}}
 	if s.push != nil {
 		o.send = func(ctx context.Context, m push.Message) {
 			if _, err := s.push.Send(ctx, m); err != nil {
@@ -1392,17 +1385,45 @@ func (o *orchestrator) poke() {
 func (o *orchestrator) owe(child, parent string, since int) {
 	o.mu.Lock()
 	o.owed[child] = owed{parent: parent, since: since}
+	delete(o.abandoned, child)
 	o.mu.Unlock()
 }
 
 // oweUnlessOwed is owe for a thread not owed already: one that is keeps
-// the turn its result is owed from.
+// the turn its result is owed from. A thread stopped from above is not
+// owed again by a wait that saw it before the stop.
 func (o *orchestrator) oweUnlessOwed(child, parent string, since int) {
 	o.mu.Lock()
-	if _, ok := o.owed[child]; !ok {
+	if _, ok := o.owed[child]; !ok && !o.abandoned[child] {
 		o.owed[child] = owed{parent: parent, since: since}
 	}
 	o.mu.Unlock()
+}
+
+// abandon is delivered for a thread stopped from above: its stop is no
+// one's news.
+func (o *orchestrator) abandon(child string) {
+	o.delivered(child)
+	o.mu.Lock()
+	o.abandoned[child] = true
+	o.mu.Unlock()
+}
+
+// busy reports a thread still collecting what it delegated: a result owed
+// to it, or news on its way to it. Its own result is not in until those
+// have woken it and it has answered.
+func (o *orchestrator) busy(id string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if b := o.batches[id]; b != nil && b.queueID == "" && len(b.entries) > b.sent {
+		return true
+	}
+	for child, w := range o.owed {
+		if w.parent == id && !o.abandoned[child] {
+			return true
+		}
+	}
+	return false
 }
 
 // delivered drops what child owed: its result reached the parent another
@@ -1505,6 +1526,10 @@ func (o *orchestrator) wakes(ctx context.Context, byID map[string]store.ThreadMe
 		}
 		title := cmp.Or(meta.Title, "untitled")
 		if st, ok := finished(att, d, c.since); ok {
+			if o.busy(c.child) {
+				// It waits on what it delegated: its answer comes after.
+				continue
+			}
 			reply := ""
 			if d.Last != nil {
 				reply = d.Last.Reply
@@ -1512,15 +1537,17 @@ func (o *orchestrator) wakes(ctx context.Context, byID map[string]store.ThreadMe
 					reply = strings.TrimSpace(reply + "\n(error: " + d.Last.Error + ")")
 				}
 			}
+			// Taken off owed and put in the parent's batch in one step, so
+			// the parent is never seen with neither.
 			o.mu.Lock()
-			cur, still := o.owed[c.child]
-			if still && cur == c.owed {
-				delete(o.owed, c.child)
+			if cur, still := o.owed[c.child]; !still || cur != c.owed {
+				o.mu.Unlock()
+				continue
 			}
+			delete(o.owed, c.child)
+			fresh, queued := o.enqueue(c.parent, wakeEntry{id: c.child, title: title, status: st, text: reply})
 			o.mu.Unlock()
-			if still && cur == c.owed {
-				o.add(c.parent, wakeEntry{id: c.child, title: title, status: st, text: reply})
-			}
+			o.sendAfter(c.parent, fresh, queued)
 			continue
 		}
 		if att != projection.AttentionNeedsAnswer {
@@ -1556,15 +1583,26 @@ func (o *orchestrator) wakes(ctx context.Context, byID map[string]store.ThreadMe
 // or the batch already waiting in the parent's queue, amended now.
 func (o *orchestrator) add(parent string, e wakeEntry) {
 	o.mu.Lock()
+	fresh, queued := o.enqueue(parent, e)
+	o.mu.Unlock()
+	o.sendAfter(parent, fresh, queued)
+}
+
+// enqueue puts e in the parent's batch, under o.mu: fresh is a new batch,
+// queued one already in the parent's queue.
+func (o *orchestrator) enqueue(parent string, e wakeEntry) (fresh, queued bool) {
 	b := o.batches[parent]
-	fresh := b == nil
+	fresh = b == nil
 	if fresh {
 		b = &wakeBatch{}
 		o.batches[parent] = b
 	}
 	b.entries = append(b.entries, e)
-	queued := b.queueID != ""
-	o.mu.Unlock()
+	return fresh, b.queueID != ""
+}
+
+// sendAfter schedules what enqueue made due.
+func (o *orchestrator) sendAfter(parent string, fresh, queued bool) {
 	switch {
 	case fresh:
 		o.later(parent)
@@ -1703,9 +1741,17 @@ func wakeText(entries []wakeEntry) (text string, some bool) {
 		if e.gone {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("Delegated thread %s %q [%s]:\n%s", e.id, e.title, e.status, inline(e.id, e.text, &budget)))
+		parts = append(parts, fmt.Sprintf("Delegated thread %s [%s]:\n%s", threadLink(e.id, e.title), e.status, inline(e.id, e.text, &budget)))
 	}
 	return strings.Join(parts, "\n\n"), len(parts) > 1
+}
+
+// threadLink is a thread as an omniplex-thread:// link, which the web app
+// shows as a pill that opens it, so a finished child stays a tap away from
+// the message that reported it.
+func threadLink(id, title string) string {
+	esc := strings.NewReplacer(`\`, `\\`, `[`, `\[`, `]`, `\]`).Replace(title)
+	return "[@" + esc + "](omniplex-thread://" + id + ")"
 }
 
 // pushes notifies the user once each time a delegated thread comes to need

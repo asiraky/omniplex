@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/adapter/claudecode"
 	"github.com/asiraky/omniplex/internal/artefact"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/project"
@@ -262,6 +263,17 @@ func (r *orchRig) delegate(parent, prompt string) string {
 	return id
 }
 
+// running waits for a HOLD turn to be under way: a stop before it starts
+// drops the prompt instead of stopping a turn.
+func (r *orchRig) running(prompt string) {
+	r.t.Helper()
+	eventually(r.t, prompt+" runs", func() bool {
+		r.h.mu.Lock()
+		defer r.h.mu.Unlock()
+		return r.h.held[prompt] != nil
+	})
+}
+
 func (r *orchRig) digest(id string) thread.Digest {
 	r.t.Helper()
 	a, err := r.mgr.View(context.Background(), id)
@@ -383,6 +395,8 @@ func TestInterruptingStopsEveryDescendant(t *testing.T) {
 	parent, _ := r.parent()
 	child := r.delegate(parent, "HOLD child")
 	grandchild := r.delegate(child, "HOLD grandchild")
+	r.running("HOLD child")
+	r.running("HOLD grandchild")
 
 	text := r.ok(parent, "thread_interrupt", map[string]any{"id": child})
 	if !strings.Contains(text, "1 thread") {
@@ -406,11 +420,71 @@ func TestStoppingAThreadStopsWhatItDelegated(t *testing.T) {
 	r.ws = dialWS(t, r.srv.Handler())
 	parent, _ := r.parent()
 	child := r.delegate(parent, "HOLD child")
+	r.running("HOLD child")
 	r.ws.ok("cancel", map[string]any{"threadId": parent}, nil)
 	eventually(t, "the child stops", func() bool {
 		d := r.digest(child)
 		return d.Last != nil && d.Last.Done && d.Last.StopReason == proto.StopCancelled
 	})
+}
+
+func TestAThreadThatDelegatedFinishesOnceItHasAnswered(t *testing.T) {
+	r := newOrchRig(t)
+	parent, _ := r.parent()
+	child := r.delegate(parent, "HOLD child")
+	r.delegate(child, "HOLD grandchild")
+
+	// The child's turn ends with its own delegate still out: not its result.
+	r.h.release(t, "HOLD child")
+	time.Sleep(3 * wakeWindow)
+	if w := r.wakes(parent); len(w) != 0 {
+		t.Fatalf("parent woken with %q before the child had its delegate's result", w)
+	}
+	r.h.release(t, "HOLD grandchild")
+	eventually(t, "the child is woken", func() bool { return len(r.wakes(child)) == 1 })
+	eventually(t, "the parent is woken", func() bool { return len(r.wakes(parent)) == 1 })
+	if w := r.wakes(parent)[0]; !strings.Contains(w, "done: [Omniplex]") {
+		t.Fatalf("wake = %q, want the child's answer to its own wake", w)
+	}
+}
+
+func TestStoppingAWaitingThreadDoesNotWakeItAgain(t *testing.T) {
+	r := newOrchRig(t)
+	r.ws = dialWS(t, r.srv.Handler())
+	parent, _ := r.parent()
+	ctx, leave := context.WithCancel(context.Background())
+	defer leave()
+	res := r.start(ctx, parent, "delegate_task", map[string]any{"prompt": "HOLD child", "wait": true})
+	r.running("HOLD child")
+
+	// Stop, then the harness drops the call it was in, as a stopped turn does.
+	r.ws.ok("cancel", map[string]any{"threadId": parent}, nil)
+	leave()
+	<-res
+	time.Sleep(3 * wakeWindow)
+	if w := r.wakes(parent); len(w) != 0 {
+		t.Fatalf("stopped parent woken with %q", w)
+	}
+}
+
+func TestAPreApprovedOnlyParentCannotGrantEdits(t *testing.T) {
+	modes := (&claudecode.Adapter{}).PermissionModes()
+	parent := agentSettings{Harness: "claude", Model: "x", Mode: "dontAsk"}
+	claude := harnessCatalog{ID: "claude", Modes: modes}
+	if _, err := resolveChildSettings(parent, modes, claude, settingsAsk{Mode: "acceptEdits"}); err == nil {
+		t.Fatal("a dontAsk parent delegated an acceptEdits thread")
+	}
+	other := harnessCatalog{ID: "b", Modes: []adapter.PermissionModeMeta{{ID: "ask", Level: adapter.LevelAsk}, {ID: "edits", Level: adapter.LevelEdits}}}
+	got, err := resolveChildSettings(parent, modes, other, settingsAsk{})
+	if err != nil || got.Mode != "ask" {
+		t.Fatalf("another harness under a dontAsk parent = %+v, %v; want ask", got, err)
+	}
+}
+
+func TestThreadLinkEscapesItsTitle(t *testing.T) {
+	if got, want := threadLink("t1", `Plan [v2] \ x`), `[@Plan \[v2\] \\ x](omniplex-thread://t1)`; got != want {
+		t.Fatalf("threadLink = %s, want %s", got, want)
+	}
 }
 
 func TestAWaitEndsWhenAChildNeedsTheUser(t *testing.T) {

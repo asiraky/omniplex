@@ -1,4 +1,4 @@
-// Run with: node --test internal/adapter/piapp/mcpbridge.test.mjs
+// Run with: npm run test:pi
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";

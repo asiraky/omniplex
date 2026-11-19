@@ -5,7 +5,6 @@ import {
   childStatus,
   delegatedCounts,
   descendants,
-  listedParent,
   rowMarks,
   sidebarThreads,
   stripLabel,
@@ -40,15 +39,6 @@ describe("sidebarThreads", () => {
   it("does not hide threads whose parent chain loops", () => {
     const list = [t("x", { parentId: "y" }), t("y", { parentId: "x" }), t("self", { parentId: "self" })];
     expect(ids(sidebarThreads(list))).toEqual(["x", "y", "self"]);
-  });
-});
-
-describe("listedParent", () => {
-  it("finds the parent only while it is listed", () => {
-    const tree = threadTree([t("p"), t("c", { parentId: "p" })]);
-    expect(listedParent(tree, tree.byId.get("c"))?.id).toBe("p");
-    expect(listedParent(tree, t("o", { parentId: "gone" }))).toBeUndefined();
-    expect(listedParent(tree, tree.byId.get("p"))).toBeUndefined();
   });
 });
 
