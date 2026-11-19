@@ -234,6 +234,77 @@ func TestResultReportsEpochDetail(t *testing.T) {
 	details(plain, 0)
 }
 
+// One long turn can compact twice. Each compaction's detail goes out at its
+// epoch's first answer from the main agent, before the next compaction, so
+// the host files it on that compaction's row; a subagent's answer is not the
+// epoch's. The result reads the last epoch again.
+func TestEachCompactionInATurnReportsItsDetail(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "projects", "-repo", "c1.jsonl")
+	s := newTestSession()
+	s.configDir, s.cwd, s.harnessSessionID = dir, "/repo", "c1"
+	s.epochDetail = true
+
+	var entries []map[string]any
+	write := func(more ...map[string]any) {
+		entries = append(entries, more...)
+		transcript(t, file, entries...)
+	}
+	send := func(m map[string]any) { s.handleSDKMessage(rawSDK(t, m)) }
+	compact := func() {
+		send(map[string]any{"type": "system", "subtype": "compact_boundary", "compact_metadata": map[string]any{"trigger": "auto"}})
+	}
+	mainAnswer := func() {
+		send(map[string]any{"type": "assistant", "message": map[string]any{"id": "m", "role": "assistant", "content": []any{map[string]any{"type": "text", "text": "ok"}}}})
+	}
+	// next is the next compaction event or detail, as "compacted" or the
+	// detail's summary.
+	next := func() string {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case e := <-s.events:
+				switch p := e.Payload.(type) {
+				case proto.ContextCompactedPayload:
+					return "compacted"
+				case proto.CompactionDetailPayload:
+					return p.Summary + " " + strings.Join(names(p.Attachments), ",")
+				}
+			case <-deadline:
+				t.Fatal("no compaction event")
+			}
+		}
+	}
+
+	write(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "go"}}, answer(), boundary())
+	compact()
+	// The summary is not in the file yet, so a read here would find nothing.
+	send(map[string]any{"type": "assistant", "parent_tool_use_id": "toolu_1", "message": map[string]any{"id": "sub", "role": "assistant", "content": []any{map[string]any{"type": "text", "text": "sub"}}}})
+	write(summaryEntry("first summary"), attach(map[string]any{"type": "file", "filename": "/repo/one.go"}, "one"), answer())
+	mainAnswer()
+	var got []string
+	for range 2 {
+		got = append(got, next())
+	}
+
+	write(boundary(), summaryEntry("second summary"), attach(map[string]any{"type": "file", "filename": "/repo/two.go"}, "two"), answer())
+	compact()
+	mainAnswer()
+	send(map[string]any{"type": "result", "stop_reason": "end_turn"})
+	for range 3 {
+		got = append(got, next())
+	}
+
+	want := []string{
+		"compacted", "first summary file:/repo/one.go",
+		"compacted", "second summary file:/repo/two.go", "second summary file:/repo/two.go",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("events = %q\nwant %q", got, want)
+	}
+}
+
 // An agent's session options reach the bridge: the compaction hook in its
 // settings, whose command prints the instructions file however its path is
 // spelt, and the environment for the compact window, memory and raw log.

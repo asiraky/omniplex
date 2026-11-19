@@ -72,27 +72,45 @@ func agentEnv(o adapter.CreateOptions) ([]string, error) {
 	return env, nil
 }
 
-// reportEpochs reads what is due at a result: the first epoch's start on a
-// new conversation, and the new epoch's after a compaction. The read runs
-// beside the stream, since a long conversation's transcript is many
-// megabytes; the context.compacted it belongs to has gone out already.
-func (s *session) reportEpochs() {
+// reportEpochs reads what is due: the first epoch's start at the first result
+// of a new conversation, and a compaction's new epoch at the epoch's first
+// answer. The host files a compaction's detail on the latest compaction row,
+// so it has to go out before the next compaction does; one long turn can
+// compact more than once. By that answer the summary and attachments are in
+// the transcript; the read at the next result is in case the answer beat
+// them to the file. The reads run beside the stream, since a long
+// conversation's transcript is many megabytes, one after another, so a later
+// read never goes out before an earlier one.
+func (s *session) reportEpochs(atResult bool) {
 	s.mu.Lock()
-	start, compacted := s.startDetail, s.compacted
-	s.startDetail, s.compacted = false, false
-	id := parseConversation(s.harnessSessionID).id
-	s.mu.Unlock()
-	if !start && !compacted {
+	start := s.startDetail && atResult
+	latest := s.compacted || (atResult && s.epochOpen)
+	if start {
+		s.startDetail = false
+	}
+	if latest {
+		s.compacted, s.epochOpen = false, !atResult
+	}
+	if !start && !latest {
+		s.mu.Unlock()
 		return
 	}
+	id := parseConversation(s.harnessSessionID).id
+	prev, done := s.epochRead, make(chan struct{})
+	s.epochRead = done
+	s.mu.Unlock()
 	go func() {
+		defer close(done)
+		if prev != nil {
+			<-prev
+		}
 		file, err := findConversation(s.configDir, s.cwd, id)
 		if err != nil || file == "" {
 			s.logf("claude: no transcript to read the compaction detail from: %v", err)
 			return
 		}
 		for _, first := range []bool{true, false} {
-			if (first && !start) || (!first && !compacted) {
+			if (first && !start) || (!first && !latest) {
 				continue
 			}
 			d, ok, err := readEpochDetail(file, first)
