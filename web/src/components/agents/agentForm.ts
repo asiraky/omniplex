@@ -44,6 +44,12 @@ export function onlyInstance(harnesses: HarnessMeta[], harness: string, instance
   return own.map((h) => ({ ...h, instances: h.instances.filter((i) => i.id === id) }));
 }
 
+/**
+ * Classes for an effort Segmented: six levels on a 390px phone cut every label
+ * short at the usual padding, so the tabs give up most of it there.
+ */
+export const EFFORT_FIT = "max-md:[&>button]:px-1.5";
+
 /** The reasoning levels the chosen model takes, most modest first. */
 export function modelEfforts(harnesses: HarnessMeta[], sel: ModelSelection): string[] {
   const inst = resolveInstance(pickerInstances(harnesses), sel.instance, sel.harness);

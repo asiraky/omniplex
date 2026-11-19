@@ -27,6 +27,7 @@ import {
   clearDraft,
   createArgs,
   DEFAULT_COMPACT,
+  EFFORT_FIT,
   fmtK,
   harnessModes,
   initialChoice,
@@ -223,7 +224,7 @@ export function NewAgent({
                   value={d.effort}
                   options={["", ...efforts].map((e) => ({ id: e, label: formatEffort(e) }))}
                   onChange={(effort) => set({ effort })}
-                  className="mt-2"
+                  className={cn("mt-2", EFFORT_FIT)}
                 />
               )}
             </Field>

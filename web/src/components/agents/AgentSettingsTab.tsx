@@ -12,7 +12,7 @@ import { formatEffort } from "~/lib/efforts";
 import { toast } from "~/lib/toast";
 import { cn, errorText } from "~/lib/utils";
 import type { Agent, HarnessMeta, Project } from "~/protocol";
-import { fmtK, harnessModes, keepEffort, modelEfforts, onlyInstance } from "./agentForm";
+import { EFFORT_FIT, fmtK, harnessModes, keepEffort, modelEfforts, onlyInstance } from "./agentForm";
 
 const WHOLE = "__whole";
 const NEXT_MESSAGE = "Saved. Applies from the next message.";
@@ -106,6 +106,7 @@ export function AgentSettingsTab({
             value={a.effort ?? ""}
             options={["", ...efforts].map((e) => ({ id: e, label: formatEffort(e) }))}
             onChange={(effort) => void save({ effort }, NEXT_MESSAGE)}
+            className={EFFORT_FIT}
           />
         </Row>
       )}
