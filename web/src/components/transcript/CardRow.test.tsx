@@ -56,3 +56,25 @@ describe("a card's row in the transcript", () => {
     expect(signInButtons()).toHaveLength(0);
   });
 });
+
+describe("a prompt edit's row", () => {
+  const edit = (kind: "prompt" | "compact"): Card => ({
+    kind: "prompt_edit",
+    promptEdit: { agentId: "ag1", agentName: "backlog", kind, fromRev: 7, before: "a", after: "a\nb", reason: "r" },
+  });
+
+  it("names the revision an approval saved", () => {
+    row(edit("prompt"), { result: "saved", revision: 8 });
+    expect(screen.getByText("Saved as r8")).toBeTruthy();
+  });
+
+  it("names a compaction revision as one", () => {
+    row(edit("compact"), { result: "saved", revision: 4 });
+    expect(screen.getByText("Saved as c4")).toBeTruthy();
+  });
+
+  it("says nothing was saved on a rejection", () => {
+    row(edit("prompt"), { result: "declined" });
+    expect(screen.getByText("Rejected — nothing saved")).toBeTruthy();
+  });
+});

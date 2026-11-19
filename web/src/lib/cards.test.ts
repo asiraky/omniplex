@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   accountEdits,
   cliDraft,
+  editableSpan,
+  promptEditBody,
   createEdits,
   installEdits,
   mcpEdits,
@@ -271,5 +273,33 @@ describe("signInTargets", () => {
       ).toEqual([]);
     }
     expect(signInTargets(undefined, origin)).toEqual([]);
+  });
+});
+
+describe("prompt_edit edits", () => {
+  const card = (before: string, after: string): Card => ({
+    kind: "prompt_edit",
+    promptEdit: { agentId: "ag1", agentName: "backlog", kind: "prompt", fromRev: 7, before, after, reason: "remember" },
+  });
+
+  it("opens only the lines the proposal changes", () => {
+    expect(editableSpan("a\nb\nc", "a\nB\nc").middle).toBe("B");
+    expect(editableSpan("a\nb", "a\nb\nnew rule").middle).toBe("new rule");
+  });
+
+  it("puts the edited lines back between the ones left alone", () => {
+    expect(promptEditBody(card("a\nb\nc", "a\nB\nc"), "B, but better\nand more")).toBe("a\nB, but better\nand more\nc");
+  });
+
+  it("sends nothing for an edit that ends where the proposal was", () => {
+    expect(promptEditBody(card("a\nb\nc", "a\nB\nc"), "B")).toBeUndefined();
+  });
+
+  it("drops the change when its lines are cleared", () => {
+    expect(promptEditBody(card("a\nc", "a\nb\nc"), "")).toBe("a\nc");
+  });
+
+  it("can put text into a proposal that only removed lines", () => {
+    expect(promptEditBody(card("a\nb\nc", "a\nc"), "x")).toBe("a\nx\nc");
   });
 });

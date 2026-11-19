@@ -7,6 +7,7 @@
 // touched is never sent.
 
 import type {
+  AgentTextKind,
   AuthBeginArgs,
   Card,
   CardCli,
@@ -27,6 +28,7 @@ export const CARD_LABEL: Record<CardKind, string> = {
   remove_skill: "remove skill",
   add_sign_in: "add sign-in",
   add_account: "add account",
+  prompt_edit: "prompt edit",
 };
 
 export const PROJECT_SCOPE = "This project";
@@ -67,6 +69,13 @@ export function cardSummary(card: Card): string {
       return `Add a sign-in for ${card.cli?.name ?? "a command-line tool"}`;
     case "add_account":
       return `Add the account ${card.account?.name ?? ""} to ${card.account?.cliName || card.account?.cli || "a sign-in"}`;
+    case "prompt_edit": {
+      const edit = card.promptEdit;
+      const what = edit?.kind === "compact" ? "its compaction instructions" : "its system prompt";
+      // An append reads as the rule it is; anything else is a change.
+      const verb = edit && edit.after.startsWith(edit.before) ? "add to" : "change";
+      return `${edit?.agentName || "The agent"} wants to ${verb} ${what}.`;
+    }
   }
 }
 
@@ -173,13 +182,54 @@ export function accountEdits(card: Card, name: string): CardEdits | undefined {
   return next && next !== (card.account?.name ?? "") ? { name: next } : undefined;
 }
 
+// ---- prompt_edit ----
+
+/** r<n> for a prompt revision, c<n> for compaction instructions. */
+export function revisionLabel(kind: AgentTextKind, n: number): string {
+  return `${kind === "compact" ? "c" : "r"}${n}`;
+}
+
+const lines = (text: string) => text.split("\n");
+
+/**
+ * The part of a proposal the user edits: the lines it changes, between what
+ * it leaves alone at either end. A 40-line prompt with one rule added is one
+ * line to edit, not 40 to scroll through on a phone.
+ */
+export function editableSpan(before: string, after: string): { head: string[]; middle: string; tail: string[] } {
+  const a = lines(before);
+  const b = lines(after);
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  return { head: b.slice(0, head), middle: b.slice(head, b.length - tail).join("\n"), tail: b.slice(b.length - tail) };
+}
+
+/** The whole text the edited span makes, or undefined when it is the proposal as sent. */
+export function promptEditBody(card: Card, middle: string): string | undefined {
+  const edit = card.promptEdit;
+  if (!edit) return undefined;
+  const span = editableSpan(edit.before, edit.after);
+  if (middle === span.middle) return undefined;
+  const body = [...span.head, ...(middle === "" ? [] : lines(middle)), ...span.tail].join("\n");
+  return body === edit.after ? undefined : body;
+}
+
 // ---- what happened ----
 
 const REMOVES: CardKind[] = ["remove_mcp_server", "remove_skill"];
 const INSTALLS: CardKind[] = ["install_skill", "create_skill"];
 
 /** The marker on a card's row: what was done with it. */
-export function resultText(kind: CardKind, result: CardResult): string {
+export function resultText(kind: CardKind, result: CardResult, outcome?: CardOutcome, card?: Card): string {
+  if (kind === "prompt_edit") {
+    // The revision is what the user will look for on the agent page.
+    if (result === "saved" && outcome?.revision) {
+      return `Saved as ${revisionLabel(card?.promptEdit?.kind ?? "prompt", outcome.revision)}`;
+    }
+    if (result === "declined") return "Rejected — nothing saved";
+  }
   switch (result) {
     case "pending":
       return "Waiting for you";

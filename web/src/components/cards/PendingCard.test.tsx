@@ -226,3 +226,51 @@ describe("an account card", () => {
     expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
   });
 });
+
+describe("a prompt edit card", () => {
+  const edit: Card = {
+    kind: "prompt_edit",
+    promptEdit: {
+      agentId: "ag1",
+      agentName: "backlog",
+      kind: "prompt",
+      fromRev: 7,
+      before: "# Rules\n- one\n",
+      after: "# Rules\n- one\n- kill a silent worker\n",
+      reason: "Remember that.",
+    },
+  };
+
+  it("approves the proposal as sent", async () => {
+    const resolve = show(edit);
+    save("Approve");
+    await waitFor(() => expect(resolve).toHaveBeenCalledWith("accept", undefined));
+  });
+
+  it("rejects", async () => {
+    const resolve = show(edit);
+    save("Reject");
+    await waitFor(() => expect(resolve).toHaveBeenCalledWith("decline", undefined));
+  });
+
+  it("approves the edited text as the whole body", async () => {
+    const resolve = show(edit);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const field = screen.getByLabelText("Edited change") as HTMLTextAreaElement;
+    expect(field.value).toBe("- kill a silent worker");
+    fireEvent.change(field, { target: { value: "- kill a worker silent for 20 minutes" } });
+    save("Approve edited");
+    await waitFor(() =>
+      expect(resolve).toHaveBeenCalledWith("accept", { body: "# Rules\n- one\n- kill a worker silent for 20 minutes\n" }),
+    );
+  });
+
+  it("goes back to the proposal on Undo", async () => {
+    const resolve = show(edit);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Edited change"), { target: { value: "something else" } });
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    save("Approve");
+    await waitFor(() => expect(resolve).toHaveBeenCalledWith("accept", undefined));
+  });
+});
