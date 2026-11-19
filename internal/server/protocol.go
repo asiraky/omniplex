@@ -62,6 +62,9 @@ type serverFrame struct {
 	Threads   []store.ThreadMeta `json:"threads,omitempty"`
 	Harnesses []thread.Harness   `json:"harnesses,omitempty"`
 	Projects  []project.Project  `json:"projects,omitempty"`
+	// Agents is every agent not archived, whole, on welcome and in an
+	// "agents" frame on any change. No bodies: prompts are fetched on demand.
+	Agents []store.Agent `json:"agents,omitempty"`
 	// Quotas is every provider instance's cached usage limits, sent on
 	// welcome and re-sent whole whenever a live push or a refresh changes one
 	// — the whole list, because one provider moving must never blank another.
