@@ -239,6 +239,29 @@ describe("NewAgent", () => {
     expect(props.api.create).toHaveBeenCalledWith(expect.objectContaining({ harness: "codex", mode: "full-access" }));
   });
 
+  it("is done with the form once the agent is saved, even when its thread failed to start", async () => {
+    const api = mockApi({ create: vi.fn(async () => ({ agent: agent({ id: "a9" }), startError: "no harness" })) });
+    const { props } = open({ api });
+    type("Name", "triage");
+    type("System prompt", "# Triage");
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "a9" }), undefined));
+    expect(toast.error).toHaveBeenCalledWith(expect.any(String), { description: "no harness" });
+  });
+
+  it("says when the thread started but its first message did not send", async () => {
+    const api = mockApi({
+      create: vi.fn(async () => ({ agent: agent({ id: "a9" }), threadId: "t9", promptError: "busy" })),
+    });
+    const { props } = open({ api });
+    type("Name", "triage");
+    type("System prompt", "# Triage");
+    type("First message", "Poll now.");
+    fireEvent.click(screen.getByRole("button", { name: "Create and start" }));
+    await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "a9" }), "t9"));
+    expect(toast.error).toHaveBeenCalledWith(expect.any(String), { description: "busy" });
+  });
+
   it("keeps the form open with the error when creating fails", async () => {
     const api = mockApi({ create: vi.fn(async () => Promise.reject(new Error("name taken"))) });
     const { props } = open({ api });

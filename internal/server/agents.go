@@ -92,11 +92,17 @@ func (s *Server) agentCommand(ctx context.Context, name string, raw json.RawMess
 			return nil, err
 		}
 		ag, start, err := mgr.CreateAgent(ctx, a)
-		if err != nil {
+		if err != nil && ag.ID == "" {
 			return nil, err
 		}
 		out := map[string]any{"agent": ag}
 		startOut(out, start)
+		if err != nil {
+			// Saved, but its thread did not start. Failing the command
+			// would have the user create the agent a second time; New
+			// thread retries the start.
+			out["startError"] = err.Error()
+		}
 		return out, nil
 
 	case "save_agent":
@@ -170,10 +176,17 @@ func (s *Server) agentCommand(ctx context.Context, name string, raw json.RawMess
 		// The agent's own edits come through its approved card, never this
 		// command: here it is always the user writing.
 		rev, restart, err := mgr.SaveAgentRevision(ctx, a.AgentID, a.Kind, a.Body, store.AuthorUser, a.Reason, a.BaseRev)
-		if err != nil {
+		if err != nil && rev.N == 0 {
 			return nil, err
 		}
-		return map[string]any{"revision": rev, "restart": restart}, nil
+		out := map[string]any{"revision": rev, "restart": restart}
+		if err != nil {
+			// Saved, but the file the harness reads or the restart onto it
+			// failed. Failing the command would have the editor save it
+			// again, over its own revision.
+			out["applyError"] = err.Error()
+		}
+		return out, nil
 
 	case "agent_preamble":
 		return map[string]any{"text": mgr.AgentPreamble()}, nil

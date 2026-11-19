@@ -255,6 +255,69 @@ func TestSavingAPromptRestartsTheLiveThreadOntoIt(t *testing.T) {
 	}
 }
 
+// A prompt saved while the agent's thread has no process running starts
+// none: the thread's next start is the restart onto it, and the start after
+// that, caught up, is a plain resume.
+func TestSavingAPromptOnADormantThreadRestartsItsNextStart(t *testing.T) {
+	r := newAgentRig(t)
+	ctx := context.Background()
+	ag, a := r.create(t, NewAgent{Start: true, Workspace: "local"})
+	runTurn(t, a, r.fa, "hello", "hi")
+	a.Dispose("test")
+	_, starts := lastOpts(r.fa)
+
+	_, restart, err := r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionPrompt, "be terser", store.AuthorUser, "", 0)
+	if err != nil || restart != RestartNone {
+		t.Fatalf("save on a dormant thread = %q, %v; want none", restart, err)
+	}
+	if _, n := lastOpts(r.fa); n != starts {
+		t.Fatal("the save started a process")
+	}
+
+	b, err := r.mgr.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o, n := lastOpts(r.fa); n != starts+1 || !o.Resume || !o.Restart || o.Instructions != composeAgentInstructions("be terser") {
+		t.Fatalf("%d starts, resume %v restart %v; want one restart onto the new prompt", n-starts, o.Resume, o.Restart)
+	}
+	if n := restartNotices(stateOf(t, b)); len(n) != 1 || n[0].PromptRev != 2 {
+		t.Fatalf("restart notices = %+v, want one naming r2", n)
+	}
+	waitFor(t, func() bool { return r.agent(t, ag.ID).LivePromptRev == 2 })
+
+	b.Dispose("test")
+	if _, err := r.mgr.Get(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if o, n := lastOpts(r.fa); n != starts+2 || o.Restart {
+		t.Fatalf("%d starts, restart %v; want a plain resume once caught up", n-starts, o.Restart)
+	}
+}
+
+// Forcing away an agent thread whose cleanup failed keeps it, closed: it is
+// the agent's log.
+func TestForceDeletingAnAgentThreadKeepsItsLog(t *testing.T) {
+	r := newAgentRig(t)
+	ctx := context.Background()
+	_, a := r.create(t, NewAgent{Start: true, Workspace: "local", Kickoff: "go"})
+	a.Dispose("test")
+	if err := r.st.SetPhase(ctx, a.ID, "cleanup_failed"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.mgr.ForceDelete(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := r.st.Thread(ctx, a.ID)
+	if err != nil || meta.Phase != "closed" {
+		t.Fatalf("thread = %q, %v; want it kept, closed", meta.Phase, err)
+	}
+	if rows, err := r.st.ThreadCompactions(ctx, a.ID); err != nil || len(rows) != 1 {
+		t.Fatalf("compactions = %d, %v; want epoch 0 kept", len(rows), err)
+	}
+}
+
 func TestSavingAPromptWithNoLiveThreadRestartsNothing(t *testing.T) {
 	r := newAgentRig(t)
 	ag, _ := r.create(t, NewAgent{Workspace: "local"})

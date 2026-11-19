@@ -40,19 +40,26 @@ export type RestartOutcome = "none" | "now" | "pending";
 /** The agent commands, typed. Every agent change also arrives as an `agents` frame. */
 export function agentApi(command: Command) {
   return {
-    create: (a: NewAgent): Promise<{ agent: Agent; threadId?: string }> => command("create_agent", { ...a }),
+    /**
+     * The agent is saved even when its thread then fails to start
+     * (startError) or its first message fails to send (promptError).
+     */
+    create: (a: NewAgent): Promise<{ agent: Agent; threadId?: string; promptError?: string; startError?: string }> =>
+      command("create_agent", { ...a }),
     save: (agentId: string, patch: AgentPatch): Promise<{ agent: Agent }> =>
       command("save_agent", { agentId, ...patch }),
     archive: (agentId: string): Promise<unknown> => command("archive_agent", { agentId }),
     /** Archive the live thread, if any, and start a fresh one with this first message. */
-    newThread: (agentId: string, firstMessage: string): Promise<{ threadId: string }> =>
+    newThread: (agentId: string, firstMessage: string): Promise<{ threadId: string; promptError?: string }> =>
       command("agent_new_thread", { agentId, firstMessage }),
     revisions: async (agentId: string, kind: AgentTextKind): Promise<AgentRevision[]> =>
       ((await command("agent_revisions", { agentId, kind })) as { revisions: AgentRevision[] }).revisions,
     /**
      * A new revision; reverting is saving an old body again. baseRev is the
      * head the edit started from: if another revision landed since, the
-     * server refuses rather than drop it.
+     * server refuses rather than drop it. applyError is a save that
+     * landed but did not reach the thread: the file the harness reads, or
+     * the restart onto it, failed.
      */
     saveRevision: (
       agentId: string,
@@ -60,7 +67,7 @@ export function agentApi(command: Command) {
       body: string,
       reason: string,
       baseRev: number,
-    ): Promise<{ revision: AgentRevision; restart: RestartOutcome }> =>
+    ): Promise<{ revision: AgentRevision; restart: RestartOutcome; applyError?: string }> =>
       command("save_agent_revision", { agentId, kind, body, reason, baseRev }),
     /** The fixed text Omniplex puts between its own instructions and the agent's prompt. */
     preamble: async (): Promise<string> => ((await command("agent_preamble", {})) as { text: string }).text,

@@ -123,7 +123,8 @@ export function RevisionsEditor({
       setRevs((rs) => (rs && !rs.some((r) => r.n === res.revision.n) ? [...rs, res.revision] : rs));
       setPendingRev(res.restart === "pending" ? res.revision.n : null);
       const saved = label(res.revision.n);
-      if (res.restart === "now") toast.success(`Saved ${saved}. The thread restarted on it.`);
+      if (res.applyError) toast.error(`Saved ${saved}, but it did not reach the thread`, { description: res.applyError });
+      else if (res.restart === "now") toast.success(`Saved ${saved}. The thread restarted on it.`);
       else if (res.restart === "pending") toast.success(`Saved ${saved}. The thread restarts on it when the current turn ends.`);
       else if (!isPrompt) toast.success(`Saved ${saved}. ${compactApplies(agent.harness, false)}`);
       else toast.success(agent.threadId ? `Saved ${saved}.` : `Saved ${saved}. It applies when a thread starts.`);

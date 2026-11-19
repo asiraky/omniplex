@@ -161,7 +161,8 @@ export function AgentPage({
             ) : tab === "compact" ? (
               <CompactionTab agent={agent} api={api} focus={focus} />
             ) : tab === "log" ? (
-              <LogTab agent={agent} api={api} focus={focus} />
+              // Keyed by agent: a thread picked on one agent's log is not the next one's.
+              <LogTab key={agent.id} agent={agent} api={api} focus={focus} />
             ) : (
               <AgentSettingsTab
                 agent={agent}

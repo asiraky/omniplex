@@ -324,6 +324,7 @@ const (
 	cmdRead           = "read"
 	cmdRewind         = "rewind"
 	cmdRestart        = "restart"
+	cmdRestartLive    = "restart_live"
 	cmdCancelRestart  = "cancel_restart"
 	cmdAgentSettings  = "agent_settings"
 )
@@ -1289,8 +1290,9 @@ func (a *Actor) handle(c command) (stop bool) {
 			cwd, model, mode, effort, tier = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort, a.state.ServiceTier
 		}
 		// A restart still waiting when its process went away, with the
-		// server or on its own, is carried out by this start.
-		restartDue := c.resume && a.state.RestartPending
+		// server or on its own, is carried out by this start, as is one an
+		// agent's edit needed while no process was running to restart.
+		restartDue := c.resume && (a.state.RestartPending || a.agentSetupBehind(ctx))
 		if err := a.startProcess(ctx, adapter.CreateOptions{
 			Cwd: cwd, Model: model, Mode: mode, Effort: effort, ServiceTier: tier, Resume: c.resume,
 			Restart: restartDue && hasRunATurn(a.state),
@@ -1396,6 +1398,14 @@ func (a *Actor) handle(c command) (stop bool) {
 		a.takeAgentSettings(*c.agentSettings, c.reply)
 
 	case cmdRestart:
+		pending, err := a.requestRestart(ctx)
+		c.reply <- cmdResult{value: pending, err: err}
+
+	case cmdRestartLive:
+		if a.sess == nil {
+			c.reply <- cmdResult{err: ErrNotReady}
+			return false
+		}
 		pending, err := a.requestRestart(ctx)
 		c.reply <- cmdResult{value: pending, err: err}
 

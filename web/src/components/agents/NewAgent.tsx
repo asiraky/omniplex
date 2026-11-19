@@ -20,6 +20,7 @@ import { Textarea } from "~/components/ui/textarea";
 import type { AgentApi } from "~/lib/agentApi";
 import { formatEffort } from "~/lib/efforts";
 import { fmtTokens } from "~/lib/format";
+import { toast } from "~/lib/toast";
 import { cn, errorText } from "~/lib/utils";
 import type { Agent, HarnessMeta, Project, UserConfig } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
@@ -105,9 +106,16 @@ export function NewAgent({
     setBusy(true);
     setError(null);
     try {
-      const { agent, threadId } = await api.create(createArgs(d));
+      const res = await api.create(createArgs(d));
       clearDraft();
-      onCreated(agent, threadId);
+      onCreated(res.agent, res.threadId);
+      // Saved either way, so the form is done with: a retry would make a
+      // second agent.
+      if (res.startError) {
+        toast.error("The agent was saved, but its thread did not start", { description: res.startError });
+      } else if (res.promptError) {
+        toast.error("The thread started, but the first message did not send", { description: res.promptError });
+      }
     } catch (err) {
       setError(errorText(err));
       setBusy(false);

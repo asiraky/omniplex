@@ -474,7 +474,7 @@ func (m *Manager) SaveAgentRevision(ctx context.Context, id, kind, body, author,
 	if ag.ThreadID == "" {
 		return rev, RestartNone, nil
 	}
-	pending, err := m.RestartThread(ctx, ag.ThreadID)
+	pending, err := m.restartLive(ctx, ag.ThreadID)
 	switch {
 	case errors.Is(err, ErrNotReady), errors.Is(err, ErrClosed), errors.Is(err, store.ErrNotFound):
 		// Nothing running: provisioning, closed, or gone. The next start
@@ -616,6 +616,22 @@ func (a *Actor) agentOf(ctx context.Context) (store.Agent, bool) {
 		return store.Agent{}, false
 	}
 	return ag, true
+}
+
+// agentSetupBehind is whether this is an agent's live thread whose last
+// process started on an older prompt than the agent's latest, or on older
+// compaction instructions when its harness reads them only at start: its
+// next start has to restart onto them rather than resume on what the
+// harness pinned.
+func (a *Actor) agentSetupBehind(ctx context.Context) bool {
+	ag, ok := a.agentOf(ctx)
+	if !ok || ag.ThreadID != a.ID || ag.LivePromptRev == 0 {
+		return false
+	}
+	if ag.LivePromptRev < ag.PromptRev {
+		return true
+	}
+	return adapter.CompactInstructionsOf(a.adapter).Reads == adapter.CompactReadsAtStart && ag.LiveCompactRev < ag.CompactRev
 }
 
 func (a *Actor) notifyAgents() {

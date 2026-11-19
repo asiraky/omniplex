@@ -282,6 +282,22 @@ describe("PromptTab", () => {
     await waitFor(() => expect(saveRevision).toHaveBeenCalledWith("a1", "prompt", "mine\n", "", 3));
   });
 
+  it("treats a save that did not reach the thread as saved, and says why", async () => {
+    toast.success.mockClear();
+    const saveRevision = vi.fn(async () => ({
+      revision: rev(3, "edited\n"),
+      restart: "none" as const,
+      applyError: "restart failed",
+    }));
+    const api = mockApi({ saveRevision });
+    render(<PromptTab agent={agent()} api={api} />);
+    await typeInto("edited\n");
+    fireEvent.click(screen.getByRole("button", { name: /save as r3/i }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.any(String), { description: "restart failed" }));
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("shows the wait while the agent has a restart pending, and drops it when the restart is done", async () => {
     const saveRevision = vi.fn(async () => ({ revision: rev(3, "edited\n"), restart: "pending" as const }));
     const api = mockApi({ saveRevision });

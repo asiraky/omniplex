@@ -1884,7 +1884,9 @@ func (m *Manager) cleaningThreadIn(ctx context.Context, cwd string) (string, boo
 
 // ForceDelete skips the project deprovision hook after it has failed. It only
 // removes the exact recorded Git worktree, prunes Git metadata, then purges the
-// transcript. The project root is never removed.
+// transcript. The project root is never removed. An agent's thread keeps its
+// transcript and is closed instead: it is the agent's log, and compactions
+// point into it.
 func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()
@@ -1909,6 +1911,9 @@ func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 		if err := m.removeGitWorktree(ctx, meta, f, nil, true); err != nil {
 			return err
 		}
+	}
+	if meta.AgentID != "" {
+		return m.closeLocked(ctx, id, "workspace force-removed")
 	}
 	if live, ok := m.Peek(id); ok {
 		live.Dispose("force deleted")

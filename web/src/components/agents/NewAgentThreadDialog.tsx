@@ -15,6 +15,7 @@ import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
 import { agentApi, type Command } from "~/lib/agentApi";
 import { useAgentNav } from "~/lib/agentNav";
+import { toast } from "~/lib/toast";
 import { errorText } from "~/lib/utils";
 import type { Agent } from "~/protocol";
 
@@ -45,9 +46,10 @@ export function NewAgentThreadDialog({
     setBusy(true);
     setError(null);
     try {
-      const { threadId } = await agentApi(command).newThread(agent.id, text);
+      const { threadId, promptError } = await agentApi(command).newThread(agent.id, text);
       onClose();
       openThread(threadId);
+      if (promptError) toast.error("The thread started, but the message did not send", { description: promptError });
     } catch (e) {
       setError(errorText(e));
       setBusy(false);
