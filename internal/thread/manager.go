@@ -157,6 +157,9 @@ type Manager struct {
 	// edited or removed on the phone stayed on the laptop's screen until it
 	// reconnected, and a removed one could still be picked in new-thread.
 	projectSub map[string]chan struct{}
+	// agentSub wakes on any change to an agent as the agents frame shows
+	// it, its live thread, epoch and live prompt revision included.
+	agentSub map[string]chan struct{}
 
 	// The per-instance usage-limit cache and its broadcast. Cached in memory
 	// only: quota is a live property of the account, and a stale snapshot
@@ -255,6 +258,7 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		listSub:         map[string]chan struct{}{},
 		harnessSub:      map[string]chan struct{}{},
 		projectSub:      map[string]chan struct{}{},
+		agentSub:        map[string]chan struct{}{},
 		quotas:          map[string]*QuotaStatus{},
 		quotaGeneration: map[string]uint64{},
 		quotaSub:        map[string]chan struct{}{},
@@ -1062,6 +1066,9 @@ type CreateProjectOptions struct {
 	// ParentID is the thread that delegated this one; empty for a thread the
 	// user started.
 	ParentID string
+	// AgentID makes the thread an agent's: its system prompt and compaction
+	// come from the agent (see harnessExtras). Set by the agent paths only.
+	AgentID string
 }
 
 // folder finds one folder of a project. An empty id means the project's only
@@ -1229,7 +1236,7 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 		}
 	}
 
-	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Title: normaliseTitle(o.Title), Phase: "creating", ProjectID: p.ID, FolderID: f.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, ServiceTier: o.ServiceTier, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(f.Path, provision), DeprovisionScript: relHook(f.Path, deprovision), Pinned: o.Pinned, ParentID: o.ParentID}
+	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Title: normaliseTitle(o.Title), Phase: "creating", ProjectID: p.ID, FolderID: f.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, ServiceTier: o.ServiceTier, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(f.Path, provision), DeprovisionScript: relHook(f.Path, deprovision), Pinned: o.Pinned, ParentID: o.ParentID, AgentID: o.AgentID}
 	if err := m.store.CreateThread(ctx, meta); err != nil {
 		return nil, err
 	}
@@ -1538,6 +1545,7 @@ func (m *Manager) adopt(a *Actor) {
 	}
 	a.onExit = m.forgetFn(a.ID, a)
 	a.onPhase = m.notifyList
+	a.onAgents = m.notifyAgents
 	a.imagePath = m.imagePath
 	a.toolImage = m.toolImage
 	a.cardLive = m.liveCard
@@ -1686,6 +1694,11 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 	meta, err := m.store.Thread(ctx, id)
 	if err != nil {
 		return err
+	}
+	// An agent's threads, archived ones included, are its log: compactions
+	// point into them.
+	if meta.AgentID != "" {
+		return agentThreadRefusal("deleted")
 	}
 	if removeWorktree {
 		if meta.WorkspaceMode == "local" {

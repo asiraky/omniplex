@@ -143,6 +143,9 @@ type Actor struct {
 	// onPhase fires when the thread moves between idle and turn, so a
 	// thread list rendered elsewhere can follow along.
 	onPhase func()
+	// onAgents fires when this thread changes its agent: a compaction, a
+	// setting written through, the prompt revision a process started on.
+	onAgents func()
 
 	// recovery is set by Resume when the log shows a turn the server died in
 	// the middle of, or background work the agent was waiting on. Recover
@@ -1820,6 +1823,9 @@ func (a *Actor) startProcess(ctx context.Context, o adapter.CreateOptions) error
 	if err != nil {
 		return err
 	}
+	if x.agent != nil {
+		a.startedOnPrompt(ctx, x.agent)
+	}
 	a.Cwd, a.sess, a.preparing = cwd, sess, false
 	a.pump(sess)
 	a.startCheckpoints()
@@ -2504,11 +2510,25 @@ func (a *Actor) write(em proto.Emission) error {
 		a.holdTurnStatus(em)
 		return nil
 	}
+	// What a harness says about a compaction belongs in its agent's log,
+	// not the thread's: it can run to the whole summary and every file
+	// re-read, which no transcript reader wants on the wire.
+	if em.Type == proto.CompactionDetail {
+		a.fileCompactionDetail(ctx, em)
+		return nil
+	}
+	var compactionID int64
+	if em.Type == proto.ContextCompacted {
+		em, compactionID = a.recordCompaction(ctx, em)
+	}
 
 	ev, err := a.store.Append(ctx, a.ID, em)
 	if err != nil {
 		a.logf("append %s on %s: %v", em.Type, a.ID, err)
 		return err
+	}
+	if compactionID != 0 {
+		a.compactionLogged(ctx, compactionID, ev.Seq)
 	}
 
 	prevPhase := a.wantedPhase()

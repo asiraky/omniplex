@@ -27,6 +27,9 @@ func (m *Manager) RenameThread(ctx context.Context, threadID, title string) (str
 	if title == "" {
 		return "", ErrEmptyTitle
 	}
+	if err := m.refuseAgentThread(ctx, threadID, "renamed"); err != nil {
+		return "", err
+	}
 	if err := m.store.RenameThread(ctx, threadID, title); err != nil {
 		return "", err
 	}
