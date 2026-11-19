@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Transcript } from "./Transcript";
+import { requestSeqJump } from "./transcript/seqJump";
 import { createThreadStore, ThreadStoreContext } from "~/app/threadStore";
 import { render, viewport } from "~/test/harness";
 import { shortTime } from "~/lib/scheduleTime";
@@ -1304,5 +1305,80 @@ describe("find in thread", () => {
   it("draws no bar while closed", () => {
     attach(finished(), <Transcript {...view().props} find={controls({ open: false })} />);
     expect(screen.queryByLabelText("Find in thread")).toBeNull();
+  });
+});
+
+describe("opening a thread at an event seq", () => {
+  const notice = (seq: number): any => ({
+    id: `compact:${seq}`,
+    kind: "notice",
+    noticeKind: "compaction",
+    trigger: "auto",
+    receivedAt: seq,
+  });
+  const agent = (id: string): any => ({ id, kind: "message", role: "agent", contentKind: "text", text: id, receivedAt: 1 });
+  const at = (items: any[], itemsBefore = 0): any => ({ ...state(""), items, itemsBefore });
+  const scrolledTo = () =>
+    vi.mocked(Element.prototype.scrollIntoView).mock.contexts.map((el) => (el as Element).getAttribute("data-item-id"));
+
+  // The painter every jump waits for, loaded up front so a jump lands in a tick.
+  beforeAll(() => import("./transcript/findPaint"));
+  afterEach(() => requestSeqJump("a"));
+
+  it("scrolls to the compaction the seq made when it is in the window", async () => {
+    requestSeqJump("a", 7);
+    attach(at([agent("m1"), notice(7), agent("m2")]), view());
+    await waitFor(() => expect(scrolledTo()).toEqual(["compact:7"]));
+    expect(document.querySelector('[data-item-id="compact:7"]')?.hasAttribute("data-find-flash")).toBe(true);
+  });
+
+  it("jumps when asked after the thread is already open", async () => {
+    attach(at([notice(3), agent("m1"), notice(9)]), view());
+    act(() => requestSeqJump("a", 3));
+    await waitFor(() => expect(scrolledTo()).toEqual(["compact:3"]));
+  });
+
+  it("pages older history in until the seq's item arrives", async () => {
+    const onLoadOlder = vi.fn();
+    const { frame } = attach(at([agent("m3"), notice(40)], 200), <Transcript {...view().props} onLoadOlder={onLoadOlder} />);
+    act(() => requestSeqJump("a", 7));
+    await waitFor(() => expect(onLoadOlder).toHaveBeenCalledTimes(1));
+
+    // A page without it: ask for the next one.
+    frame(at([agent("m2"), agent("m3"), notice(40)], 100));
+    await waitFor(() => expect(onLoadOlder).toHaveBeenCalledTimes(2));
+    expect(scrolledTo()).toEqual([]);
+
+    frame(at([agent("m1"), notice(7), agent("m2"), agent("m3"), notice(40)], 0));
+    await waitFor(() => expect(scrolledTo()).toEqual(["compact:7"]));
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it("lands on the next compaction once the window reaches past a seq that is gone", async () => {
+    const onLoadOlder = vi.fn();
+    requestSeqJump("a", 7);
+    attach(at([notice(5), agent("m1"), notice(12)], 50), <Transcript {...view().props} onLoadOlder={onLoadOlder} />);
+    await waitFor(() => expect(scrolledTo()).toEqual(["compact:12"]));
+    expect(onLoadOlder).not.toHaveBeenCalled();
+  });
+
+  // Each ends on a jump this thread was asked for, given time first for one
+  // that went wrong to land, so it would show ahead of it.
+  const settle = () => act(() => new Promise((r) => setTimeout(r, 20)));
+  it("leaves another thread's ask alone", async () => {
+    requestSeqJump("b", 7);
+    attach(at([notice(7), notice(9)]), view());
+    await settle();
+    act(() => requestSeqJump("a", 9));
+    await waitFor(() => expect(scrolledTo()).toEqual(["compact:9"]));
+  });
+
+  it("opens where it was left when no seq is given", async () => {
+    requestSeqJump("a", 7);
+    requestSeqJump("a");
+    attach(at([notice(7), notice(9)]), view());
+    await settle();
+    act(() => requestSeqJump("a", 9));
+    await waitFor(() => expect(scrolledTo()).toEqual(["compact:9"]));
   });
 });

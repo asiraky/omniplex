@@ -45,6 +45,7 @@ import { ThreadDraft } from "./components/ThreadDraft";
 import { ThreadHeader } from "./components/ThreadHeader";
 import { ThreadPanel } from "./components/ThreadPanel";
 import { ThreadView } from "./components/ThreadView";
+import { requestSeqJump } from "./components/transcript/seqJump";
 import type { Command } from "./lib/agentApi";
 import { AgentNavContext, type AgentFocus, type AgentNav, type AgentTab } from "./lib/agentNav";
 import { useCopy } from "./lib/clipboard";
@@ -222,11 +223,17 @@ export function App() {
   // A thread from anywhere: off an agent page when one is up, else a pick.
   // Kept stable for the sidebar's memo.
   const pageOpen = !!page;
+  // Either lands where the thread was left, so a jump into a thread asked for
+  // before (seqJump.ts) and not yet landed is dropped.
   const showThread = useCallback(
-    (id: string) => (pageOpen ? leavePage(id) : select(id)),
+    (id: string) => {
+      requestSeqJump(id);
+      return pageOpen ? leavePage(id) : select(id);
+    },
     [pageOpen, leavePage, select],
   );
   const openThread = (id: string) => {
+    requestSeqJump(id);
     if (pageOpen) {
       uncover();
       leavePage(id);
@@ -256,7 +263,16 @@ export function App() {
     [showThread, openAgent],
   );
   const agentNav = useMemo<AgentNav>(
-    () => ({ current, threadId: activeId ?? undefined, openAgent, openThread: (id) => showThread(id) }),
+    () => ({
+      current,
+      threadId: activeId ?? undefined,
+      openAgent,
+      // After the open, which drops any ask still standing.
+      openThread: (id, seq) => {
+        showThread(id);
+        requestSeqJump(id, seq);
+      },
+    }),
     [current, activeId, openAgent, showThread],
   );
   // New thread and a server-side swap both give an agent a new live thread;

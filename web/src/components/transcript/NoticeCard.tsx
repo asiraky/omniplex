@@ -72,7 +72,8 @@ function CompactionNotice({ item }: { item: Item }) {
       : "";
   const epoch = item.epoch;
   return (
-    <div className="fade-in flex justify-center">
+    // By id, so a log row's "Before" can jump here.
+    <div data-item-id={item.id} className="fade-in flex justify-center">
       <div className="text-muted-foreground flex max-w-full flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 rounded-full border px-3 py-1 text-[12px]">
         <ArchiveIcon className="size-3.5 shrink-0" />
         <span>
