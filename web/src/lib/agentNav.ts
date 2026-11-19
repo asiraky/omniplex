@@ -14,15 +14,17 @@ export interface AgentFocus {
 /**
  * What the thread view needs to know about agents without the app's state:
  * the agent the attached thread runs for (absent on any other thread), and a
- * way to open an agent's page. App provides it; the default does nothing.
+ * way to open an agent's page or one of its threads. App provides it; the default does nothing.
  */
 export interface AgentNav {
   /** The agent whose live thread is attached, if it is one. */
   current?: Agent;
   openAgent(agentId: string, tab?: AgentTab, focus?: AgentFocus): void;
+  /** Attach a thread, scrolled to the item at seq when one is given. */
+  openThread(threadId: string, seq?: number): void;
 }
 
-export const AgentNavContext = createContext<AgentNav>({ openAgent: () => {} });
+export const AgentNavContext = createContext<AgentNav>({ openAgent: () => {}, openThread: () => {} });
 
 export function useAgentNav(): AgentNav {
   return useContext(AgentNavContext);
