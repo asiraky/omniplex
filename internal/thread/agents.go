@@ -435,7 +435,9 @@ func (m *Manager) AgentRevisions(ctx context.Context, id, kind string) ([]store.
 // SaveAgentRevision saves a new revision of the agent's prompt or compaction
 // instructions; reverting is saving an old body again. base, when above 0,
 // is the revision the edit started from, and the save is refused if another
-// has been saved since (store.RevisionMovedError).
+// has been saved since (store.RevisionMovedError). A body the same as the
+// latest is refused (store.RevisionUnchangedError): nothing is written and
+// nothing restarts.
 //
 // A new prompt restarts the live thread onto it: now when it is idle, once
 // its turn ends when busy. New compaction instructions are rewritten to the
@@ -756,11 +758,18 @@ func (a *Actor) fileCompactionDetail(ctx context.Context, em proto.Emission) {
 
 // firstMessageLogged fills the agent's epoch 0 with the thread's first
 // message, for a thread started without one: its brief's opening is then the
-// message the user typed. Only once per actor, and only while epoch 0 is
-// empty.
-func (a *Actor) firstMessageLogged(ctx context.Context, text string) {
-	if a.startFilled || strings.TrimSpace(text) == "" {
+// message the user typed. One with no text, only attachments, is still the
+// first, and is filed as what it carried, "[1 image]". Only once per actor,
+// and only while epoch 0 is empty.
+func (a *Actor) firstMessageLogged(ctx context.Context, text string, images []proto.PromptImage) {
+	if a.startFilled {
 		return
+	}
+	if strings.TrimSpace(text) == "" {
+		if len(images) == 0 {
+			return
+		}
+		text = "[" + proto.AttachmentTitle(images) + "]"
 	}
 	a.startFilled = true
 	meta, err := a.store.Thread(ctx, a.ID)

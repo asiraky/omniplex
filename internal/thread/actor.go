@@ -2053,7 +2053,7 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 			title = proto.AttachmentTitle(images)
 		}
 		_ = a.store.SetTitle(ctx, a.ID, title)
-		a.firstMessageLogged(ctx, prompt)
+		a.firstMessageLogged(ctx, prompt, images)
 	}
 
 	// A turn a human asked for — a prompt, or a continue — is the agent's

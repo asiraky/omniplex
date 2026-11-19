@@ -266,6 +266,43 @@ func TestARevisionOnAStaleBaseIsRefused(t *testing.T) {
 	}
 }
 
+func TestARevisionSameAsTheHeadIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind string
+		body string
+		base int
+		want string // "" saves
+	}{
+		{"the head's prompt", RevisionPrompt, "second", 2, "The prompt is already this text, as r2. Nothing to save."},
+		{"the head's instructions", RevisionCompact, "second", 0, "The compaction instructions are already this text, as c2. Nothing to save."},
+		{"the head's text on a stale base", RevisionPrompt, "second", 1, "The prompt is already this text, as r2. Nothing to save."},
+		{"an older revision's text", RevisionPrompt, "be terse", 2, ""},
+		{"the head's text with whitespace changed", RevisionPrompt, "second\n", 2, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTestStore(t)
+			ctx := context.Background()
+			a := newTestAgent(t, s)
+			if _, err := s.AddAgentRevision(ctx, a.ID, tc.kind, "second", AuthorUser, "", 0); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.AddAgentRevision(ctx, a.ID, tc.kind, tc.body, AuthorAgent, "", tc.base)
+			var unchanged *RevisionUnchangedError
+			switch {
+			case tc.want == "" && (err != nil || got.N != 3):
+				t.Fatalf("save = r%d, %v; want r3", got.N, err)
+			case tc.want != "" && (!errors.As(err, &unchanged) || err.Error() != tc.want || got.N != 0):
+				t.Fatalf("save = r%d, %v; want refused with %q", got.N, err, tc.want)
+			}
+			head, _ := s.LatestAgentRevision(ctx, a.ID, tc.kind)
+			if want := map[bool]int{true: 2, false: 3}[tc.want != ""]; head.N != want {
+				t.Fatalf("head = %d, want %d", head.N, want)
+			}
+		})
+	}
+}
+
 func TestTheLogVersionMovesWithTheLog(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

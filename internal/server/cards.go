@@ -784,6 +784,9 @@ func (s *Server) applyPromptEdit(ctx context.Context, c *heldCard, e cardEdits) 
 		c.reads = reads
 	}
 	if err != nil {
+		if unchanged := (*store.RevisionUnchangedError)(nil); errors.As(err, &unchanged) {
+			return cardOutcome{}, nil, fmt.Errorf("your text is the same as %s%d, so there is nothing to save; decline the card to keep the %s as it is", letter, unchanged.Head, agentTextNoun(c.editKind))
+		}
 		if rev.N == 0 {
 			return cardOutcome{}, nil, err
 		}

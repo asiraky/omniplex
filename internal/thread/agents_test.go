@@ -325,6 +325,40 @@ func TestForceDeletingAnAgentThreadKeepsItsLog(t *testing.T) {
 	}
 }
 
+// Saving the text the agent already has writes nothing and restarts nothing;
+// reverting to an older text that differs is a save like any other.
+func TestSavingTheCurrentTextChangesNothing(t *testing.T) {
+	r := newAgentRig(t)
+	ctx := context.Background()
+	ag, a := r.create(t, NewAgent{Start: true, Workspace: "local"})
+	waitFor(t, func() bool { return r.agent(t, ag.ID).LivePromptRev == 1 })
+	if _, _, err := r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionPrompt, "be terser", store.AuthorUser, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return r.agent(t, ag.ID).LivePromptRev == 2 })
+	_, starts := lastOpts(r.fa)
+
+	rev, restart, err := r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionPrompt, "be terser", store.AuthorAgent, "again", 2)
+	var unchanged *store.RevisionUnchangedError
+	if !errors.As(err, &unchanged) || unchanged.Head != 2 || rev.N != 0 || restart != "" {
+		t.Fatalf("save of r2's text = r%d %q, %v; want refused as unchanged from r2", rev.N, restart, err)
+	}
+	if got := r.agent(t, ag.ID); got.PromptRev != 2 {
+		t.Fatalf("agent at r%d, want still r2", got.PromptRev)
+	}
+	if _, n := lastOpts(r.fa); n != starts {
+		t.Fatal("the unchanged save restarted the thread")
+	}
+	if n := restartNotices(stateOf(t, a)); len(n) != 1 {
+		t.Fatalf("restart notices = %+v, want only r2's", n)
+	}
+
+	rev, restart, err = r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionPrompt, "be terse", store.AuthorUser, "Revert to r1", 2)
+	if err != nil || rev.N != 3 || restart != RestartNow {
+		t.Fatalf("revert to r1 = r%d %q, %v; want r3 restarted now", rev.N, restart, err)
+	}
+}
+
 func TestSavingAPromptWithNoLiveThreadRestartsNothing(t *testing.T) {
 	r := newAgentRig(t)
 	ag, _ := r.create(t, NewAgent{Workspace: "local"})
@@ -675,6 +709,35 @@ func TestEpochZeroTakesTheFirstMessageWhenStartedWithout(t *testing.T) {
 				t.Fatalf("epoch 0 = %+v, want %q", rows, tc.want)
 			}
 		})
+	}
+}
+
+// A first message with only an image is still the first: epoch 0 files it as
+// what it carried, not the text-bearing message after it.
+func TestEpochZeroTakesAnImageOnlyFirstMessage(t *testing.T) {
+	r := newAgentRig(t)
+	ctx := context.Background()
+	_, a := r.create(t, NewAgent{Start: true, Workspace: "local"})
+
+	res, err := a.Prompt(ctx, "", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextInput(t, r.fa.thread())
+	r.fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: res.TurnID, StopReason: proto.StopEndTurn}))
+	waitFor(t, func() bool { return stateOf(t, a).Phase == "idle" })
+	runTurn(t, a, r.fa, "and what of it", "r1")
+
+	rows, _ := r.st.ThreadCompactions(ctx, a.ID)
+	if len(rows) != 1 {
+		t.Fatalf("log = %+v, want epoch 0 alone", rows)
+	}
+	row, err := r.st.Compaction(ctx, rows[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Summary != "[1 image]" {
+		t.Fatalf("epoch 0 first message = %q, want the image-only message", row.Summary)
 	}
 }
 

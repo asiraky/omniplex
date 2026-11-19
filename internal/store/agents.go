@@ -419,10 +419,28 @@ func (e *RevisionMovedError) Error() string {
 	return fmt.Sprintf("The %s changed while you were editing: %s%d is the latest. Review it, then save again.", noun, letter, e.Head)
 }
 
+// RevisionUnchangedError refuses a revision whose body is the latest of its
+// kind already: it would change nothing, so nothing is written.
+type RevisionUnchangedError struct {
+	Kind string
+	Head int
+}
+
+func (e *RevisionUnchangedError) Error() string {
+	noun, verb, letter := "prompt", "is", "r"
+	if e.Kind == RevisionCompact {
+		noun, verb, letter = "compaction instructions", "are", "c"
+	}
+	return fmt.Sprintf("The %s %s already this text, as %s%d. Nothing to save.", noun, verb, letter, e.Head)
+}
+
 // AddAgentRevision saves a new revision of one of an agent's texts, numbered
-// one past the highest of its kind. A base above 0 is the revision the edit
-// started from: when another has been saved since, the save is refused with
-// a *RevisionMovedError, checked in the same transaction as the write.
+// one past the highest of its kind. A body the same as the latest's is
+// refused with a *RevisionUnchangedError; reverting to an older body that
+// differs from it is saved like any other. A base above 0 is the revision the
+// edit started from: when another has been saved since, the save is refused
+// with a *RevisionMovedError. Both are checked in the same transaction as the
+// write.
 func (s *Store) AddAgentRevision(ctx context.Context, agentID, kind, body, author, reason string, base int) (AgentRevision, error) {
 	if kind != RevisionPrompt && kind != RevisionCompact {
 		return AgentRevision{}, fmt.Errorf("unknown revision kind %q", kind)
@@ -445,14 +463,21 @@ func (s *Store) AddAgentRevision(ctx context.Context, agentID, kind, body, autho
 	if exists == 0 {
 		return r, fmt.Errorf("%w: agent %s", ErrNotFound, agentID)
 	}
-	if base > 0 {
-		var head int
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(n), 0) FROM agent_revisions WHERE agent_id = ? AND kind = ?`, agentID, kind).Scan(&head); err != nil {
-			return r, err
-		}
-		if head != base {
-			return r, &RevisionMovedError{Kind: kind, Head: head}
-		}
+	var (
+		head     int
+		headBody string
+	)
+	err = tx.QueryRowContext(ctx, `SELECT n, body FROM agent_revisions WHERE agent_id = ? AND kind = ? ORDER BY n DESC LIMIT 1`, agentID, kind).Scan(&head, &headBody)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return r, err
+	}
+	// Unchanged first: a stale base saving the text that landed since has
+	// nothing to review.
+	if head > 0 && body == headBody {
+		return r, &RevisionUnchangedError{Kind: kind, Head: head}
+	}
+	if base > 0 && head != base {
+		return r, &RevisionMovedError{Kind: kind, Head: head}
 	}
 	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO agent_revisions (agent_id, kind, n, body, author, reason, created_at)
