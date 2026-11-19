@@ -188,6 +188,32 @@ func TestCreateSessionHandshake(t *testing.T) {
 	}
 }
 
+// An agent thread's brief reaches pi; a plain thread keeps pi's own prompt.
+func TestOnlyAnAgentThreadHandsPiItsInstructions(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		agent bool
+	}{{"agent", true}, {"plain", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			o := adapter.CreateOptions{ThreadID: "sess-1", Instructions: "You run the backlog."}
+			if tc.agent {
+				o.CompactInstructionsFile = filepath.Join(dir, "compact.md")
+			}
+			s := startSession(t, dir, o)
+			drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.ThreadConfigChanged) })
+			args, err := os.ReadFile(filepath.Join(dir, "args"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Contains(string(args), "--append-system-prompt\nYou run the backlog.")
+			if got != tc.agent {
+				t.Errorf("instructions passed = %v, want %v; argv:\n%s", got, tc.agent, args)
+			}
+		})
+	}
+}
+
 func TestResumePrefersHarnessSessionID(t *testing.T) {
 	dir := t.TempDir()
 	startSession(t, dir, adapter.CreateOptions{

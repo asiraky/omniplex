@@ -45,7 +45,8 @@ function HarnessNote({ harness }: { harness: string }) {
     case "codex":
       return (
         <>
-          Codex replaces its default compaction prompt with these instructions. When the provider compacts remotely,
+          Codex replaces its default compaction prompt with these instructions, and reads them when the thread
+          starts, so an edit applies after the next restart. When the provider compacts remotely,
           which it does for an OpenAI or ChatGPT sign-in, Codex ignores them. Codex reports no summary, so the Log
           tab shows token counts and the instructions only.
         </>

@@ -94,11 +94,12 @@ type CreateOptions struct {
 	// "agent": a thread with a saved brief). All are empty on other threads.
 
 	// CompactInstructionsFile is the path of a file holding the instructions
-	// the harness gives its compactor. The harness reads the file each time
-	// it compacts, so a change to it applies at the next compaction with no
-	// restart. Claude adds them to its own compaction prompt; Codex replaces
-	// its default prompt with them (and ignores them on providers that compact
-	// remotely). An adapter whose harness has no such setting ignores it.
+	// the harness gives its compactor. Claude reads the file each time it
+	// compacts, so an edit applies at the next compaction, and adds it to its
+	// own compaction prompt. Codex reads it once, when the process starts, and
+	// replaces its default prompt with it (ignoring it on providers that
+	// compact remotely). An adapter whose harness has no such setting ignores
+	// it.
 	CompactInstructionsFile string
 
 	// CompactAt is the context size, in tokens, at which the harness compacts

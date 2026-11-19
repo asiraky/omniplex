@@ -201,6 +201,12 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if o.Effort != "" {
 		args = append(args, "--thinking", o.Effort)
 	}
+	// An agent's brief is its whole job, so an agent thread hands it to pi.
+	// Pi rebuilds its system prompt on every run, so a restart picks up a new
+	// one. Plain pi threads keep pi's own prompt, as they always have.
+	if o.CompactInstructionsFile != "" && o.Instructions != "" {
+		args = append(args, "--append-system-prompt", o.Instructions)
+	}
 	// Read once at start: pi does not rescan, so a skill added mid-session
 	// arrives with the next one.
 	for _, d := range o.SkillDirs {
