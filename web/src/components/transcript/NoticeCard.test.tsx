@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, render } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Item } from "~/protocol";
+import { AgentNavContext } from "~/lib/agentNav";
+import type { Agent, Item } from "~/protocol";
 
 import { NoticeCard } from "./NoticeCard";
 
@@ -64,5 +65,31 @@ describe("NoticeCard restart", () => {
   it("says why a restart failed", () => {
     const { container } = render(<NoticeCard item={restart("no prompt_snapshot in the transcript")} />);
     expect(container.textContent).toBe("Restart failed: no prompt_snapshot in the transcript");
+  });
+});
+
+describe("NoticeCard compaction", () => {
+  const compaction = (over: Partial<Item> = {}) =>
+    notice({ id: "compact:9", noticeKind: "compaction", trigger: "auto", ...over });
+  const agent = { id: "ag1", name: "backlog" } as Agent;
+  const withAgent = (item: Item, current?: Agent) => {
+    const openAgent = vi.fn();
+    render(
+      <AgentNavContext.Provider value={{ current, openAgent, openThread: () => {} }}>
+        <NoticeCard item={item} />
+      </AgentNavContext.Provider>,
+    );
+    return openAgent;
+  };
+
+  it("opens the agent's log at this compaction's epoch", () => {
+    const openAgent = withAgent(compaction({ epoch: 46 }), agent);
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    expect(openAgent).toHaveBeenCalledWith("ag1", "log", { epoch: 46 });
+  });
+
+  it("has nothing to inspect on a thread no agent logs", () => {
+    withAgent(compaction(), agent);
+    expect(screen.queryByRole("button", { name: "Inspect" })).toBeNull();
   });
 });

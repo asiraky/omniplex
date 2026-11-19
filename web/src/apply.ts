@@ -908,6 +908,8 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           it.trigger = p.trigger;
           it.preTokens = p.preTokens;
           it.postTokens = p.postTokens;
+          // On an agent's thread, its row in the agent's log, for Inspect.
+          if (p.epoch) it.epoch = p.epoch;
         }),
       };
 

@@ -7,6 +7,7 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 
+import { useAgentNav } from "~/lib/agentNav";
 import { fmtTokens } from "~/lib/format";
 import { cn } from "~/lib/utils";
 import type { Item } from "~/protocol";
@@ -57,18 +58,37 @@ export function NoticeCard({
     );
   }
   if (item.noticeKind === "restart") return <RestartNotice item={item} />;
+  return <CompactionNotice item={item} />;
+}
+
+// A compaction boundary. On an agent's thread it is a row in the agent's log,
+// so it carries the epoch and a link to that row, where the summary and what
+// the next epoch started from can be read.
+function CompactionNotice({ item }: { item: Item }) {
+  const { current, openAgent } = useAgentNav();
   const detail =
     item.preTokens && item.postTokens
       ? `${fmtTokens(item.preTokens)} → ${fmtTokens(item.postTokens)}`
       : "";
+  const epoch = item.epoch;
   return (
     <div className="fade-in flex justify-center">
-      <div className="text-muted-foreground flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px]">
+      <div className="text-muted-foreground flex max-w-full flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 rounded-full border px-3 py-1 text-[12px]">
         <ArchiveIcon className="size-3.5 shrink-0" />
         <span>
           {item.trigger === "manual" ? "Context compacted" : "Context auto-compacted"}
           {detail && ` — ${detail}`}
         </span>
+        {epoch !== undefined && <span className="font-mono text-[11px]">· epoch {epoch}</span>}
+        {epoch !== undefined && current && (
+          <button
+            type="button"
+            onClick={() => openAgent(current.id, "log", { epoch })}
+            className="text-primary hit-44 relative font-medium hover:underline"
+          >
+            Inspect
+          </button>
+        )}
       </div>
     </div>
   );

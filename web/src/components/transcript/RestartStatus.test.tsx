@@ -2,6 +2,9 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { AgentNavContext } from "~/lib/agentNav";
+import type { Agent } from "~/protocol";
+
 import { RestartStatus } from "./RestartStatus";
 
 afterEach(cleanup);
@@ -23,5 +26,21 @@ describe("RestartStatus", () => {
   it("draws nothing when no restart is owed", () => {
     const { container } = render(<RestartStatus pending={false} restarting={false} onCancel={() => {}} />);
     expect(container.textContent).toBe("");
+  });
+
+  it("names the saved prompt an agent's restart is waiting to bring in", () => {
+    const status = (live: number) => {
+      cleanup();
+      render(
+        <AgentNavContext.Provider
+          value={{ current: { promptRev: 8, livePromptRev: live } as Agent, openAgent: () => {}, openThread: () => {} }}
+        >
+          <RestartStatus pending restarting={false} />
+        </AgentNavContext.Provider>,
+      );
+      return screen.getByRole("status").textContent;
+    };
+    expect(status(7)).toBe("Prompt r8 is saved. The thread restarts when this turn ends.");
+    expect(status(8)).toBe("Restarting when this turn ends");
   });
 });

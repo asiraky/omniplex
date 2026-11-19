@@ -1,7 +1,7 @@
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { fmtPct, fmtTokens } from "~/lib/format";
 import { cn } from "~/lib/utils";
-import type { Usage } from "~/protocol";
+import type { Agent, Usage } from "~/protocol";
 import { useHoverPopover } from "~/useHoverPopover";
 
 // The one threshold, shared by the ring and the bar: below it the meter is
@@ -23,6 +23,15 @@ const SEGMENT = [
   "bg-slate-400",
 ];
 
+// Claude Code will not auto-compact below this, whatever the agent asks for.
+const CLAUDE_COMPACT_FLOOR = 100_000;
+
+/** Where an agent's thread compacts, as its harness will take it; undefined for the harness default. */
+export function agentCompactAt(agent: Agent | undefined): number | undefined {
+  if (!agent?.compactAt || agent.compactAt <= 0) return undefined;
+  return agent.harness === "claude" ? Math.max(agent.compactAt, CLAUDE_COMPACT_FLOOR) : agent.compactAt;
+}
+
 /**
  * The context gauge: a donut ring in the composer footer that fills as the
  * window does, and — on hover, focus, or tap — a popover that says exactly
@@ -31,11 +40,21 @@ const SEGMENT = [
  * the thread's cost accounting so the two can never be confused (the mistake
  * that let a summed-per-turn total read as a full window in the first place).
  */
-export function ContextMeter({ usage, model }: { usage: Usage; model?: string }) {
+export function ContextMeter({
+  usage,
+  model,
+  compactAt,
+}: {
+  usage: Usage;
+  model?: string;
+  /** An agent's own compaction point. It replaces the window as what the
+      meter measures against, because it is the number the user chose. */
+  compactAt?: number;
+}) {
   const { open, setOpen, trigger, content } = useHoverPopover();
 
   const used = usage.contextUsed ?? 0;
-  const win = usage.contextWindow ?? 0;
+  const win = compactAt ?? usage.contextWindow ?? 0;
   const hasWindow = win > 0;
   const hasPct = hasWindow || usage.contextPct !== undefined;
   // Measured against the compaction window, computed from the raw tokens rather
@@ -52,11 +71,11 @@ export function ContextMeter({ usage, model }: { usage: Usage; model?: string })
   // The bar is drawn against the model's full window when that is larger than
   // the compaction window, so the compaction point can sit as an interior
   // marker rather than pinned to the right edge.
-  const limit = usage.contextLimit && usage.contextLimit > win ? usage.contextLimit : win;
+  const limit = !compactAt && usage.contextLimit && usage.contextLimit > win ? usage.contextLimit : win;
   // The threshold marker: the reported auto-compaction trigger if there is one,
   // otherwise the compaction window when it sits below the model's full window.
   const threshold =
-    usage.autoCompactThreshold && usage.autoCompactThreshold > 0
+    !compactAt && usage.autoCompactThreshold && usage.autoCompactThreshold > 0
       ? usage.autoCompactThreshold
       : limit > win && win > 0
         ? win
@@ -79,7 +98,8 @@ export function ContextMeter({ usage, model }: { usage: Usage; model?: string })
         {...trigger}
         aria-label={hasPct ? `Context ${fmtPct(pct)} used` : "Context usage unavailable"}
         className={cn(
-          "flex size-8 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          compactAt ? "px-1.5" : "w-8",
           ringTone,
         )}
       >
@@ -97,6 +117,13 @@ export function ContextMeter({ usage, model }: { usage: Usage; model?: string })
             strokeDashoffset={c * (1 - ringPct / 100)}
           />
         </svg>
+        {/* An agent's compaction point is the user's own number, so the
+            meter says it out loud rather than behind a tap. */}
+        {!!compactAt && (
+          <span className="font-mono text-[11px] tabular-nums">
+            {fmtTokens(used)} / {fmtTokens(compactAt)}
+          </span>
+        )}
       </PopoverTrigger>
 
       <PopoverContent
@@ -172,7 +199,11 @@ export function ContextMeter({ usage, model }: { usage: Usage; model?: string })
 
         <div className="mt-2.5 border-t pt-2.5 text-[11px] leading-relaxed">
           <p className={cn(over ? "text-destructive" : "text-muted-foreground")}>
-            {!hasWindow
+            {compactAt
+              ? over
+                ? `Past the agent's compaction point by ${fmtTokens(used - compactAt)} — compaction is imminent.`
+                : `Compacts at ${fmtTokens(compactAt)}, as set on the agent.`
+              : !hasWindow
               ? "Context window unavailable."
               : autoCompactOff
               ? over

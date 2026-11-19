@@ -92,6 +92,13 @@ describe("applyEvent turn lifecycle", () => {
     expect(it.turnId).toBeUndefined();
   });
 
+  it("carries an agent thread's compaction epoch onto the notice, and none for other threads", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "context.compacted", { trigger: "auto", preTokens: 9, postTokens: 1, epoch: 46 }));
+    s = applyEvent(s, ev(2, "context.compacted", { trigger: "manual" }));
+    expect(s.items.map((it) => it.epoch)).toEqual([46, undefined]);
+  });
+
   it("carries unclamped context occupancy through usage.updated", () => {
     let s = emptyState("s1");
     s = applyEvent(

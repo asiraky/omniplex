@@ -14,7 +14,8 @@ import {
 } from "react";
 
 import type { StashEntry } from "~/app/stashStore";
-import { ContextMeter } from "~/components/ContextMeter";
+import { agentCompactAt, ContextMeter } from "~/components/ContextMeter";
+import { useAgentNav } from "~/lib/agentNav";
 import type { Attachment } from "~/lib/attachments";
 import type { ArtefactRef } from "~/lib/artefacts";
 import type { PickerFocus } from "~/components/ModelPicker";
@@ -284,6 +285,9 @@ export function Composer({
   const boxRef = useRef<HTMLDivElement>(null);
   const fit = useComposerFit(boxRef);
   const isDesktop = useIsDesktop();
+  // On an agent's thread the meter measures against the agent's own
+  // compaction point.
+  const compactAt = agentCompactAt(useAgentNav().current);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   // Where a shortcut asked focus to go. Cleared on close, so opening by a
   // plain click afterwards lands on the search as usual.
@@ -455,7 +459,9 @@ export function Composer({
   // Icons, mostly, so they go ahead of the drawer's long labels, where a
   // phone-width drawer would otherwise scroll them out of sight.
   const drawerTools = !fit.toolsInRow && tools?.("drawer");
-  const meter = usage && (usage.contextUsed ?? 0) > 0 && <ContextMeter usage={usage} model={model} />;
+  const meter = usage && (usage.contextUsed ?? 0) > 0 && (
+    <ContextMeter usage={usage} model={model} compactAt={compactAt} />
+  );
   const noMic = (
     <>
       {modelControls}
