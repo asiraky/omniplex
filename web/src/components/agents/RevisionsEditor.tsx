@@ -24,7 +24,7 @@ import { useIsDesktop } from "~/useMediaQuery";
 import { useLatest } from "~/useLatest";
 import { compactApplies, compactUse, diffStat, fmtDay, revLabel } from "./agentText";
 import { BodyText, DiffBox, WhoChip } from "./parts";
-import { RevisionDrafts, type Draft, type Kept } from "./revisionDrafts";
+import { RevisionDrafts, type Draft } from "./revisionDrafts";
 import { PreambleDialog } from "./shared";
 
 
