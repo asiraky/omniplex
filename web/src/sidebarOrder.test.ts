@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { sidebarOrder, sidebarSections } from "./sidebarOrder";
-import type { Project, ThreadMeta } from "~/protocol";
+import type { Agent, Project, ThreadMeta } from "~/protocol";
 
 const project = (id: string, createdAt: number) =>
   ({ id, name: id, defaults: {}, folders: [], createdAt, updatedAt: 0 }) as unknown as Project;
@@ -130,5 +130,50 @@ describe("sidebarOrder", () => {
       { ...thread("o", "p1"), parentId: "gone" },
     ];
     expect(ids(sidebarOrder(withChildren, projects, view()))).toEqual(["c", "b", "d", "o", "a", "e"]);
+  });
+
+  describe("agents", () => {
+    const agent = (id: string, projectId: string) => ({ id, projectId, name: id }) as Agent;
+    const agentThread = (id: string, projectId: string, agentId: string) =>
+      ({ ...thread(id, projectId), agentId }) as ThreadMeta;
+    const withAgentThreads = [...threads, agentThread("live", "p1", "ag1"), agentThread("old", "p2", "ag2")];
+    const agents = [agent("ag1", "p1"), agent("ag2", "p2")];
+    const sections = (list: ThreadMeta[], v = view(), as = agents) =>
+      sidebarSections(list, projects, v, as).map((s) => [s.key, ids(s.threads), s.agents?.map((a) => a.id), s.projectId]);
+
+    it("leave their threads out of the list and the keyboard's walk", () => {
+      expect(ids(sidebarOrder(withAgentThreads, projects, view()))).toEqual(["c", "b", "d", "a", "e"]);
+    });
+
+    it("take what their threads delegated with them", () => {
+      const delegated = [...withAgentThreads, { ...thread("kid", "p1"), parentId: "live" }];
+      expect(ids(sidebarOrder(delegated, projects, view()))).toEqual(["c", "b", "d", "a", "e"]);
+    });
+
+    it("sit in their project's group, which exists for them alone", () => {
+      expect(sections([thread("b", "p1"), thread("d", "p1")])).toEqual([
+        ["p1", ["b", "d"], ["ag1"], "p1"],
+        ["p2", [], ["ag2"], "p2"],
+      ]);
+    });
+
+    it("are one section above the threads when the list is flat", () => {
+      expect(sections(withAgentThreads, view({ grouped: false }))).toEqual([
+        ["pinned", ["c"], undefined, undefined],
+        ["agents", [], ["ag1", "ag2"], undefined],
+        ["unpinned", ["a", "b", "d", "e"], undefined, undefined],
+      ]);
+    });
+
+    it("name their project for the + when one project is all that shows", () => {
+      expect(sections(withAgentThreads, view({ hidden: ["p2"] }))).toEqual([
+        ["agents", [], ["ag1"], "p1"],
+        ["unpinned", ["b", "d"], undefined, undefined],
+      ]);
+    });
+
+    it("are hidden with their project", () => {
+      expect(sections([], view({ hidden: ["p1", "p2"] }))).toEqual([]);
+    });
   });
 });

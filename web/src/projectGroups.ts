@@ -68,12 +68,18 @@ export function visibleByProject(
  * The threads, carved by project: newest project first, rows in the list's
  * own order.
  *
- * Returns one group per project that actually has threads here. A caller with
- * a single group in hand has nothing to group and should render the threads
- * flat — `groups.length > 1` is the whole test, and it is the same test
- * whether the filter narrowed the list or the threads simply were not there.
+ * Returns one group per project that actually has threads here, or is named
+ * in `alsoProjects` (a project with agents, which has rows of its own to show
+ * even with no threads). A caller with a single group in hand has nothing to
+ * group and should render the threads flat — `groups.length > 1` is the whole
+ * test, and it is the same test whether the filter narrowed the list or the
+ * threads simply were not there.
  */
-export function groupThreads(threads: ThreadMeta[], projects: Project[]): ProjectGroup[] {
+export function groupThreads(
+  threads: ThreadMeta[],
+  projects: Project[],
+  alsoProjects: ReadonlySet<string> = new Set(),
+): ProjectGroup[] {
   const byId = new Map(projects.map((p) => [p.id, p]));
   const groups = new Map<string, ProjectGroup>();
 
@@ -94,7 +100,7 @@ export function groupThreads(threads: ThreadMeta[], projects: Project[]): Projec
   );
   const ordered: ProjectGroup[] = [];
   for (const p of byAge) {
-    const g = groups.get(p.id);
+    const g = groups.get(p.id) ?? (alsoProjects.has(p.id) ? { key: p.id, name: p.name, threads: [] } : undefined);
     if (!g) continue;
     ordered.push(g);
     groups.delete(p.id);

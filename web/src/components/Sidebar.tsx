@@ -1,8 +1,10 @@
 import {
   ActivityIcon,
   BlocksIcon,
+  BotIcon,
   FolderPlusIcon,
   HatGlassesIcon,
+  PlusIcon,
   SearchIcon,
   SettingsIcon,
   PanelLeftIcon,
@@ -36,23 +38,26 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 import { KbdChord } from "~/components/ui/kbd";
 import { Separator } from "~/components/ui/separator";
 import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
+import type { AgentTab } from "~/lib/agentNav";
 import { jumpCommand, type CommandId } from "~/lib/keybindings";
 import { isTitleEditor } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
 import { visibleByProject } from "~/projectGroups";
 import { newCount } from "~/threadStatus";
-import type { Project, ThreadMeta } from "~/protocol";
-import { sectionRows, sidebarSections, type SidebarSection } from "~/sidebarOrder";
+import type { Agent, Project, ThreadMeta } from "~/protocol";
+import { AGENTS_KEY, sectionRows, sidebarSections, visibleAgents, type SidebarSection } from "~/sidebarOrder";
 import { rowMarks, sidebarThreads, threadTree } from "~/threadTree";
 import { useIsDesktop } from "~/useMediaQuery";
 import { useShortcut, useShowShortcuts } from "~/useShortcuts";
 import { Wordmark } from "./Logo";
+import { AgentRow, type AgentAction } from "./sidebar/AgentRow";
 import { ProjectGroup } from "./sidebar/ProjectGroup";
 import { SortableRows, type RowDrag } from "./sidebar/SortableRows";
 import { ThreadRow } from "./sidebar/ThreadRow";
@@ -146,6 +151,19 @@ interface SidebarProps {
    * dropped stays where it landed rather than waiting for the server.
    */
   onReorder: (threadId: string, position: number) => void;
+  /** The live agents. Their threads are in `threads` and listed under them, never as rows. */
+  agents: Agent[];
+  /** The agent whose page or live thread is on screen: its row is the active one. */
+  activeAgentId: string | null;
+  /** An agent's page has the main pane: no thread's row is the active one. */
+  pageOpen: boolean;
+  /** A tap on an agent: its live thread, or its page when it has none. */
+  onOpenAgentRow: (agent: Agent) => void;
+  onOpenAgent: (agentId: string, tab?: AgentTab) => void;
+  /** Restart or New thread, from an agent row's menu; App holds the dialogs. */
+  onAgentAction: (agent: Agent, action: AgentAction) => void;
+  /** The New agent page, in this project when one is given. */
+  onNewAgent: (projectId?: string) => void;
 }
 
 /**
@@ -229,6 +247,12 @@ type DeleteFlow = ReturnType<typeof useDeleteFlow>;
 function ThreadList({
   flow,
   activeId,
+  agents,
+  activeAgentId,
+  onOpenAgentRow,
+  onOpenAgent,
+  onAgentAction,
+  onNewAgent,
   onSelect,
   accentOf,
   projects,
@@ -256,6 +280,12 @@ function ThreadList({
   | "onCopyLink"
   | "onDropFiles"
   | "onReorder"
+  | "agents"
+  | "activeAgentId"
+  | "onOpenAgentRow"
+  | "onOpenAgent"
+  | "onAgentAction"
+  | "onNewAgent"
 > & {
   flow: DeleteFlow;
   /** Reorder mode: rows show a grip and open nothing when tapped. */
@@ -269,11 +299,14 @@ function ThreadList({
   // vanishing the instant the filter is recomputed. Nothing in the cut
   // reorders, so the row still leaves from exactly where it stood. It is the
   // same cut the thread shortcuts walk.
-  const sections = sidebarSections(rows, projects, projectView);
+  const sections = sidebarSections(rows, projects, projectView, agents);
   // Which rows hold the open thread, or one that needs the user, among the
   // threads they delegated: two booleans per row, worked out once here.
   const tree = useMemo(() => threadTree(rows), [rows]);
   const marks = useMemo(() => rowMarks(tree, activeId), [tree, activeId]);
+  // The threads with rows of their own: not a delegate under a listed
+  // parent, and not an agent's, which is listed through the agent.
+  const listed = useMemo(() => sidebarThreads(rows, tree).filter((t) => !t.agentId), [rows, tree]);
   // The digit each of the first nine open rows answers to, while ⌘ is held.
   const jumps = new Map<string, CommandId>();
   if (showJumpHints) {
@@ -287,7 +320,7 @@ function ThreadList({
 
   // No threads is no threads: the filter is a way to narrow a list, not a
   // thing to show in place of one.
-  if (rows.length === 0) {
+  if (listed.length === 0 && agents.length === 0) {
     return (
       <p className="text-muted-foreground px-3 py-10 text-center text-[13px]">
         No threads yet.
@@ -301,11 +334,11 @@ function ThreadList({
   // so the way out of that is the message rather than something to go hunting
   // for in the header.
   if (sections.length === 0) {
-    const hidden = hiddenCount(rows);
     return (
       <div className="px-3 py-10 text-center">
         <p className="text-muted-foreground text-[13px]">
-          {hidden} thread{hidden === 1 ? "" : "s"} hidden by the filter.
+          {listed.length + agents.length} {listed.length > 0 ? "thread" : "agent"}
+          {listed.length + agents.length === 1 ? "" : "s"} hidden by the filter.
         </p>
         <Button
           variant="outline"
@@ -354,23 +387,73 @@ function ThreadList({
     </SortableRows>
   );
 
-  // A section folds like a project group and leaves with its last thread.
-  const section = ({ key, name, threads, showProject }: SidebarSection & { key: string }) => (
-    <ProjectGroup
-      key={key}
-      name={name}
-      count={threads.length}
-      newCount={newCount(threads, activeId)}
-      folded={projectView.collapsed.has(key)}
-      // The last thread in a group is taking the group with it. Without
-      // this the row folds away and the header snaps out from under it a
-      // frame later; with it they leave together.
-      leaving={threads.length === 1 && threads[0].id === exiting?.id}
-      onToggle={() => projectView.onToggleCollapse(key)}
+  const agentRows = (list: Agent[]) =>
+    list.map((a) => (
+      <AgentRow
+        key={a.id}
+        agent={a}
+        thread={a.threadId ? tree.byId.get(a.threadId) : undefined}
+        active={a.id === activeAgentId}
+        accentOf={accentOf}
+        onOpen={onOpenAgentRow}
+        onOpenAgent={onOpenAgent}
+        onAction={onAgentAction}
+      />
+    ));
+  // Thumb-wide on a phone but no taller than the label row needs.
+  const newAgentButton = (projectId: string | undefined, name?: string) => (
+    <IconButton
+      label={name ? `New agent in ${name}` : "New agent"}
+      onClick={() => onNewAgent(projectId)}
+      className="text-muted-foreground hover:text-foreground -my-1.5 h-9 w-11 md:my-0 md:size-6"
     >
-      {run(threads, showProject)}
-    </ProjectGroup>
+      <PlusIcon className="size-3.5" />
+    </IconButton>
   );
+
+  // A section folds like a project group and leaves with its last thread.
+  // A project's group lists its agents first, under labels of their own,
+  // with a + to make another; the flat list's Agents section carries the +
+  // on its header instead.
+  const section = ({ key, name, threads, showProject, agents: own, projectId }: SidebarSection & { key: string }) => {
+    const flatAgents = key === AGENTS_KEY;
+    const inGroup = !flatAgents && own !== undefined;
+    return (
+      <ProjectGroup
+        key={key}
+        name={name}
+        count={threads.length + (own?.length ?? 0)}
+        noun={flatAgents ? "agent" : own?.length ? "item" : "thread"}
+        newCount={newCount(threads, activeId)}
+        folded={projectView.collapsed.has(key)}
+        // The last thread in a group is taking the group with it. Without
+        // this the row folds away and the header snaps out from under it a
+        // frame later; with it they leave together. Not while agents stay.
+        leaving={!own?.length && threads.length === 1 && threads[0].id === exiting?.id}
+        onToggle={() => projectView.onToggleCollapse(key)}
+        action={flatAgents ? newAgentButton(projectId) : undefined}
+      >
+        {flatAgents && agentRows(own ?? [])}
+        {inGroup && (
+          <>
+            <div className="text-muted-foreground flex items-center gap-1.5 py-0.5 pr-0.5 pl-2.5 text-[11px]">
+              <span className="flex-1">Agents</span>
+              {newAgentButton(projectId, name)}
+            </div>
+            {own.length > 0 ? (
+              agentRows(own)
+            ) : (
+              <p className="text-muted-foreground px-2.5 pt-0.5 pb-2 text-[12px]">None yet.</p>
+            )}
+            {threads.length > 0 && (
+              <div className="text-muted-foreground px-2.5 pt-1.5 pb-0.5 text-[11px]">Threads</div>
+            )}
+          </>
+        )}
+        {threads.length > 0 && run(threads, showProject)}
+      </ProjectGroup>
+    );
+  };
 
   // The bare list has no header: it is the only section there is.
   const [first] = sections;
@@ -379,10 +462,6 @@ function ThreadList({
 }
 
 /** The rows the filter is hiding: delegated threads were never rows. */
-function hiddenCount(rows: ThreadMeta[]) {
-  return sidebarThreads(rows).length;
-}
-
 /**
  * The way into the palette, which is also how a phone searches threads. A
  * search-box shape that takes the row's spare width on desktop, with ⌘K in
@@ -432,8 +511,12 @@ function SidebarPanel({
   // Reorder mode is this panel's alone: closing the sheet ends it, so the
   // next time the list opens its rows are for opening threads again.
   const [reordering, setReordering] = useState(false);
-  // The footer's job is to admit that threads are missing.
-  const shownCount = visibleByProject(props.threads, props.projects, projectView.hidden).length;
+  // The footer's job is to admit that threads are missing. An agent's
+  // threads are the agent's, counted with it rather than as threads.
+  const listed = props.threads.filter((t) => !t.agentId);
+  const shownCount = visibleByProject(listed, props.projects, projectView.hidden).length;
+  const shownAgents = visibleAgents(props.agents, props.projects, projectView.hidden).length;
+  const agentCount = props.agents.length;
   return (
     <div className="bg-sidebar text-sidebar-foreground flex h-full min-h-0 flex-col">
       {/* Two rows. The top is the wordmark and the way to put it away,
@@ -510,6 +593,14 @@ function SidebarPanel({
                     <HatGlassesIcon className="text-muted-foreground" />
                     Private chat
                   </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => props.onNewAgent()} className="items-start text-[13px]">
+                    <BotIcon className="text-muted-foreground mt-0.5" />
+                    <span className="flex flex-col">
+                      New agent
+                      <span className="text-muted-foreground text-[11px]">A long-running thread with a saved brief</span>
+                    </span>
+                  </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
               <IconButton
@@ -542,9 +633,15 @@ function SidebarPanel({
       >
         <ThreadList
           flow={flow}
-          // The thread stays selected under the terminal, to go back to, but
-          // it is not what is on screen.
-          activeId={props.terminalOpen ? null : props.activeId}
+          // The thread stays selected under the terminal or an agent's page,
+          // to go back to, but it is not what is on screen.
+          activeId={props.terminalOpen || props.pageOpen ? null : props.activeId}
+          agents={props.agents}
+          activeAgentId={props.terminalOpen ? null : props.activeAgentId}
+          onOpenAgentRow={props.onOpenAgentRow}
+          onOpenAgent={props.onOpenAgent}
+          onAgentAction={props.onAgentAction}
+          onNewAgent={props.onNewAgent}
           onSelect={props.onSelect}
           accentOf={props.accentOf}
           projects={props.projects}
@@ -572,9 +669,13 @@ function SidebarPanel({
         {/* Filtered, the count says so: with grouping gone there is nothing
             else on screen to admit that threads are missing. */}
         <span className="text-muted-foreground flex-1 text-[11px]">
-          {shownCount < props.threads.length
-            ? `${shownCount} of ${props.threads.length} threads`
-            : `${props.threads.length} thread${props.threads.length === 1 ? "" : "s"}`}
+          {shownCount < listed.length
+            ? `${shownCount} of ${listed.length} threads`
+            : `${listed.length} thread${listed.length === 1 ? "" : "s"}`}
+          {agentCount > 0 &&
+            (shownAgents < agentCount
+              ? ` · ${shownAgents} of ${agentCount} agents`
+              : ` · ${agentCount} agent${agentCount === 1 ? "" : "s"}`)}
         </span>
         {/* The shell on the box: always on screen, whatever the filter
             hides. */}
@@ -703,7 +804,7 @@ export const Sidebar = memo(function Sidebar(props: SidebarProps) {
               {...props}
               showJumpHints={showJumpHints}
               flow={flow}
-              showCollapse={props.activeId !== null}
+              showCollapse={props.activeId !== null || props.pageOpen}
             />
           </SheetContent>
         </Sheet>
