@@ -219,23 +219,49 @@ function changedSpan(before: string, after: string): { head: number; tail: numbe
   return { head, tail };
 }
 
-/** The whole text the edited span makes, or undefined when it is the proposal as sent. */
-export function promptEditBody(card: Card, middle: string): string | undefined {
+/**
+ * What the edit box makes of a proposal. The box holds the lines that go in
+ * place of the ones the proposal changes, so its text always means the same
+ * thing: an append changes no lines, and its box holds what is added; a
+ * replace changes the lines its find text is on, and its box holds what they
+ * become.
+ *
+ * - proposal: the box is as it opened, so the proposal is approved as sent.
+ * - same: the prompt would stay as the current revision, which is nothing to
+ *   approve. An append whose box is emptied ends here.
+ * - edited: body is the whole text to send. removes is an emptied box on a
+ *   replace: the lines it changed are taken out, and nothing put in.
+ */
+export type PromptEditDraft =
+  | { status: "proposal" }
+  | { status: "same" }
+  | { status: "edited"; body: string; removes: boolean };
+
+export function promptEditDraft(card: Card, middle: string): PromptEditDraft {
   const edit = card.promptEdit;
-  if (!edit) return undefined;
+  if (!edit) return { status: "proposal" };
   const span = editableSpan(edit.before, edit.after);
-  if (middle === span.middle) return undefined;
+  if (middle === span.middle) return { status: "proposal" };
+  const { head, tail } = changedSpan(edit.before, edit.after);
+  const a = lines(edit.before);
+  // What the proposal replaces. Blank lines alone are an append's: it trims the
+  // prompt's trailing blank lines before its separator.
+  const replaced = a.slice(head, a.length - tail);
+  const appends = replaced.every((l) => l.trim() === "");
   let body: string;
-  if (middle === "") {
-    // Cleared, the change goes, and the blank lines that only separated it go
-    // with it.
-    const { head, tail } = changedSpan(edit.before, edit.after);
-    const b = lines(edit.after);
-    body = [...b.slice(0, head), ...b.slice(b.length - tail)].join("\n");
+  const cleared = middle.trim() === "";
+  if (cleared && appends) {
+    body = edit.before;
+  } else if (cleared) {
+    // The replaced lines go, and the blank lines that only set the change off
+    // go with them.
+    body = [...a.slice(0, head), ...a.slice(a.length - tail)].join("\n");
   } else {
     body = [...span.head, ...lines(middle), ...span.tail].join("\n");
   }
-  return body === edit.after ? undefined : body;
+  if (body === edit.before) return { status: "same" };
+  if (body === edit.after) return { status: "proposal" };
+  return { status: "edited", body, removes: cleared };
 }
 
 // ---- what happened ----

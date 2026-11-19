@@ -4,7 +4,7 @@ import {
   accountEdits,
   cliDraft,
   editableSpan,
-  promptEditBody,
+  promptEditDraft,
   createEdits,
   installEdits,
   mcpEdits,
@@ -287,26 +287,46 @@ describe("prompt_edit edits", () => {
     expect(editableSpan("a\nb", "a\nb\nnew rule").middle).toBe("new rule");
   });
 
+  const sent = (body: string) => ({ status: "edited", body, removes: false });
+
   it("puts the edited lines back between the ones left alone", () => {
-    expect(promptEditBody(card("a\nb\nc", "a\nB\nc"), "B, but better\nand more")).toBe("a\nB, but better\nand more\nc");
+    expect(promptEditDraft(card("a\nb\nc", "a\nB\nc"), "B, but better\nand more")).toEqual(
+      sent("a\nB, but better\nand more\nc"),
+    );
   });
 
-  it("sends nothing for an edit that ends where the proposal was", () => {
-    expect(promptEditBody(card("a\nb\nc", "a\nB\nc"), "B")).toBeUndefined();
+  it("approves the proposal as sent for an edit that ends where the proposal was", () => {
+    expect(promptEditDraft(card("a\nb\nc", "a\nB\nc"), "B")).toEqual({ status: "proposal" });
   });
 
-  it("drops the change when its lines are cleared", () => {
-    expect(promptEditBody(card("a\nc", "a\nb\nc"), "")).toBe("a\nc");
+  it("removes the replaced lines when a replace's box is cleared", () => {
+    expect(promptEditDraft(card("a\nb\nc", "a\nB\nc"), "")).toEqual({ status: "edited", body: "a\nc", removes: true });
+    // Whitespace left in the box is still a cleared box, not blank lines.
+    expect(promptEditDraft(card("a\nb\nc", "a\nB\nc"), " \n")).toEqual({ status: "edited", body: "a\nc", removes: true });
+  });
+
+  it("has nothing to approve when an append's box is cleared", () => {
+    expect(promptEditDraft(card("a\nb", "a\nb\n\nnew rule"), "")).toEqual({ status: "same" });
+    expect(promptEditDraft(card("a\nb", "a\nb\n\nnew rule"), "  ")).toEqual({ status: "same" });
+    // The append trimmed the prompt's trailing blank lines; clearing puts them back.
+    expect(promptEditDraft(card("a\nb\n\n\n", "a\nb\n\nnew rule"), "")).toEqual({ status: "same" });
+    expect(promptEditDraft(card("", "new rule"), "")).toEqual({ status: "same" });
+    // A line put in the middle is the same: nothing of the prompt was replaced.
+    expect(promptEditDraft(card("a\nc", "a\nb\nc"), "")).toEqual({ status: "same" });
+  });
+
+  it("has nothing to approve when the box is typed back to the current text", () => {
+    expect(promptEditDraft(card("a\nb\nc", "a\nB\nc"), "b")).toEqual({ status: "same" });
   });
 
   it("keeps an appended rule's blank separator out of the box and in the result", () => {
-    const appended = card("a\nb", "a\nb\n\nnew rule");
     expect(editableSpan("a\nb", "a\nb\n\nnew rule").middle).toBe("new rule");
-    expect(promptEditBody(appended, "better rule")).toBe("a\nb\n\nbetter rule");
-    expect(promptEditBody(appended, "")).toBe("a\nb");
+    expect(promptEditDraft(card("a\nb", "a\nb\n\nnew rule"), "better rule")).toEqual(sent("a\nb\n\nbetter rule"));
   });
 
   it("can put text into a proposal that only removed lines", () => {
-    expect(promptEditBody(card("a\nb\nc", "a\nc"), "x")).toBe("a\nx\nc");
+    expect(promptEditDraft(card("a\nb\nc", "a\nc"), "x")).toEqual(sent("a\nx\nc"));
+    // Cleared again, it is the proposal.
+    expect(promptEditDraft(card("a\nb\nc", "a\nc"), " ")).toEqual({ status: "proposal" });
   });
 });
