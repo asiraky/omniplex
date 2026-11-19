@@ -14,7 +14,8 @@ import {
 } from "react";
 
 import type { StashEntry } from "~/app/stashStore";
-import { agentCompactAt, ContextMeter } from "~/components/ContextMeter";
+import { agentCompactAt } from "~/components/agents/agentText";
+import { ContextMeter } from "~/components/ContextMeter";
 import { useAgentNav } from "~/lib/agentNav";
 import type { Attachment } from "~/lib/attachments";
 import type { ArtefactRef } from "~/lib/artefacts";

@@ -22,8 +22,9 @@ import { cn, errorText } from "~/lib/utils";
 import type { Agent, AgentRevision, AgentTextKind } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
 import { useLatest } from "~/useLatest";
-import { diffStat, fmtDay, revLabel } from "./agentText";
+import { compactApplies, compactUse, diffStat, fmtDay, revLabel } from "./agentText";
 import { BodyText, DiffBox, WhoChip } from "./parts";
+import { PreambleDialog } from "./shared";
 
 /**
  * The Prompt and Compaction tabs: an editor on the latest revision, the
@@ -72,16 +73,26 @@ export function RevisionsEditor({
   }, [apiRef, agent.id, kind, headRev, attempt]);
 
   const current = revs?.[revs.length - 1];
-  const [draft, setDraft] = useState<string | null>(null);
-  const body = draft ?? current?.body ?? "";
-  const dirty = draft !== null && draft !== (current?.body ?? "");
+  // An edit remembers the head it started from. Another revision landing
+  // under it (an agent's approved edit, a save on another device) leaves the
+  // text alone but says so, and the save names that base so the server can
+  // refuse rather than drop the newer revision.
+  const [draft, setDraft] = useState<{ text: string; base: number } | null>(null);
+  // A draft typed back to the text it started from is no edit, whatever has landed since.
+  const editing = draft && draft.text !== revs?.find((r) => r.n === draft.base)?.body ? draft : null;
+  const edit = (text: string) => setDraft({ text, base: editing?.base ?? current?.n ?? headRev });
+  const body = editing?.text ?? current?.body ?? "";
+  const dirty = editing !== null && editing.text !== (current?.body ?? "");
+  const stale = editing !== null && dirty && !!current && editing.base !== current.n;
   const [reason, setReason] = useState("");
   const nextN = (current?.n ?? 0) + 1;
 
   const [selected, setSelected] = useState<number | null>(focus?.rev ?? null);
-  useEffect(() => {
+  const [focusRev, setFocusRev] = useState(focus?.rev);
+  if (focusRev !== focus?.rev) {
+    setFocusRev(focus?.rev);
     if (focus?.rev !== undefined) setSelected(focus.rev);
-  }, [focus?.rev]);
+  }
   const opened = selected !== null ? revs?.find((r) => r.n === selected) : undefined;
 
   // On a phone the history sits under the editor, so opening a revision from
@@ -94,19 +105,28 @@ export function RevisionsEditor({
 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // The revision a save from this tab left waiting on the turn, to name in
+  // the banner; forgotten once the restart it waited for is done.
   const [pendingRev, setPendingRev] = useState<number | null>(null);
+  const restartPending = !!agent.restartPending;
+  const [sawPending, setSawPending] = useState(restartPending);
+  if (sawPending !== restartPending) {
+    setSawPending(restartPending);
+    if (!restartPending) setPendingRev(null);
+  }
 
-  async function write(text: string, why: string): Promise<boolean> {
+  async function write(text: string, why: string, baseRev: number): Promise<boolean> {
     setSaving(true);
     setSaveError(null);
     try {
-      const res = await api.saveRevision(agent.id, kind, text, why);
+      const res = await api.saveRevision(agent.id, kind, text, why, baseRev);
       setRevs((rs) => (rs && !rs.some((r) => r.n === res.revision.n) ? [...rs, res.revision] : rs));
       setPendingRev(res.restart === "pending" ? res.revision.n : null);
       const saved = label(res.revision.n);
-      if (!isPrompt) toast.success(`Saved ${saved}. It applies at the next compaction.`);
-      else if (res.restart === "now") toast.success(`Saved ${saved}. The thread restarted on it.`);
-      else if (res.restart === "none") toast.success(`Saved ${saved}.`);
+      if (res.restart === "now") toast.success(`Saved ${saved}. The thread restarted on it.`);
+      else if (res.restart === "pending") toast.success(`Saved ${saved}. The thread restarts on it when the current turn ends.`);
+      else if (!isPrompt) toast.success(`Saved ${saved}. ${compactApplies(agent.harness, false)}`);
+      else toast.success(agent.threadId ? `Saved ${saved}.` : `Saved ${saved}. It applies when a thread starts.`);
       return true;
     } catch (e) {
       setSaveError(errorText(e));
@@ -117,7 +137,7 @@ export function RevisionsEditor({
   }
 
   async function save() {
-    if (await write(body, reason.trim())) {
+    if (await write(body, reason.trim(), editing?.base ?? current?.n ?? headRev)) {
       setDraft(null);
       setReason("");
     }
@@ -126,21 +146,20 @@ export function RevisionsEditor({
   const [revertTarget, setRevertTarget] = useState<AgentRevision | null>(null);
   async function revert() {
     if (!revertTarget) return;
-    if (await write(revertTarget.body, `Revert to ${label(revertTarget.n)}`)) {
+    if (await write(revertTarget.body, `Revert to ${label(revertTarget.n)}`, current?.n ?? headRev)) {
       setRevertTarget(null);
       setSelected(null);
     }
   }
 
-  // A restart waits while a turn runs. Known from the save that asked for it,
-  // or from the agent itself when its process is behind its newest prompt
-  // (an agent's own approved edit, or a save from another device).
+  // A restart waits while a turn runs; the agent says when one does. On the
+  // Prompt tab it names the prompt coming in when the process is behind it
+  // (this save, an agent's approved edit, or a save from another device).
   const live = agent.livePromptRev;
-  const waiting =
-    isPrompt &&
-    ((pendingRev !== null && !(live !== undefined && live >= pendingRev)) ||
-      (!!agent.threadId && live !== undefined && live < agent.promptRev));
-  const waitingOn = Math.max(pendingRev ?? 0, agent.promptRev);
+  const behind = isPrompt && live !== undefined && live < agent.promptRev;
+  const waitingOn = behind ? agent.promptRev : pendingRev;
+  // Saving restarts a live thread when the harness reads this text at start.
+  const restarts = !!agent.threadId && (isPrompt || compactUse(agent.harness) === "start");
 
   const [showDiff, setShowDiff] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -148,7 +167,7 @@ export function RevisionsEditor({
 
   const title = isPrompt ? "System prompt" : "Compaction instructions";
   const hint = !isPrompt
-    ? "Saving writes a new revision. It applies at the next compaction. No restart."
+    ? `Saving writes a new revision. ${compactApplies(agent.harness, !!agent.threadId)}`
     : agent.threadId
       ? "Saving writes a new revision and restarts the thread. The transcript is kept, and the new prompt applies from the next message."
       : "Saving writes a new revision. It applies when a thread starts.";
@@ -173,15 +192,16 @@ export function RevisionsEditor({
   } else {
     pane = (
       <>
-        {waiting && (
+        {restartPending && (
           <div
             role="status"
             className="border-attention/40 bg-attention-surface text-attention-foreground mb-4 flex items-start gap-2 rounded-md border px-3 py-2 text-[12.5px] leading-snug"
           >
             <Spinner className="mt-0.5 size-3.5 shrink-0" aria-hidden />
             <span>
-              <b>{label(waitingOn)} is saved.</b> The thread restarts when the current turn ends.
-              {live !== undefined && live < waitingOn && ` Until then the agent still runs on ${label(live)}.`}
+              {waitingOn !== null && <b>{label(waitingOn)} is saved. </b>}
+              The thread restarts when the current turn ends.
+              {behind && live !== undefined && ` Until then the agent still runs on ${label(live)}.`}
             </span>
           </div>
         )}
@@ -207,9 +227,30 @@ export function RevisionsEditor({
           aria-label={title}
           value={body}
           spellCheck={false}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => edit(e.target.value)}
           className="h-[55dvh] resize-y font-mono leading-relaxed [field-sizing:fixed] md:h-[30rem] md:text-[12.5px]"
         />
+        {stale && current && (
+          <div
+            role="alert"
+            className="border-attention/40 bg-attention-surface text-attention-foreground mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-3 py-2 text-[12.5px] leading-snug"
+          >
+            <span className="min-w-0 flex-1 basis-60">
+              <b>{label(current.n)} landed while you were editing.</b> Your text does not have its change.
+            </span>
+            <Button variant="outline" size="sm" className="h-11 md:h-8" onClick={() => open(current.n)}>
+              View {label(current.n)}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-11 md:h-8"
+              onClick={() => setDraft((d) => d && { ...d, base: current.n })}
+            >
+              Keep my edit
+            </Button>
+          </div>
+        )}
         {dirty ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Input
@@ -231,7 +272,7 @@ export function RevisionsEditor({
             <Button onClick={() => void save()} disabled={saving} className="max-md:basis-full">
               {saving && <Spinner className="size-3.5" />}
               Save as {label(nextN)}
-              {isPrompt && agent.threadId ? " and restart" : ""}
+              {restarts ? " and restart" : ""}
             </Button>
           </div>
         ) : (
@@ -287,7 +328,7 @@ export function RevisionsEditor({
               <DialogDescription>
                 This writes {label(nextN)} with the text of {label(revertTarget.n)}.{" "}
                 {!isPrompt
-                  ? "It applies at the next compaction."
+                  ? compactApplies(agent.harness, !!agent.threadId)
                   : agent.threadId
                     ? "The thread restarts on it, after the current turn if one is running."
                     : "It applies when a thread starts."}
@@ -323,7 +364,7 @@ export function RevisionsEditor({
             aria-label={`${title}, expanded`}
             value={body}
             spellCheck={false}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => edit(e.target.value)}
             className="min-h-0 flex-1 resize-none font-mono leading-relaxed [field-sizing:fixed] md:text-[12.5px]"
           />
           <DialogFooter>
@@ -424,10 +465,10 @@ function RevisionView({
   onRevert: () => void;
 }) {
   const label = (n: number) => revLabel(kind, n);
-  // undefined: the default, the revision before this one. 0: no comparison.
-  const [cmp, setCmp] = useState<number | undefined>(undefined);
-  useEffect(() => setCmp(undefined), [rev.n]);
-  const otherN = cmp ?? (rev.n > 1 ? rev.n - 1 : 0);
+  // A pick stands for the revision it was made on; opening another goes back
+  // to the default, the revision before it. 0: no comparison.
+  const [cmp, setCmp] = useState<{ on: number; n: number } | null>(null);
+  const otherN = cmp?.on === rev.n ? cmp.n : rev.n > 1 ? rev.n - 1 : 0;
   const other = otherN ? revs.find((r) => r.n === otherN) : undefined;
   const [older, newer] = other && other.n > rev.n ? [rev, other] : [other, rev];
   const [split, setSplit] = useState(true);
@@ -469,7 +510,7 @@ function RevisionView({
           Compare with
           <select
             value={otherN}
-            onChange={(e) => setCmp(Number(e.target.value))}
+            onChange={(e) => setCmp({ on: rev.n, n: Number(e.target.value) })}
             className="bg-background text-foreground h-11 min-w-36 rounded-md border px-2 text-base md:h-8 md:text-[13px]"
           >
             <option value={0}>Nothing, show full text</option>
@@ -509,49 +550,5 @@ function RevisionView({
         <BodyText>{rev.body}</BodyText>
       )}
     </div>
-  );
-}
-
-function PreambleDialog({
-  api,
-  open,
-  onOpenChange,
-}: {
-  api: AgentApi;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const [text, setText] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const apiRef = useLatest(api);
-  useEffect(() => {
-    if (!open || text !== null) return;
-    let live = true;
-    apiRef.current.preamble().then(
-      (t) => live && setText(t),
-      (e: unknown) => live && setError(errorText(e)),
-    );
-    return () => {
-      live = false;
-    };
-  }, [open, text, apiRef]);
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[90dvh] flex-col sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Agent preamble</DialogTitle>
-          <DialogDescription>
-            Fixed text written by Omniplex. It goes between the Omniplex instructions and your prompt.
-          </DialogDescription>
-        </DialogHeader>
-        {error ? (
-          <ErrorLine message={error} />
-        ) : text === null ? (
-          <Loading>Loading the preamble</Loading>
-        ) : (
-          <BodyText className="scroll-thin min-h-0 overflow-y-auto">{text}</BodyText>
-        )}
-      </DialogContent>
-    </Dialog>
   );
 }

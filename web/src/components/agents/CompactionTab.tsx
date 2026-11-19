@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { ErrorLine, Segmented } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
@@ -9,14 +9,13 @@ import { fmtTokens } from "~/lib/format";
 import { toast } from "~/lib/toast";
 import { errorText } from "~/lib/utils";
 import type { Agent } from "~/protocol";
-import { CLAUDE_MIN_COMPACT_AT, COMPACT_PRESETS, harnessName, parseCompactAt } from "./agentText";
+import { CLAUDE_MIN_COMPACT_AT, COMPACT_PRESETS, compactRole, harnessName, parseCompactAt } from "./agentText";
 import { InfoBox } from "./parts";
 import { RevisionsEditor } from "./RevisionsEditor";
 
 /**
  * The agent page's Compaction tab: the instructions its harness hands the
- * compactor, versioned like the prompt but never restarting anything, and
- * the token count it compacts at.
+ * compactor, versioned like the prompt, and the token count it compacts at.
  */
 export function CompactionTab({ agent, api, focus }: { agent: Agent; api: AgentApi; focus?: AgentFocus }) {
   return (
@@ -31,32 +30,26 @@ export function CompactionTab({ agent, api, focus }: { agent: Agent; api: AgentA
   );
 }
 
-/** How each harness treats these instructions; they differ enough that one sentence would mislead. */
+/**
+ * How each harness treats these instructions; they differ enough that one
+ * sentence would mislead. It opens on the sentence the New agent form uses.
+ */
 function HarnessNote({ harness }: { harness: string }) {
+  const role = compactRole(harness);
   switch (harness) {
     case "claude":
       return (
         <>
-          Claude Code adds these instructions to its own compaction prompt and keeps its{" "}
-          <code className="font-mono">&lt;analysis&gt;</code> and <code className="font-mono">&lt;summary&gt;</code>{" "}
-          structure. The Log tab shows the exact text sent each time.
+          {role} It keeps its <code className="font-mono">&lt;analysis&gt;</code> and{" "}
+          <code className="font-mono">&lt;summary&gt;</code> structure. The Log tab shows the exact text sent each time.
         </>
       );
     case "codex":
-      return (
-        <>
-          Codex replaces its default compaction prompt with these instructions, and reads them when the thread
-          starts, so an edit applies after the next restart. When the provider compacts remotely,
-          which it does for an OpenAI or ChatGPT sign-in, Codex ignores them. Codex reports no summary, so the Log
-          tab shows token counts and the instructions only.
-        </>
-      );
+      return <>{role} Codex reports no summary, so the Log tab shows token counts and the instructions only.</>;
     case "pi":
-      return (
-        <>Pi does not support compaction instructions or compact-at. It compacts with its own prompt, at its own threshold.</>
-      );
+      return <>{role} Nor does it support compact-at: it compacts at its own threshold.</>;
     default:
-      return <>{harnessName(harness)} may not use these instructions.</>;
+      return <>{role}</>;
   }
 }
 
@@ -79,7 +72,11 @@ function CompactAt({ agent, api }: { agent: Agent; api: AgentApi }) {
   const choice = picked ?? choiceOf(saved);
   // A pick stands until the saved value catches up with it, so the control
   // does not flick back while the agents frame is on its way.
-  useEffect(() => setPicked(null), [saved]);
+  const [pickedFor, setPickedFor] = useState(saved);
+  if (pickedFor !== saved) {
+    setPickedFor(saved);
+    setPicked(null);
+  }
   const [custom, setCustom] = useState(() => (choiceOf(saved) === "custom" ? String(saved / 1000) : ""));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);

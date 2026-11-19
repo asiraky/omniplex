@@ -1,4 +1,4 @@
-import type { AgentTextKind, CompactionRow } from "~/protocol";
+import type { Agent, AgentTextKind, CompactionRow } from "~/protocol";
 import { diffLines } from "~/lib/lineDiff";
 import type { DiffLine } from "~/lib/patch";
 
@@ -22,6 +22,63 @@ export function harnessName(harness: string): string {
     default:
       return harness;
   }
+}
+
+/**
+ * When a harness reads an agent's compaction instructions, which decides when
+ * an edit to them takes effect: Claude Code at each compaction, Codex once at
+ * process start (so an edit restarts the thread like a prompt edit), Pi never.
+ */
+export type CompactUse = "compaction" | "start" | "ignored";
+
+export function compactUse(harness: string): CompactUse {
+  if (harness === "codex") return "start";
+  if (harness === "pi") return "ignored";
+  return "compaction";
+}
+
+/**
+ * What a harness does with compaction instructions, in a sentence. The one
+ * source for the New agent hint and the Compaction tab's note.
+ */
+export function compactRole(harness: string): string {
+  switch (harness) {
+    case "claude":
+      return "Claude Code adds these instructions to its own compaction prompt and reads them at each compaction.";
+    case "codex":
+      return "Codex replaces its default compaction prompt with these instructions and reads them when the thread starts. When it compacts remotely, as it does for an OpenAI or ChatGPT sign-in, it ignores them.";
+    case "pi":
+      return "Pi does not use compaction instructions. It compacts with its own prompt.";
+    default:
+      return `${harnessName(harness)} may not use these instructions.`;
+  }
+}
+
+/**
+ * When a saved compaction-instructions revision takes effect, as a sentence:
+ * the editor's hint, the revert dialog and the toast after a save that
+ * restarted nothing. `live` is whether a running thread would restart onto it.
+ */
+export function compactApplies(harness: string, live: boolean): string {
+  switch (compactUse(harness)) {
+    case "start":
+      return live
+        ? `The thread restarts on it when the current turn ends: ${harnessName(harness)} reads these when it starts.`
+        : "It applies when a thread starts.";
+    case "ignored":
+      return `${harnessName(harness)} ignores compaction instructions.`;
+    default:
+      return "It applies at the next compaction, with no restart.";
+  }
+}
+
+/** Claude Code will not compact earlier than this, whatever it is told. */
+export const CLAUDE_MIN_COMPACT_AT = 100_000;
+
+/** Where an agent's thread compacts, as its harness will take it; undefined for the harness default. */
+export function agentCompactAt(agent: Agent | undefined): number | undefined {
+  if (!agent?.compactAt || agent.compactAt <= 0) return undefined;
+  return agent.harness === "claude" ? Math.max(agent.compactAt, CLAUDE_MIN_COMPACT_AT) : agent.compactAt;
 }
 
 /** A character count the way the log shows sizes: 56, 0.7k, 14.8k, 120k. */
@@ -94,9 +151,6 @@ export function proseDiff(before: string, after: string): DiffLine[] {
 function unchanged(n: number): string {
   return `${n} unchanged line${n === 1 ? "" : "s"}`;
 }
-
-/** Claude Code will not compact earlier than this, whatever it is told. */
-export const CLAUDE_MIN_COMPACT_AT = 100_000;
 
 /** The compact-at choices offered as one tap; anything else is Custom. */
 export const COMPACT_PRESETS = [100_000, 120_000, 140_000] as const;

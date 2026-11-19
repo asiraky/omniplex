@@ -294,9 +294,10 @@ function HeaderTitle({
 }
 
 // A prompt revision saved but not yet running: the restart onto it waits for
-// the turn to end.
+// the turn to end. The agent says when a restart is pending; the revisions
+// alone could disagree for good if that restart never comes.
 function restartWaiting(agent: Agent) {
-  return agent.livePromptRev !== undefined && agent.livePromptRev < agent.promptRev;
+  return !!agent.restartPending && agent.livePromptRev !== undefined && agent.livePromptRev < agent.promptRev;
 }
 
 /**

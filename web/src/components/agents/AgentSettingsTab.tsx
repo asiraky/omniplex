@@ -9,12 +9,13 @@ import { Textarea } from "~/components/ui/textarea";
 import type { AgentApi, AgentPatch } from "~/lib/agentApi";
 import type { AgentTab } from "~/lib/agentNav";
 import { formatEffort } from "~/lib/efforts";
+import { fmtTokens } from "~/lib/format";
 import { toast } from "~/lib/toast";
 import { cn, errorText } from "~/lib/utils";
 import type { Agent, HarnessMeta, Project } from "~/protocol";
-import { EFFORT_FIT, fmtK, harnessModes, keepEffort, modelEfforts, onlyInstance } from "./agentForm";
+import { EFFORT_FIT, harnessModes, keepEffort, modelEfforts, onlyInstance } from "./agentForm";
+import { ScopeSelect } from "./shared";
 
-const WHOLE = "__whole";
 const NEXT_MESSAGE = "Saved. Applies from the next message.";
 
 /**
@@ -134,22 +135,7 @@ export function AgentSettingsTab({
           title="Scope"
           hint="Which folder of the project it works in. A running session cannot move, so this applies at the next new thread."
         >
-          <Select
-            value={a.folderId || WHOLE}
-            onValueChange={(v) => void saveWhere({ folderId: v === WHOLE ? "" : v })}
-          >
-            <SelectTrigger aria-label="Scope" className="h-11 w-full md:h-9">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={WHOLE}>Everything</SelectItem>
-              {folders.map((f) => (
-                <SelectItem key={f.id} value={f.id}>
-                  {f.path}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <ScopeSelect folders={folders} value={a.folderId ?? ""} onChange={(folderId) => void saveWhere({ folderId })} />
         </Row>
       )}
       <Row
@@ -176,7 +162,7 @@ export function AgentSettingsTab({
           </SelectContent>
         </Select>
       </Row>
-      <Row title="Compact at" hint={a.compactAt ? `${fmtK(a.compactAt)} tokens.` : "Harness default."}>
+      <Row title="Compact at" hint={a.compactAt ? `${fmtTokens(a.compactAt)} tokens.` : "Harness default."}>
         <Button variant="outline" size="sm" className="h-11 md:h-8" onClick={() => onOpenTab("compact")}>
           Change in Compaction
         </Button>

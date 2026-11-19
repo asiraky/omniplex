@@ -3,7 +3,7 @@ import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } f
 
 import { IconButton } from "~/components/IconButton";
 import { ModelPicker } from "~/components/ModelPicker";
-import { ErrorLine, Loading, Segmented } from "~/components/tools/parts";
+import { ErrorLine, Segmented } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
 import {
   Dialog,
@@ -19,6 +19,7 @@ import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
 import type { AgentApi } from "~/lib/agentApi";
 import { formatEffort } from "~/lib/efforts";
+import { fmtTokens } from "~/lib/format";
 import { cn, errorText } from "~/lib/utils";
 import type { Agent, HarnessMeta, Project, UserConfig } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
@@ -28,7 +29,6 @@ import {
   createArgs,
   DEFAULT_COMPACT,
   EFFORT_FIT,
-  fmtK,
   harnessModes,
   initialChoice,
   keepEffort,
@@ -37,10 +37,8 @@ import {
   saveDraft,
   type AgentDraft,
 } from "./agentForm";
-import { CLAUDE_MIN_COMPACT_AT, COMPACT_PRESETS, harnessName } from "./agentText";
-
-/** Radix's Select takes no empty value; this stands for the whole project. */
-const WHOLE = "__whole";
+import { CLAUDE_MIN_COMPACT_AT, COMPACT_PRESETS, compactRole } from "./agentText";
+import { PreambleDialog, ScopeSelect } from "./shared";
 
 /**
  * The New agent page: who the agent is and where it runs, its brief, and the
@@ -170,19 +168,7 @@ export function NewAgent({
             </Field>
             {(project?.folders.length ?? 0) > 1 && (
               <Field label="Scope" hint="Which folder of the project it works in.">
-                <Select value={d.folderId || WHOLE} onValueChange={(v) => set({ folderId: v === WHOLE ? "" : v })}>
-                  <SelectTrigger aria-label="Scope" className="h-11 w-full md:h-9">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={WHOLE}>Everything</SelectItem>
-                    {project!.folders.map((f) => (
-                      <SelectItem key={f.id} value={f.id}>
-                        {f.path}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <ScopeSelect folders={project!.folders} value={d.folderId} onChange={(folderId) => set({ folderId })} />
               </Field>
             )}
             <Field label="Workspace">
@@ -298,7 +284,7 @@ export function NewAgent({
                   <ExpandButton label="Expand compaction instructions" onClick={() => setExpanded("compact")} />
                 </>
               }
-              hint={`Saved as c1. ${harnessName(d.harness)} adds these to its own compaction prompt. It does not replace it.`}
+              hint={`Saved as c1. ${compactRole(d.harness)}`}
             >
               <Textarea
                 id={`${ids}-compact`}
@@ -315,7 +301,7 @@ export function NewAgent({
                 value={String(d.compactAt)}
                 options={[
                   { id: "0", label: "Default" },
-                  ...COMPACT_PRESETS.map((n) => ({ id: String(n), label: fmtK(n) })),
+                  ...COMPACT_PRESETS.map((n) => ({ id: String(n), label: fmtTokens(n) })),
                 ]}
                 onChange={(v) => set({ compactAt: Number(v) })}
               />
@@ -350,7 +336,7 @@ export function NewAgent({
         </Button>
       </footer>
 
-      {preamble && <PreambleDialog api={api} onClose={() => setPreamble(false)} />}
+      <PreambleDialog api={api} open={preamble} onOpenChange={setPreamble} />
       {expanded && (
         <ExpandedEditor
           title={expanded === "prompt" ? "System prompt" : "Compaction instructions"}
@@ -396,7 +382,7 @@ function startDraft(
 
 function compactHint(at: number, harness: string): string {
   const head = at
-    ? `Compacts when context reaches ${fmtK(at)} tokens.${harness === "claude" ? ` The minimum is ${fmtK(CLAUDE_MIN_COMPACT_AT)}.` : ""}`
+    ? `Compacts when context reaches ${fmtTokens(at)} tokens.${harness === "claude" ? ` The minimum is ${fmtTokens(CLAUDE_MIN_COMPACT_AT)}.` : ""}`
     : "Default follows the harness.";
   return `${head} Lower means more compactions and less to lose in each one.`;
 }
@@ -504,47 +490,6 @@ function ExpandedEditor({
           </Button>
           <Button onClick={() => onDone(text)} className="min-h-11 md:min-h-9">
             Done
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function PreambleDialog({ api, onClose }: { api: AgentApi; onClose: () => void }) {
-  const [text, setText] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    api.preamble().then(
-      (t) => live && setText(t),
-      (e: unknown) => live && setError(errorText(e)),
-    );
-    return () => {
-      live = false;
-    };
-  }, [api]);
-  return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Agent preamble</DialogTitle>
-          <DialogDescription>
-            Fixed text written by Omniplex. It goes between the Omniplex instructions and your prompt.
-          </DialogDescription>
-        </DialogHeader>
-        {error ? (
-          <ErrorLine message={error} />
-        ) : text === null ? (
-          <Loading>Loading the preamble</Loading>
-        ) : (
-          <pre className="scroll-thin bg-muted/40 max-h-[60dvh] overflow-y-auto rounded-md border p-3 font-mono text-[12px] leading-relaxed whitespace-pre-wrap">
-            {text}
-          </pre>
-        )}
-        <DialogFooter>
-          <Button onClick={onClose} className="min-h-11 md:min-h-9">
-            Close
           </Button>
         </DialogFooter>
       </DialogContent>

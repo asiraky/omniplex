@@ -1,7 +1,7 @@
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { fmtPct, fmtTokens } from "~/lib/format";
 import { cn } from "~/lib/utils";
-import type { Agent, Usage } from "~/protocol";
+import type { Usage } from "~/protocol";
 import { useHoverPopover } from "~/useHoverPopover";
 
 // The one threshold, shared by the ring and the bar: below it the meter is
@@ -22,15 +22,6 @@ const SEGMENT = [
   "bg-fuchsia-400",
   "bg-slate-400",
 ];
-
-// Claude Code will not auto-compact below this, whatever the agent asks for.
-const CLAUDE_COMPACT_FLOOR = 100_000;
-
-/** Where an agent's thread compacts, as its harness will take it; undefined for the harness default. */
-export function agentCompactAt(agent: Agent | undefined): number | undefined {
-  if (!agent?.compactAt || agent.compactAt <= 0) return undefined;
-  return agent.harness === "claude" ? Math.max(agent.compactAt, CLAUDE_COMPACT_FLOOR) : agent.compactAt;
-}
 
 /**
  * The context gauge: a donut ring in the composer footer that fills as the

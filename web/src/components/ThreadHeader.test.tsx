@@ -233,8 +233,13 @@ describe("ThreadHeader: an agent's thread", () => {
   });
 
   it("shows the revision a restart is waiting to bring in", () => {
-    renderHeader({ isDesktop: true, nav: navFor({ livePromptRev: 7, promptRev: 8 }) });
+    renderHeader({ isDesktop: true, nav: navFor({ livePromptRev: 7, promptRev: 8, restartPending: true }) });
     expect(screen.getByRole("button", { name: /backlog/ }).textContent).toMatch(/r7.*r8/);
+  });
+
+  it("shows only the newest revision once no restart is pending", () => {
+    renderHeader({ isDesktop: true, nav: navFor({ livePromptRev: 7, promptRev: 8 }) });
+    expect(screen.getByRole("button", { name: /backlog/ }).textContent).not.toMatch(/r7/);
   });
 
   it("offers the agent's tabs, restart and new thread from the phone menu, but no pin", async () => {

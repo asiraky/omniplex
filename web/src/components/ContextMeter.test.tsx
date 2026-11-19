@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import { render } from "~/test/harness";
 import type { Agent } from "~/protocol";
 
-import { agentCompactAt, ContextMeter } from "./ContextMeter";
+import { agentCompactAt } from "./agents/agentText";
+import { ContextMeter } from "./ContextMeter";
 
 describe("ContextMeter", () => {
   it("does not present a zero context window as a real limit", () => {

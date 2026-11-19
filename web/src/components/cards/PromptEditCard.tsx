@@ -3,6 +3,8 @@ import { useMemo, useState } from "react";
 import { DiffLines } from "~/components/Diff";
 import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
+import { compactUse, harnessName } from "~/components/agents/agentText";
+import { useAgentNav } from "~/lib/agentNav";
 import { editableSpan, promptEditBody, revisionLabel } from "~/lib/cards";
 import { diffLines } from "~/lib/lineDiff";
 import type { Card } from "~/protocol";
@@ -23,9 +25,14 @@ export function PromptEditCard({ card, ctl }: { card: Card; ctl: CardControl }) 
   const body = draft === null ? undefined : promptEditBody(card, draft);
   const after = body ?? edit?.after ?? "";
   const lines = useMemo(() => diffLines(edit?.before ?? "", after), [edit?.before, after]);
+  // The card sits in the agent's own thread, which is where its harness is known.
+  const { current } = useAgentNav();
   if (!edit || !span) return null;
 
   const prompt = edit.kind === "prompt";
+  const harness = current?.id === edit.agentId ? current.harness : undefined;
+  // A prompt is read at process start, and so are Codex's compaction instructions.
+  const use = prompt ? "start" : harness ? compactUse(harness) : "compaction";
   return (
     <CardFrame
       card={card}
@@ -80,11 +87,13 @@ export function PromptEditCard({ card, ctl }: { card: Card; ctl: CardControl }) 
       </div>
 
       <Fact label="Takes effect">
-        {prompt ? (
+        {use === "start" ? (
           <>
             When this turn ends. The thread restarts and keeps its transcript.{" "}
             <span className="text-muted-foreground">Running shells are killed.</span>
           </>
+        ) : use === "ignored" ? (
+          <>Never. {harnessName(harness!)} ignores compaction instructions.</>
         ) : (
           <>
             At the next compaction. <span className="text-muted-foreground">No restart.</span>

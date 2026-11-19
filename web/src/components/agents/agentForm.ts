@@ -147,8 +147,3 @@ export function clearDraft(): void {
     // As above.
   }
 }
-
-/** "120k", the way the compact-at choices read. */
-export function fmtK(tokens: number): string {
-  return `${Math.round(tokens / 1000)}k`;
-}

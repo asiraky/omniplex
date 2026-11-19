@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { render, viewport, wrap } from "~/test/harness";
@@ -214,29 +214,80 @@ describe("PromptTab", () => {
     fireEvent.click(screen.getByRole("button", { name: "Revert to r1" }));
     fireEvent.click(await screen.findByRole("button", { name: "Revert" }));
 
-    await waitFor(() => expect(saveRevision).toHaveBeenCalledWith("a1", "prompt", "old line\n", "Revert to r1"));
+    await waitFor(() => expect(saveRevision).toHaveBeenCalledWith("a1", "prompt", "old line\n", "Revert to r1", 2));
   });
 
-  it("says the restart waits when the save comes back pending", async () => {
-    const saveRevision = vi.fn(async () => ({ revision: rev(3, "edited\n"), restart: "pending" as const }));
-    const api = mockApi({ saveRevision });
-    render(<PromptTab agent={agent()} api={api} />);
-
+  async function typeInto(text: string) {
     const box = await screen.findByRole("textbox", { name: "System prompt" });
     await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe("new line\n"));
-    expect(screen.queryByRole("status")).toBeNull();
-    fireEvent.change(box, { target: { value: "edited\n" } });
-    fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: "tighter" } });
-    fireEvent.click(screen.getByRole("button", { name: /save as r3/i }));
+    fireEvent.change(box, { target: { value: text } });
+    return box as HTMLTextAreaElement;
+  }
 
-    await waitFor(() => expect(saveRevision).toHaveBeenCalledWith("a1", "prompt", "edited\n", "tighter"));
-    expect((await screen.findByRole("status")).textContent).toContain("r3");
+  it("saves on the revision the edit started from, and says when another landed under it", async () => {
+    const saveRevision = vi.fn(async () => {
+      throw new Error("The prompt changed while you were editing: r3 is the latest. Review it, then save again.");
+    });
+    let list = [rev(1, "old line\n"), rev(2, "new line\n")];
+    const api = mockApi({ saveRevision, revisions: vi.fn(async () => list) });
+    const { rerender } = render(<PromptTab agent={agent()} api={api} />);
+    const box = await typeInto("mine\n");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // An agent's approved edit lands as r3 while the draft is open.
+    list = [...list, rev(3, "theirs\n")];
+    rerender(wrap(<PromptTab agent={agent({ promptRev: 3 })} api={api} />));
+    const notice = await screen.findByRole("alert");
+    expect(notice.textContent).toContain("r3");
+    expect(box.value).toBe("mine\n");
+
+    fireEvent.click(screen.getByRole("button", { name: /save as r4/i }));
+    await waitFor(() => expect(saveRevision).toHaveBeenCalledWith("a1", "prompt", "mine\n", "", 2));
+    expect(await screen.findByText(/r3 is the latest/)).toBeTruthy();
+
+    fireEvent.click(within(notice).getByRole("button", { name: "View r3" }));
+    expect(screen.getByRole("button", { name: "Editor" })).toBeTruthy();
   });
 
-  it("shows the wait when the live thread runs behind the newest prompt", async () => {
+  it("saves on the new head once the edit is kept over it", async () => {
+    const saveRevision = vi.fn(async () => ({ revision: rev(4, "mine\n"), restart: "now" as const }));
+    let list = [rev(1, "old line\n"), rev(2, "new line\n")];
+    const api = mockApi({ saveRevision, revisions: vi.fn(async () => list) });
+    const { rerender } = render(<PromptTab agent={agent()} api={api} />);
+    await typeInto("mine\n");
+    list = [...list, rev(3, "theirs\n")];
+    rerender(wrap(<PromptTab agent={agent({ promptRev: 3 })} api={api} />));
+
+    fireEvent.click(within(await screen.findByRole("alert")).getByRole("button", { name: "Keep my edit" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /save as r4/i }));
+    await waitFor(() => expect(saveRevision).toHaveBeenCalledWith("a1", "prompt", "mine\n", "", 3));
+  });
+
+  it("shows the wait while the agent has a restart pending, and drops it when the restart is done", async () => {
+    const saveRevision = vi.fn(async () => ({ revision: rev(3, "edited\n"), restart: "pending" as const }));
+    const api = mockApi({ saveRevision });
+    const { rerender } = render(<PromptTab agent={agent()} api={api} />);
+
+    await typeInto("edited\n");
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: "tighter" } });
+    fireEvent.click(screen.getByRole("button", { name: /save as r3/i }));
+    await waitFor(() => expect(saveRevision).toHaveBeenCalledWith("a1", "prompt", "edited\n", "tighter", 2));
+
+    rerender(wrap(<PromptTab agent={agent({ promptRev: 3, restartPending: true })} api={api} />));
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("r3");
+    expect(status.textContent).toContain("r2");
+
+    rerender(wrap(<PromptTab agent={agent({ promptRev: 3, livePromptRev: 3 })} api={api} />));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  });
+
+  it("shows no wait when the live thread is behind but no restart is pending", async () => {
     render(<PromptTab agent={agent({ livePromptRev: 1 })} api={mockApi()} />);
     await screen.findByRole("region", { name: "History" });
-    expect(screen.getByRole("status").textContent).toContain("r1");
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it.each([
@@ -247,6 +298,46 @@ describe("PromptTab", () => {
     const { container } = render(<PromptTab agent={agent()} api={mockApi()} focus={{ rev: 2 }} />);
     await waitFor(() => expect(container.querySelector("[data-diff-layout]")).toBeTruthy());
     expect(container.querySelector("[data-diff-layout]")!.getAttribute("data-diff-layout")).toBe(layout);
+  });
+});
+
+describe("CompactionTab instructions", () => {
+  const compactApi = (restart: "none" | "now" | "pending") =>
+    mockApi({
+      revisions: vi.fn(async () => [rev(1, "keep it short\n", "compact")]),
+      saveRevision: vi.fn(async () => ({ revision: rev(2, "shorter\n", "compact"), restart })),
+    });
+
+  async function saveEdit(harness: string, restart: "none" | "now" | "pending") {
+    const api = compactApi(restart);
+    render(<CompactionTab agent={agent({ harness })} api={api} />);
+    const box = (await screen.findByRole("textbox", { name: "Compaction instructions" })) as HTMLTextAreaElement;
+    await waitFor(() => expect(box.value).toBe("keep it short\n"));
+    fireEvent.change(box, { target: { value: "shorter\n" } });
+    return { api, save: screen.getByRole("button", { name: /save as c2/i }) };
+  }
+
+  it("offers a restart with the save only where the harness reads them at start", async () => {
+    expect((await saveEdit("codex", "pending")).save.textContent).toMatch(/restart/i);
+    cleanup();
+    expect((await saveEdit("claude", "none")).save.textContent).not.toMatch(/restart/i);
+  });
+
+  it("saves on the head it started from and reports the restart the save caused", async () => {
+    toast.success.mockClear();
+    const { api, save } = await saveEdit("codex", "now");
+    fireEvent.click(save);
+    await waitFor(() => expect(api.saveRevision).toHaveBeenCalledWith("a1", "compact", "shorter\n", "", 1));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+    expect(toast.success.mock.calls[0][0]).toMatch(/restarted/);
+  });
+
+  it("does not claim a restart the save did not cause", async () => {
+    toast.success.mockClear();
+    const { save } = await saveEdit("claude", "none");
+    fireEvent.click(save);
+    await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+    expect(toast.success.mock.calls[0][0]).not.toMatch(/restart(ed|s) on/);
   });
 });
 
