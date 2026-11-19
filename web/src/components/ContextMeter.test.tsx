@@ -83,6 +83,10 @@ describe("agentCompactAt", () => {
     expect(agentCompactAt(agent("codex", 60_000))).toBe(60_000);
   });
 
+  it("claims nothing for Pi, which ignores the setting", () => {
+    expect(agentCompactAt(agent("pi", 120_000))).toBeUndefined();
+  });
+
   it("leaves the harness default alone", () => {
     expect(agentCompactAt(agent("claude", 0))).toBeUndefined();
     expect(agentCompactAt(agent("claude"))).toBeUndefined();

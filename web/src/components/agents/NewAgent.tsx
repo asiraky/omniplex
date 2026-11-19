@@ -38,7 +38,7 @@ import {
   saveDraft,
   type AgentDraft,
 } from "./agentForm";
-import { CLAUDE_MIN_COMPACT_AT, COMPACT_PRESETS, compactRole } from "./agentText";
+import { CLAUDE_MIN_COMPACT_AT, COMPACT_PRESETS, compactRole, takesCompactAt } from "./agentText";
 import { PreambleDialog, ScopeSelect } from "./shared";
 
 /**
@@ -106,7 +106,9 @@ export function NewAgent({
     setBusy(true);
     setError(null);
     try {
-      const res = await api.create(createArgs(d));
+      // A preset picked under another harness stays in the draft for a switch
+      // back, but a harness that ignores it is not sent one.
+      const res = await api.create(createArgs(takesCompactAt(d.harness) ? d : { ...d, compactAt: 0 }));
       clearDraft();
       onCreated(res.agent, res.threadId);
       // Saved either way, so the form is done with: a retry would make a
@@ -302,18 +304,20 @@ export function NewAgent({
                 className="font-mono text-[12.5px] leading-relaxed [field-sizing:fixed]"
               />
             </Field>
-            <Field label="Compact at" hint={compactHint(d.compactAt, d.harness)}>
-              <Segmented
-                label="Compact at"
-                radio
-                value={String(d.compactAt)}
-                options={[
-                  { id: "0", label: "Default" },
-                  ...COMPACT_PRESETS.map((n) => ({ id: String(n), label: fmtTokens(n) })),
-                ]}
-                onChange={(v) => set({ compactAt: Number(v) })}
-              />
-            </Field>
+            {takesCompactAt(d.harness) && (
+              <Field label="Compact at" hint={compactHint(d.compactAt, d.harness)}>
+                <Segmented
+                  label="Compact at"
+                  radio
+                  value={String(d.compactAt)}
+                  options={[
+                    { id: "0", label: "Default" },
+                    ...COMPACT_PRESETS.map((n) => ({ id: String(n), label: fmtTokens(n) })),
+                  ]}
+                  onChange={(v) => set({ compactAt: Number(v) })}
+                />
+              </Field>
+            )}
           </Section>
 
           <Section

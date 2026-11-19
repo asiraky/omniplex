@@ -15,7 +15,7 @@ const PREFIX = "/agents/";
 /** The page a URL names, or null for any path that is not an agent page. */
 export function parseAgentPage(pathname: string, search = ""): AgentPage | null {
   if (!pathname.startsWith(PREFIX)) return null;
-  const parts = pathname.slice(PREFIX.length).split("/").filter(Boolean).map(decodeURIComponent);
+  const parts = pathname.slice(PREFIX.length).split("/").filter(Boolean).map(decodeSegment);
   const q = new URLSearchParams(search);
   if (parts[0] === "new" && parts.length === 1) {
     const projectId = q.get("project") || undefined;
@@ -45,6 +45,16 @@ export function agentPagePath(page: AgentPage): string {
   if (page.focus?.rev !== undefined) q.set("rev", String(page.focus.rev));
   const query = q.toString();
   return `${PREFIX}${encodeURIComponent(page.agentId)}/${page.tab}${query ? `?${query}` : ""}`;
+}
+
+// A malformed escape (a mangled link) is kept as typed rather than thrown
+// during the first render: it names no agent, so the page says so.
+function decodeSegment(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
 }
 
 function whole(v: string | null): number | undefined {

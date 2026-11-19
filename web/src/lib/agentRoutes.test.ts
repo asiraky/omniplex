@@ -33,6 +33,11 @@ describe("agent page URLs", () => {
     expect(parse("/agents/a1/log?thread=&epoch=2")).toEqual({ kind: "agent", agentId: "a1", tab: "log", focus: { epoch: 2 } });
   });
 
+  it("reads a malformed escape as an agent no one has, rather than throwing", () => {
+    expect(parse("/agents/%E0%A4%A")).toEqual({ kind: "agent", agentId: "%E0%A4%A", tab: "prompt" });
+    expect(parse("/agents/a1/%E0%A4%A")).toEqual({ kind: "agent", agentId: "a1", tab: "prompt" });
+  });
+
   it("is not an agent page anywhere else", () => {
     expect(parse("/")).toBeNull();
     expect(parse("/t/abc")).toBeNull();

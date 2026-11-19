@@ -74,6 +74,11 @@ type Actions = {
   harness: ThreadHarness;
   /** The agent this thread runs for: its page and New thread replace pin. */
   agent: Agent | undefined;
+  /**
+   * The thread is one the agent archived, not its live one: it still reads as
+   * the agent's, but restarting it or moving it on would act on another thread.
+   */
+  archived: boolean;
   onNewAgentThread: () => void;
   /** Asks before restarting an agent's thread, which kills its shells. */
   onRestartAgent: () => void;
@@ -135,6 +140,7 @@ export function ThreadHeader({
   const onNewAgentThread = () => setNewThreadOpen(true);
   const [restartOpen, setRestartOpen] = useState(false);
   const onRestartAgent = () => setRestartOpen(true);
+  const archived = !!agent && agent.threadId !== activeId;
   const actions = thread && {
     activeId,
     meta,
@@ -146,6 +152,7 @@ export function ThreadHeader({
     onFind,
     harness,
     agent,
+    archived,
     onNewAgentThread,
     onRestartAgent,
   };
@@ -166,7 +173,7 @@ export function ThreadHeader({
         {actions ? (
           <>
             {agent ? (
-              <AgentTitle agent={agent} onOpen={() => openAgent(agent.id, "prompt")} />
+              <AgentTitle agent={agent} archived={archived} onOpen={() => openAgent(agent.id, "prompt")} />
             ) : (
               <HeaderTitle
                 threadId={activeId}
@@ -209,10 +216,10 @@ export function ThreadHeader({
       {/* A phone's row is the title and one menu, with no room between: the
           chips take a line of their own, there only while there are any. */}
       {actions && !isDesktop && <ExtensionStatuses statuses={thread.extensionStatuses} inline={false} />}
-      {agent && newThreadOpen && (
+      {agent && !archived && newThreadOpen && (
         <NewAgentThreadDialog agent={agent} command={harness.command} onClose={() => setNewThreadOpen(false)} />
       )}
-      {agent && restartOpen && (
+      {agent && !archived && restartOpen && (
         <RestartAgentDialog agent={agent} command={harness.command} onClose={() => setRestartOpen(false)} />
       )}
     </header>
@@ -313,10 +320,11 @@ function restartWaiting(agent: Agent) {
  * An agent thread's title: the agent's name and the prompt revision it runs
  * on, one tap to the agent's page. No pencil: the name belongs to the agent
  * and changes in its Settings. While a saved revision waits on the turn, the
- * pill says which one is coming.
+ * pill says which one is coming. An archived thread never ran on the agent's
+ * current revision, so it is marked archived instead.
  */
-function AgentTitle({ agent, onOpen }: { agent: Agent; onOpen: () => void }) {
-  const waiting = restartWaiting(agent);
+function AgentTitle({ agent, archived, onOpen }: { agent: Agent; archived: boolean; onOpen: () => void }) {
+  const waiting = !archived && restartWaiting(agent);
   return (
     <div className="flex min-w-0 flex-1 items-center">
       <button
@@ -334,7 +342,10 @@ function AgentTitle({ agent, onOpen }: { agent: Agent; onOpen: () => void }) {
           )}
         >
           {waiting && <RotateCwIcon aria-hidden className="size-2.5" />}
-          {waiting ? (
+          {archived && <ArchiveIcon aria-hidden className="size-2.5" />}
+          {archived ? (
+            "archived"
+          ) : waiting ? (
             <>
               r{agent.livePromptRev}
               <span aria-hidden>→</span>r{agent.promptRev}
@@ -352,7 +363,8 @@ function AgentTitle({ agent, onOpen }: { agent: Agent; onOpen: () => void }) {
 /**
  * The agent's part of a thread menu: its page's tabs, then the two ways to
  * move its thread on. Restart keeps the transcript; New thread archives it,
- * so it asks first.
+ * so it asks first. An archived thread has only the tabs: both would act on
+ * the agent's live thread, not the one on screen.
  */
 function AgentMenuItems({ actions }: { actions: Actions }) {
   const { openAgent } = useAgentNav();
@@ -377,20 +389,24 @@ function AgentMenuItems({ actions }: { actions: Actions }) {
       <DropdownMenuItem onSelect={() => openAgent(agent.id, "settings")}>
         <SettingsIcon /> Settings
       </DropdownMenuItem>
-      <DropdownMenuSeparator />
-      {restart && (
-        <DropdownMenuItem onSelect={restart.run} disabled={restart.restarting}>
-          {restart.restarting ? <Spinner /> : <RotateCwIcon />}
-          <MenuText
-            title={restart.restarting ? "Restarting thread…" : restart.label}
-            sub={restart.pending ? "Waiting for the turn to end" : "Keeps the transcript"}
-          />
-        </DropdownMenuItem>
+      {!actions.archived && (
+        <>
+          <DropdownMenuSeparator />
+          {restart && (
+            <DropdownMenuItem onSelect={restart.run} disabled={restart.restarting}>
+              {restart.restarting ? <Spinner /> : <RotateCwIcon />}
+              <MenuText
+                title={restart.restarting ? "Restarting thread…" : restart.label}
+                sub={restart.pending ? "Waiting for the turn to end" : "Keeps the transcript"}
+              />
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem onSelect={actions.onNewAgentThread}>
+            <SquarePenIcon />
+            <MenuText title="New thread…" sub="Archives this one" />
+          </DropdownMenuItem>
+        </>
       )}
-      <DropdownMenuItem onSelect={actions.onNewAgentThread}>
-        <SquarePenIcon />
-        <MenuText title="New thread…" sub="Archives this one" />
-      </DropdownMenuItem>
     </>
   );
 }
@@ -439,9 +455,9 @@ function threadPin({ activeId, meta, onSetPinned, agent }: Actions) {
 
 // Restarting the harness on the setup as it is now, or taking back one that
 // waits on the running turn: the same toggle in either layout. An agent's
-// thread asks first.
-function threadRestart({ harness, agent, onRestartAgent }: Actions) {
-  if (!harness.canRestart) return null;
+// thread asks first; one it archived is not restarted from here at all.
+function threadRestart({ harness, agent, archived, onRestartAgent }: Actions) {
+  if (!harness.canRestart || archived) return null;
   const { restartPending: pending, restarting } = harness;
   return {
     pending,

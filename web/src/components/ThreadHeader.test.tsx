@@ -293,6 +293,38 @@ describe("ThreadHeader: an agent's thread", () => {
     expect(restartThread).not.toHaveBeenCalled();
   });
 
+  it("marks a thread the agent archived instead of claiming its current revision", () => {
+    const nav = navFor({ threadId: "live", promptRev: 8, livePromptRev: 7, restartPending: true });
+    renderHeader({ isDesktop: true, nav, harness: { canRestart: true, restartThread: vi.fn() } });
+    const title = screen.getByRole("button", { name: /backlog/ });
+    expect(title.textContent).toContain("archived");
+    expect(title.textContent).not.toMatch(/r\d/);
+    fireEvent.click(title);
+    expect(nav.openAgent).toHaveBeenCalledWith("ag1", "prompt");
+    expect(screen.queryByRole("button", { name: "Restart" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Restart thread/ })).toBeNull();
+  });
+
+  it("offers an archived thread the agent's tabs but no restart or new thread", async () => {
+    viewport("phone");
+    const nav = navFor({ threadId: "live" });
+    renderHeader({ isDesktop: false, nav, harness: { canRestart: true, restartThread: vi.fn() } });
+    openMenu();
+    await screen.findByRole("menuitem", { name: /Log/ });
+    expect(screen.queryByRole("menuitem", { name: /Restart thread/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /New thread/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Pin thread/ })).toBeNull();
+  });
+
+  it("treats every thread of an agent with no live thread as archived", async () => {
+    const nav = navFor({ threadId: undefined });
+    renderHeader({ isDesktop: true, nav, harness: { canRestart: true, restartThread: vi.fn() } });
+    expect(screen.getByRole("button", { name: /backlog/ }).textContent).toContain("archived");
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Agent actions" }), { button: 0, ctrlKey: false });
+    await screen.findByRole("menuitem", { name: /Settings/ });
+    expect(screen.queryByRole("menuitem", { name: /New thread/ })).toBeNull();
+  });
+
   it("keeps the dialog and says why when the server refuses", async () => {
     const nav = navFor();
     const command = vi.fn(async () => {
