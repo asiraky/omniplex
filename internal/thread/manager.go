@@ -1059,6 +1059,9 @@ type CreateProjectOptions struct {
 	WorkspacePath string
 	// Pinned starts the thread in the sidebar's Pinned section.
 	Pinned bool
+	// ParentID is the thread that delegated this one; empty for a thread the
+	// user started.
+	ParentID string
 }
 
 // folder finds one folder of a project. An empty id means the project's only
@@ -1226,7 +1229,7 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 		}
 	}
 
-	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Title: normaliseTitle(o.Title), Phase: "creating", ProjectID: p.ID, FolderID: f.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, ServiceTier: o.ServiceTier, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(f.Path, provision), DeprovisionScript: relHook(f.Path, deprovision), Pinned: o.Pinned}
+	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Title: normaliseTitle(o.Title), Phase: "creating", ProjectID: p.ID, FolderID: f.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, ServiceTier: o.ServiceTier, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(f.Path, provision), DeprovisionScript: relHook(f.Path, deprovision), Pinned: o.Pinned, ParentID: o.ParentID}
 	if err := m.store.CreateThread(ctx, meta); err != nil {
 		return nil, err
 	}

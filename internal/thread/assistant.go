@@ -35,6 +35,10 @@ type AssistantOptions struct {
 	// no transcript, its files in a scratch folder. Gone once closed, and on
 	// restart.
 	Private bool
+	// ParentID is the thread that delegated this one; empty for a chat the
+	// user started. A child of a private chat must be private too; the
+	// caller sets Private for it.
+	ParentID string
 }
 
 // CreateAssistant persists and returns an attachable assistant chat at once,
@@ -74,7 +78,7 @@ func (m *Manager) CreateAssistant(ctx context.Context, o AssistantOptions) (*Act
 	}
 
 	now := proto.NowMillis()
-	meta := store.ThreadMeta{ID: id, Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: now, UpdatedAt: now, Title: normaliseTitle(o.Title), Phase: "creating", Model: o.Model, Mode: o.Mode, Effort: o.Effort, ServiceTier: o.ServiceTier, WorkspaceMode: "local", Pinned: o.Pinned}
+	meta := store.ThreadMeta{ID: id, Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: now, UpdatedAt: now, Title: normaliseTitle(o.Title), Phase: "creating", Model: o.Model, Mode: o.Mode, Effort: o.Effort, ServiceTier: o.ServiceTier, WorkspaceMode: "local", Pinned: o.Pinned, ParentID: o.ParentID}
 	if err := m.store.CreateThread(ctx, meta); err != nil {
 		return nil, err
 	}
