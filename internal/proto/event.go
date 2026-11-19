@@ -99,6 +99,14 @@ const (
 	// State clears it, and so does the harness moving on (see
 	// clearsTurnStatus in internal/thread).
 	TurnStatus = "turn.status"
+	// CompactionDetail is what a harness can say about a compaction after the
+	// fact: the summary the next epoch starts from and what the harness
+	// attached beside it. It is transient like TurnStatus and never reaches
+	// the log: the actor files it on the thread's compaction record, when the
+	// thread belongs to an agent, and drops it otherwise. Start marks the
+	// detail of the conversation's first request (epoch 0) rather than of a
+	// compaction. Either part may come alone, in more than one emission.
+	CompactionDetail = "context.compaction_detail"
 
 	// Jobs are work that runs beside the conversation rather than as part of
 	// it: a subagent, a background shell, a monitor. One entity, several kinds
@@ -798,6 +806,37 @@ type ContextCompactedPayload struct {
 	Trigger    string `json:"trigger,omitempty"`
 	PreTokens  int64  `json:"preTokens,omitempty"`
 	PostTokens int64  `json:"postTokens,omitempty"`
+	// DurationMs is how long the compaction took, when the harness says.
+	DurationMs int64 `json:"durationMs,omitempty"`
+	// Epoch and CompactionID are filled by the host, never an adapter, on a
+	// thread that belongs to an agent: the compaction's number in the
+	// thread's log (1 for the first) and the id of its record there.
+	Epoch        int   `json:"epoch,omitempty"`
+	CompactionID int64 `json:"compactionId,omitempty"`
+}
+
+// CompactionDetailPayload is the CompactionDetail event. Summary is the text
+// the harness carried across the boundary; Attachments are the other things
+// it put in front of the model with it (re-read files, skills, CLAUDE.md).
+// Start says this is the conversation's first request rather than a
+// compaction. Empty fields mean the harness did not say, not that there was
+// nothing.
+type CompactionDetailPayload struct {
+	Start       bool                   `json:"start,omitempty"`
+	Summary     string                 `json:"summary,omitempty"`
+	Attachments []CompactionAttachment `json:"attachments,omitempty"`
+}
+
+// CompactionAttachment is one thing a harness attached at the start of an
+// epoch. Kind is a short harness-neutral label: "file" (a re-read file),
+// "skill", "instructions" (CLAUDE.md and the like), "skills" (the skill
+// listing), "task", or the harness's own name for anything else. Name says
+// which one; Chars is the size of Body, the text as the harness attached it.
+type CompactionAttachment struct {
+	Kind  string `json:"kind"`
+	Name  string `json:"name"`
+	Chars int    `json:"chars"`
+	Body  string `json:"body,omitempty"`
 }
 
 // Turn status states. The empty state clears the status.

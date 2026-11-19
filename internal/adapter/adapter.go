@@ -89,6 +89,31 @@ type CreateOptions struct {
 	// transcript, no resumable session file. A private thread sets it. Such a
 	// session cannot be resumed once its process is gone.
 	Ephemeral bool
+
+	// The fields below set up a long-running agent's session (an omniplex
+	// "agent": a thread with a saved brief). All are empty on other threads.
+
+	// CompactInstructionsFile is the path of a file holding the instructions
+	// the harness gives its compactor. The harness reads the file each time
+	// it compacts, so a change to it applies at the next compaction with no
+	// restart. Claude adds them to its own compaction prompt; Codex replaces
+	// its default prompt with them (and ignores them on providers that compact
+	// remotely). An adapter whose harness has no such setting ignores it.
+	CompactInstructionsFile string
+
+	// CompactAt is the context size, in tokens, at which the harness compacts
+	// on its own, or 0 for the harness's default. Read when the process
+	// starts.
+	CompactAt int64
+
+	// NoMemory turns off the harness's own memory, its notes kept across
+	// conversations: an agent's durable memory is its system prompt alone.
+	NoMemory bool
+
+	// RawRequestLogDir, when set, asks the harness to write every model
+	// request it sends, whole, into this folder. A debugging aid that fills
+	// the disk fast. An adapter whose harness cannot ignores it.
+	RawRequestLogDir string
 }
 
 // PluginSkills is the skills folder of a plugin in CreateOptions.Plugins.
