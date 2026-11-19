@@ -1576,20 +1576,6 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 		// the last epoch's must be out before this one's row is made.
 		read := s.epochRead
 		s.compacted, s.epochOpen = s.epochDetail, false
-		// The window now holds what the compaction left. The last request's
-		// prompt is the conversation before it, and a /compact turn makes
-		// no request after, so its result would put the old figure back.
-		// The next context_usage report, if one comes, replaces this.
-		var usage *proto.UsageUpdatedPayload
-		if post := b.Meta.PostTokens; post > 0 {
-			s.lastPromptTokens = post
-			s.usage.ContextUsed = post
-			if s.usage.ContextWindow > 0 {
-				s.usage.ContextPct = float64(post) / float64(s.usage.ContextWindow) * 100
-			}
-			out := s.usage
-			usage = &out
-		}
 		s.mu.Unlock()
 		if read != nil {
 			<-read
@@ -1600,9 +1586,6 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 			PostTokens: b.Meta.PostTokens,
 			DurationMs: b.Meta.DurationMs,
 		}))
-		if usage != nil {
-			s.emit(proto.Emit(proto.UsageUpdated, *usage))
-		}
 	}
 }
 
