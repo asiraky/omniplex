@@ -201,6 +201,22 @@ describe("LogTab", () => {
     fireEvent.click(within(archived).getAllByRole("button")[0]);
     await waitFor(() => expect(log).toHaveBeenLastCalledWith("a1", "old"));
   });
+
+  it("turns raw request logging on for Claude, and offers no switch that does nothing elsewhere", async () => {
+    const api = mockApi();
+    const { unmount } = render(<LogTab agent={agent()} api={api} />);
+    const sw = within(await screen.findByRole("region", { name: "Log raw request bodies" })).getByRole("switch");
+    fireEvent.click(sw);
+    await waitFor(() => expect(api.save).toHaveBeenCalledWith("a1", { rawLog: true }));
+    unmount();
+
+    for (const harness of ["codex", "pi"] as const) {
+      const { unmount } = render(<LogTab agent={agent({ harness })} api={mockApi()} />);
+      const region = await screen.findByRole("region", { name: "Log raw request bodies" });
+      expect(within(region).getByRole("switch").hasAttribute("disabled")).toBe(true);
+      unmount();
+    }
+  });
 });
 
 describe("PromptTab", () => {
@@ -376,41 +392,11 @@ describe("CompactionTab instructions", () => {
 });
 
 describe("CompactionTab compact-at", () => {
-  async function custom(harness: string) {
-    const api = mockApi({ revisions: vi.fn(async () => [rev(1, "keep it short\n", "compact")]) });
-    render(<CompactionTab agent={agent({ harness })} api={api} />);
-    fireEvent.click(await screen.findByRole("radio", { name: "Custom" }));
-    const input = screen.getByRole("textbox", { name: "Compact at, thousands of tokens" });
-    const set = screen.getByRole("button", { name: "Set" }) as HTMLButtonElement;
-    return { api, input, set };
-  }
-
-  it("refuses Claude Code a threshold under its floor", async () => {
-    const { api, input, set } = await custom("claude");
-    fireEvent.change(input, { target: { value: "80" } });
-    expect(set.disabled).toBe(true);
-    expect(screen.getByRole("alert")).toBeTruthy();
-    fireEvent.submit(input.closest("form")!);
-    expect(api.save).not.toHaveBeenCalled();
-
-    fireEvent.change(input, { target: { value: "150k" } });
-    expect(set.disabled).toBe(false);
-    fireEvent.click(set);
-    await waitFor(() => expect(api.save).toHaveBeenCalledWith("a1", { compactAt: 150_000 }));
-  });
-
-  it("lets another harness go under Claude Code's floor", async () => {
-    const { api, input, set } = await custom("codex");
-    fireEvent.change(input, { target: { value: "80" } });
-    fireEvent.click(set);
-    await waitFor(() => expect(api.save).toHaveBeenCalledWith("a1", { compactAt: 80_000 }));
-  });
-
-  it("rejects text that is not a number", async () => {
-    const { input, set } = await custom("codex");
-    fireEvent.change(input, { target: { value: "lots" } });
-    expect(set.disabled).toBe(true);
-    expect(screen.getByRole("alert")).toBeTruthy();
+  it("saves a one-tap threshold", async () => {
+    const api = mockApi({ revisions: vi.fn(async () => [rev(1, "x\n", "compact")]) });
+    render(<CompactionTab agent={agent()} api={api} />);
+    fireEvent.click(await screen.findByRole("radio", { name: "120k" }));
+    await waitFor(() => expect(api.save).toHaveBeenCalledWith("a1", { compactAt: 120_000 }));
   });
 
   it("sends 0 for the harness default", async () => {

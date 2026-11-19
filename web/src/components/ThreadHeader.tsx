@@ -36,6 +36,7 @@ import { cn } from "~/lib/utils";
 import type { Agent, ThreadMeta, ThreadState } from "~/protocol";
 import { useShortcutLabel } from "~/useShortcuts";
 
+import { RestartAgentDialog } from "./agents/AgentDialogs";
 import { NewAgentThreadDialog } from "./agents/NewAgentThreadDialog";
 import { ExtensionStatuses } from "./ExtensionStatuses";
 import { IconButton } from "./IconButton";
@@ -74,6 +75,8 @@ type Actions = {
   /** The agent this thread runs for: its page and New thread replace pin. */
   agent: Agent | undefined;
   onNewAgentThread: () => void;
+  /** Asks before restarting an agent's thread, which kills its shells. */
+  onRestartAgent: () => void;
 };
 
 /** Copying a thread's /thread/<id> link, and whether one was just copied. */
@@ -130,6 +133,8 @@ export function ThreadHeader({
   const { current: agent, openAgent } = useAgentNav();
   const [newThreadOpen, setNewThreadOpen] = useState(false);
   const onNewAgentThread = () => setNewThreadOpen(true);
+  const [restartOpen, setRestartOpen] = useState(false);
+  const onRestartAgent = () => setRestartOpen(true);
   const actions = thread && {
     activeId,
     meta,
@@ -142,6 +147,7 @@ export function ThreadHeader({
     harness,
     agent,
     onNewAgentThread,
+    onRestartAgent,
   };
   return (
     <header className="px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
@@ -205,6 +211,9 @@ export function ThreadHeader({
       {actions && !isDesktop && <ExtensionStatuses statuses={thread.extensionStatuses} inline={false} />}
       {agent && newThreadOpen && (
         <NewAgentThreadDialog agent={agent} command={harness.command} onClose={() => setNewThreadOpen(false)} />
+      )}
+      {agent && restartOpen && (
+        <RestartAgentDialog agent={agent} command={harness.command} onClose={() => setRestartOpen(false)} />
       )}
     </header>
   );
@@ -429,15 +438,16 @@ function threadPin({ activeId, meta, onSetPinned, agent }: Actions) {
 }
 
 // Restarting the harness on the setup as it is now, or taking back one that
-// waits on the running turn: the same toggle in either layout.
-function threadRestart({ harness }: Actions) {
+// waits on the running turn: the same toggle in either layout. An agent's
+// thread asks first.
+function threadRestart({ harness, agent, onRestartAgent }: Actions) {
   if (!harness.canRestart) return null;
   const { restartPending: pending, restarting } = harness;
   return {
     pending,
     restarting,
     label: pending ? "Cancel restart" : restarting ? "Restarting thread" : "Restart thread",
-    run: pending ? harness.cancelRestart : harness.restartThread,
+    run: pending ? harness.cancelRestart : agent ? onRestartAgent : harness.restartThread,
   };
 }
 

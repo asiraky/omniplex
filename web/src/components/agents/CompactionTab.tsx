@@ -1,15 +1,13 @@
 import { useState } from "react";
 
 import { ErrorLine, Segmented } from "~/components/tools/parts";
-import { Button } from "~/components/ui/button";
-import { Input } from "~/components/ui/input";
 import type { AgentApi } from "~/lib/agentApi";
 import type { AgentFocus } from "~/lib/agentNav";
 import { fmtTokens } from "~/lib/format";
 import { toast } from "~/lib/toast";
 import { errorText } from "~/lib/utils";
 import type { Agent } from "~/protocol";
-import { CLAUDE_MIN_COMPACT_AT, COMPACT_PRESETS, compactRole, harnessName, parseCompactAt } from "./agentText";
+import { CLAUDE_MIN_COMPACT_AT, COMPACT_PRESETS, compactRole, harnessName } from "./agentText";
 import { InfoBox } from "./parts";
 import { RevisionsEditor } from "./RevisionsEditor";
 
@@ -53,23 +51,18 @@ function HarnessNote({ harness }: { harness: string }) {
   }
 }
 
-type Choice = "default" | "custom" | `${number}`;
-
-function choiceOf(compactAt: number | undefined): Choice {
-  if (!compactAt) return "default";
-  return (COMPACT_PRESETS as readonly number[]).includes(compactAt) ? (`${compactAt}` as Choice) : "custom";
-}
+type Choice = "default" | `${number}`;
 
 /**
- * Compact-at as one tap for the usual values and a field for the rest. It is
- * read when a thread's process starts, so a change waits for the next start or
- * restart, and the toast says so.
+ * Compact-at as one tap: the harness default or one of three thresholds, never
+ * a number field. It is read when a thread's process starts, so a change waits
+ * for the next start or restart, and the toast says so.
  */
 function CompactAt({ agent, api }: { agent: Agent; api: AgentApi }) {
   const supported = agent.harness !== "pi";
   const saved = agent.compactAt ?? 0;
   const [picked, setPicked] = useState<Choice | null>(null);
-  const choice = picked ?? choiceOf(saved);
+  const choice: Choice = picked ?? (saved ? `${saved}` : "default");
   // A pick stands until the saved value catches up with it, so the control
   // does not flick back while the agents frame is on its way.
   const [pickedFor, setPickedFor] = useState(saved);
@@ -77,10 +70,8 @@ function CompactAt({ agent, api }: { agent: Agent; api: AgentApi }) {
     setPickedFor(saved);
     setPicked(null);
   }
-  const [custom, setCustom] = useState(() => (choiceOf(saved) === "custom" ? String(saved / 1000) : ""));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const parsed = parseCompactAt(custom, agent.harness);
 
   async function store(tokens: number) {
     setSaving(true);
@@ -92,8 +83,7 @@ function CompactAt({ agent, api }: { agent: Agent; api: AgentApi }) {
       );
     } catch (e) {
       setError(errorText(e));
-      // A failed one-tap choice goes back to what is saved; a typed value stays to be fixed.
-      setPicked((p) => (p === "custom" ? p : null));
+      setPicked(null);
     } finally {
       setSaving(false);
     }
@@ -101,10 +91,6 @@ function CompactAt({ agent, api }: { agent: Agent; api: AgentApi }) {
 
   function pick(c: Choice) {
     setError(null);
-    if (c === "custom") {
-      setPicked("custom");
-      return;
-    }
     setPicked(c);
     void store(c === "default" ? 0 : Number(c));
   }
@@ -112,7 +98,6 @@ function CompactAt({ agent, api }: { agent: Agent; api: AgentApi }) {
   const options: { id: Choice; label: string }[] = [
     { id: "default", label: "Default" },
     ...COMPACT_PRESETS.map((n) => ({ id: `${n}` as Choice, label: fmtTokens(n) })),
-    { id: "custom", label: "Custom" },
   ];
   const floor = agent.harness === "claude" ? ` The minimum is ${fmtTokens(CLAUDE_MIN_COMPACT_AT)}.` : "";
   const codexCap = agent.harness === "codex" ? " Codex caps it at 90% of the model's context window." : "";
@@ -135,39 +120,10 @@ function CompactAt({ agent, api }: { agent: Agent; api: AgentApi }) {
             disabled={saving}
             className="w-full md:w-fit"
           />
-          {choice === "custom" && (
-            <form
-              className="mt-3 flex flex-wrap items-center gap-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if ("tokens" in parsed) void store(parsed.tokens);
-              }}
-            >
-              <label className="flex items-center gap-2 text-[13px]">
-                <Input
-                  aria-label="Compact at, thousands of tokens"
-                  inputMode="decimal"
-                  value={custom}
-                  onChange={(e) => setCustom(e.target.value)}
-                  aria-invalid={custom.trim() !== "" && "error" in parsed}
-                  className="w-28"
-                />
-                k tokens
-              </label>
-              <Button type="submit" variant="outline" disabled={saving || "error" in parsed}>
-                Set
-              </Button>
-              {custom.trim() !== "" && "error" in parsed && (
-                <ErrorLine message={parsed.error} className="basis-full" />
-              )}
-            </form>
-          )}
           <p className="text-muted-foreground mt-2 text-[12.5px] leading-snug">
             {choice === "default"
               ? `Default follows ${harnessName(agent.harness)}.`
-              : choice === "custom"
-                ? `Type thousands of tokens: 150 is 150k.`
-                : `Compacts when context reaches ${fmtTokens(Number(choice))} tokens.`}
+              : `Compacts when context reaches ${fmtTokens(Number(choice))} tokens.`}
             {floor}
             {codexCap} Lower means more compactions and less to lose in each one.
           </p>

@@ -152,25 +152,8 @@ function unchanged(n: number): string {
   return `${n} unchanged line${n === 1 ? "" : "s"}`;
 }
 
-/** The compact-at choices offered as one tap; anything else is Custom. */
+/** The compact-at thresholds offered beside the harness default. */
 export const COMPACT_PRESETS = [100_000, 120_000, 140_000] as const;
-
-/**
- * A custom compact-at, typed in thousands of tokens ("150" is 150k). Empty is
- * not a value here: Default is its own choice. Claude's floor is enforced
- * rather than clamped, so nobody saves 80k believing that is what they got.
- */
-export function parseCompactAt(text: string, harness: string): { tokens: number } | { error: string } {
-  const t = text.trim().replace(/k$/i, "");
-  if (!t) return { error: "Enter a number of thousands of tokens." };
-  if (!/^\d+(\.\d+)?$/.test(t)) return { error: "Enter a number, like 150 for 150k tokens." };
-  const tokens = Math.round(Number(t) * 1000);
-  if (tokens <= 0) return { error: "Enter a number above zero." };
-  if (harness === "claude" && tokens < CLAUDE_MIN_COMPACT_AT) {
-    return { error: `Claude Code compacts at ${CLAUDE_MIN_COMPACT_AT / 1000}k at the earliest.` };
-  }
-  return { tokens };
-}
 
 /** How many compactions the log shows before "Show earlier". */
 export const LOG_PAGE = 8;

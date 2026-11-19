@@ -667,7 +667,8 @@ function Archived({
 
 /** The debug switch beside the view it exists to check. Read at process start, like compact-at. */
 function RawLog({ agent, api }: { agent: Agent; api: AgentApi }) {
-  const supported = agent.harness !== "pi";
+  // Claude Code's OTEL_LOG_RAW_API_BODIES is the only one there is.
+  const supported = agent.harness === "claude";
   // A flip stands until the saved value catches up with it.
   const [picked, setPicked] = useState<boolean | null>(null);
   const [pickedFor, setPickedFor] = useState(agent.rawLog);

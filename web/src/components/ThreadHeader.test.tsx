@@ -282,6 +282,17 @@ describe("ThreadHeader: an agent's thread", () => {
     expect(command).toHaveBeenCalledWith("agent_new_thread", { agentId: "ag1", firstMessage: "Only #812 today." });
   });
 
+  it("asks before restarting, then restarts the agent's thread", async () => {
+    const restartThread = vi.fn();
+    const command = vi.fn(async () => ({}));
+    renderHeader({ isDesktop: true, nav: navFor(), harness: { canRestart: true, restartThread, command } });
+    fireEvent.click(screen.getByRole("button", { name: "Restart" }));
+    expect(command).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "Restart" }));
+    await waitFor(() => expect(command).toHaveBeenCalledWith("restart_thread", { threadId: "a" }));
+    expect(restartThread).not.toHaveBeenCalled();
+  });
+
   it("keeps the dialog and says why when the server refuses", async () => {
     const nav = navFor();
     const command = vi.fn(async () => {
