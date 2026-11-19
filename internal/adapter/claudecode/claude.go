@@ -356,6 +356,14 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		}
 		conv.resume = !conv.pending()
 	}
+	// Resuming alone would run on the prompt the transcript pinned at the
+	// first request, not the one this restart is for. A private thread is
+	// never restarted, and keeps no transcript on disk to rewrite.
+	if o.Resume && o.Restart && !o.Ephemeral {
+		if err := restartPrompt(configDir, o.Cwd, conversationID(o), o.Instructions); err != nil {
+			return nil, err
+		}
+	}
 
 	cfg := sidecarConfig{
 		Cwd:            o.Cwd,

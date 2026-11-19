@@ -551,6 +551,10 @@ while IFS= read -r line; do
   id=$(printf '%%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9]*\),.*/\1/p')
   [ -z "$id" ] && continue
   case "$line" in
+    *"\"method\":\"${REFUSE:-none}\""*)
+      printf '{"jsonrpc":"2.0","id":%%s,"error":{"code":-32600,"message":"refused"}}\n' "$id"
+      continue
+      ;;
     *'"method":"skills/extraRoots/set"'*)
       if [ -n "$REFUSE_SKILLS" ]; then
         printf '{"jsonrpc":"2.0","id":%%s,"error":{"code":-32601,"message":"unknown method"}}\n' "$id"

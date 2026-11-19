@@ -98,7 +98,7 @@ export interface Item {
       /api/threads/{id}/items/{itemId}/content. */
   truncated?: boolean;
   // notice
-  noticeKind?: "compaction" | "account" | "model" | "notify";
+  noticeKind?: "compaction" | "account" | "model" | "notify" | "restart";
   /** For a model notice: the model and effort the thread switched to. */
   model?: string;
   effort?: string;
@@ -566,6 +566,9 @@ export interface ThreadState {
   /** The harness's guess at the human's next prompt, for the latest turn
       only. Cleared when the next turn starts. */
   suggestion?: TurnSuggested;
+  /** A restart was asked for while a turn ran; the thread restarts its
+      harness when the turn ends, unless cancelled. Absent means none. */
+  restartPending?: boolean;
 }
 
 /** Wire payload of turn.suggested: the harness's guess at the next prompt

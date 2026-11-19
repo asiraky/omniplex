@@ -927,6 +927,27 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         }),
       };
 
+    case "thread.restart_requested":
+      return { ...s, restartPending: true };
+
+    case "thread.restart_cancelled":
+      return { ...s, restartPending: false };
+
+    case "thread.restarted":
+      // The line where the harness came back up on the setup as it is now,
+      // or the reason it did not; `text` is empty on success. Mirrors
+      // internal/projection/state.go.
+      return {
+        ...s,
+        restartPending: false,
+        items: upsert(s, `restart:${ev.seq}`, (it) => {
+          it.kind = "notice";
+          it.receivedAt ??= ev.timestamp;
+          it.noticeKind = "restart";
+          it.text = p.error ?? "";
+        }),
+      };
+
     case "extension.notified":
       // Info is a toast and nothing more, raised by the live event rather
       // than here (this also runs on replay). A warning or an error is worth

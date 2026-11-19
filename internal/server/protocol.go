@@ -333,6 +333,11 @@ type rewindArgs struct {
 	RestoreFiles bool   `json:"restoreFiles"`
 }
 
+// restartArgs names the thread restart_thread and cancel_restart are about.
+type restartArgs struct {
+	ThreadID string `json:"threadId"`
+}
+
 type switchAccountArgs struct {
 	ThreadID string `json:"threadId"`
 	Instance string `json:"instance"`

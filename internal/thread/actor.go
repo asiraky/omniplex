@@ -311,6 +311,8 @@ const (
 	cmdEvict          = "evict"
 	cmdRead           = "read"
 	cmdRewind         = "rewind"
+	cmdRestart        = "restart"
+	cmdCancelRestart  = "cancel_restart"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -1113,6 +1115,9 @@ func (a *Actor) run() {
 			// this is the one place a Stop learns its turn is over and a
 			// queued prompt needs to be picked up.
 			a.settleStop()
+			// A restart that was waiting on any of that goes first, so
+			// a queued prompt starts on the new process.
+			a.restartIfDue(context.Background())
 			a.dispatchQueued(context.Background())
 			// What the loop was about to start, it now has or never will:
 			// either way the list stops hearing it is on its way.
@@ -1253,89 +1258,35 @@ func (a *Actor) handle(c command) (stop bool) {
 		// adapter behind it. Cleanup never activates; anything that does gets
 		// a legible refusal instead of a nil dereference.
 		if a.adapter == nil {
-			if a.activationError != nil {
-				c.reply <- cmdResult{err: a.activationError}
-				return false
-			}
-			c.reply <- cmdResult{err: errors.New("this thread's provider instance is no longer configured")}
+			c.reply <- cmdResult{err: a.noAdapter()}
 			return false
 		}
 		cwd, model, mode, effort, tier := c.prompt, c.model, c.mode, c.effort, c.serviceTier
 		if c.resume {
 			cwd, model, mode, effort, tier = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort, a.state.ServiceTier
 		}
-		// A resumed thread's worktree can be deleted or moved while the
-		// server is down. A harness started there fails later with an error
-		// that never names the directory, so refuse here, where we can.
-		if cwd != "" {
-			info, statErr := os.Stat(cwd)
-			var unusable error
-			switch {
-			case errors.Is(statErr, fs.ErrNotExist):
-				unusable = fmt.Errorf("this thread's workspace %s no longer exists, so it was probably deleted or moved; restore the directory to continue, or start a new thread", cwd)
-			case statErr != nil:
-				unusable = fmt.Errorf("this thread's workspace %s cannot be opened: %w", cwd, statErr)
-			case !info.IsDir():
-				unusable = fmt.Errorf("this thread's workspace %s is no longer a directory; restore it to continue, or start a new thread", cwd)
+		// A restart still waiting when its process went away, with the
+		// server or on its own, is carried out by this start.
+		restartDue := c.resume && a.state.RestartPending
+		if err := a.startProcess(ctx, adapter.CreateOptions{
+			Cwd: cwd, Model: model, Mode: mode, Effort: effort, ServiceTier: tier, Resume: c.resume,
+			Restart: restartDue && hasRunATurn(a.state),
+		}); err != nil {
+			if restartDue {
+				a.noteRestart(err)
 			}
-			if unusable != nil {
-				c.reply <- cmdResult{err: unusable}
-				return false
-			}
-		}
-		meta, err := a.store.Thread(ctx, a.ID)
-		if err != nil {
 			c.reply <- cmdResult{err: err}
 			return false
 		}
-		x := harnessExtras(ctx, a.store, a.adapter, meta, cwd, a.logf)
-		sess, err := createSession(ctx, a.adapter, a.newHost(), x.options(adapter.CreateOptions{
-			ThreadID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, ServiceTier: tier, Env: a.env,
-			Resume: c.resume, HarnessSessionID: a.state.HarnessSessionID,
-		}))
-		if err != nil {
-			c.reply <- cmdResult{err: err}
-			return false
-		}
-		a.Cwd, a.sess, a.preparing = cwd, sess, false
-		a.pump(sess)
-		a.startCheckpoints()
 		if c.ready != nil {
 			a.readyWorkspace(ctx, *c.ready)
 		}
 		if c.resume {
-			// Server death ends anything that was waiting in the old process.
-			// Do this only when the harness is actually resumed: viewing the
-			// durable transcript is read-only and must not rewrite its history.
-			a.cancelProcessAsks()
-			for _, turn := range append([]projection.Turn(nil), a.state.Turns...) {
-				if !turn.Done {
-					a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: turn.ID, StopReason: proto.StopError, Error: "server restarted during turn", Failure: proto.FailureRestart}))
-				}
-			}
-			for _, em := range interruptedJobs(a.state) {
-				a.append(em)
-			}
-			// The new process's own statuses cannot have been folded yet:
-			// its events wait in the inbox behind this command.
-			for _, em := range clearedStatuses(a.state) {
-				a.append(em)
-			}
+			a.settleResumed()
 		}
-		// Whatever was queued was written before the server went down, and
-		// may be stale by the time anyone looks. It waits for a human to
-		// resume it rather than firing on its own once the thread is idle.
-		// That goes for a thread caught provisioning as much as one caught
-		// mid-turn, which is why it keys on the rebuild and not on resume:
-		// a provision retried after a restart starts the harness fresh. The
-		// continuation of interrupted work is not held: that is the server
-		// finishing what it was asked to do.
-		a.mu.Lock()
-		restored := a.restored
-		a.restored = false
-		a.mu.Unlock()
-		if restored {
-			a.holdQueued()
+		a.holdRestored()
+		if restartDue {
+			a.noteRestart(nil)
 		}
 		c.reply <- cmdResult{}
 
@@ -1417,6 +1368,13 @@ func (a *Actor) handle(c command) (stop bool) {
 
 	case cmdSwitchAccount:
 		c.reply <- cmdResult{err: a.switchAccount(c.account)}
+
+	case cmdRestart:
+		pending, err := a.requestRestart(ctx)
+		c.reply <- cmdResult{value: pending, err: err}
+
+	case cmdCancelRestart:
+		c.reply <- cmdResult{err: a.cancelRestart()}
 
 	case cmdRewind:
 		a.rewind(ctx, c.reqID, c.restoreFiles, c.reply)
@@ -1825,6 +1783,83 @@ func (a *Actor) handle(c command) (stop bool) {
 		return a.evict(c.evict)
 	}
 	return false
+}
+
+// startProcess starts a harness process for the thread with no process,
+// from o's Cwd, settings, Resume and Restart; the thread's own id, env and
+// the setup harnessExtras builds from the thread as it is now are filled in
+// here. It is how activation starts a harness, and how a restart starts the
+// one that replaces it.
+func (a *Actor) startProcess(ctx context.Context, o adapter.CreateOptions) error {
+	cwd := o.Cwd
+	// A resumed thread's worktree can be deleted or moved while the server
+	// is down. A harness started there fails later with an error that never
+	// names the directory, so refuse here, where we can.
+	if cwd != "" {
+		info, statErr := os.Stat(cwd)
+		switch {
+		case errors.Is(statErr, fs.ErrNotExist):
+			return fmt.Errorf("this thread's workspace %s no longer exists, so it was probably deleted or moved; restore the directory to continue, or start a new thread", cwd)
+		case statErr != nil:
+			return fmt.Errorf("this thread's workspace %s cannot be opened: %w", cwd, statErr)
+		case !info.IsDir():
+			return fmt.Errorf("this thread's workspace %s is no longer a directory; restore it to continue, or start a new thread", cwd)
+		}
+	}
+	meta, err := a.store.Thread(ctx, a.ID)
+	if err != nil {
+		return err
+	}
+	o.ThreadID, o.Env, o.HarnessSessionID = a.ID, a.env, a.state.HarnessSessionID
+	x := harnessExtras(ctx, a.store, a.adapter, meta, cwd, a.logf)
+	sess, err := createSession(ctx, a.adapter, a.newHost(), x.options(o))
+	if err != nil {
+		return err
+	}
+	a.Cwd, a.sess, a.preparing = cwd, sess, false
+	a.pump(sess)
+	a.startCheckpoints()
+	return nil
+}
+
+// settleResumed closes, for a process just started on a resumed
+// conversation, everything the process before it left open: its questions,
+// its turn, its jobs and its extensions' statuses. That process died with
+// the server. Only once the harness is actually resumed: viewing the
+// durable transcript is read-only and must not rewrite its history.
+func (a *Actor) settleResumed() {
+	a.cancelProcessAsks()
+	for _, turn := range append([]projection.Turn(nil), a.state.Turns...) {
+		if !turn.Done {
+			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: turn.ID, StopReason: proto.StopError, Error: "server restarted during turn", Failure: proto.FailureRestart}))
+		}
+	}
+	for _, em := range interruptedJobs(a.state) {
+		a.append(em)
+	}
+	// The new process's own statuses cannot have been folded yet: its
+	// events wait in the inbox behind the command that started it.
+	for _, em := range clearedStatuses(a.state) {
+		a.append(em)
+	}
+}
+
+// holdRestored holds the queue of an actor rebuilt from the log, the first
+// time its harness starts. Whatever was queued was written before the server
+// went down, and may be stale by the time anyone looks. It waits for a human
+// to resume it rather than firing on its own once the thread is idle. That
+// goes for a thread caught provisioning as much as one caught mid-turn, which
+// is why it keys on the rebuild and not on resume: a provision retried after
+// a restart starts the harness fresh. The continuation of interrupted work is
+// not held: that is the server finishing what it was asked to do.
+func (a *Actor) holdRestored() {
+	a.mu.Lock()
+	restored := a.restored
+	a.restored = false
+	a.mu.Unlock()
+	if restored {
+		a.holdQueued()
+	}
 }
 
 func (a *Actor) switchAccount(sw *accountSwitch) error {

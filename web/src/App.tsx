@@ -289,6 +289,13 @@ export function App() {
     onTogglePanel: panel.toggle,
     onOpenDiff: () => panel.openDiff(),
     onStopTurn: commands.cancel,
+    restart: {
+      can: harness.canRestart,
+      pending: harness.restartPending,
+      restarting: harness.restarting,
+      onRestart: harness.restartThread,
+      onCancel: harness.cancelRestart,
+    },
     onNewThreadHere: newThreadHere,
     onNewAssistant: newAssistant,
     onNewProject: () => {

@@ -52,3 +52,17 @@ describe("NoticeCard model switch", () => {
     expect(container.textContent).toBe("Switched to opus · low");
   });
 });
+
+describe("NoticeCard restart", () => {
+  const restart = (text: string) => notice({ id: "restart:7", noticeKind: "restart", text });
+
+  it("marks a restart that worked", () => {
+    const { container } = render(<NoticeCard item={restart("")} />);
+    expect(container.textContent).toBe("Thread restarted");
+  });
+
+  it("says why a restart failed", () => {
+    const { container } = render(<NoticeCard item={restart("no prompt_snapshot in the transcript")} />);
+    expect(container.textContent).toBe("Restart failed: no prompt_snapshot in the transcript");
+  });
+});

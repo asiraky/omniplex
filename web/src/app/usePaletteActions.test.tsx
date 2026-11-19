@@ -27,6 +27,7 @@ function actions(over: Partial<Args>) {
     onTogglePanel: vi.fn(),
     onOpenDiff: vi.fn(),
     onStopTurn: vi.fn(),
+    restart: { can: true, pending: false, restarting: false, onRestart: vi.fn(), onCancel: vi.fn() },
     onNewThreadHere: vi.fn(),
     onNewAssistant: vi.fn(),
     onNewProject: vi.fn(),
@@ -52,6 +53,39 @@ describe("usePaletteActions: copy thread link", () => {
   it("offers no link with no thread open", () => {
     const { list } = actions({ threadOpen: false, meta: undefined });
     expect(list.some((a) => a.id === "copy-link")).toBe(false);
+  });
+});
+
+describe("usePaletteActions: restart thread", () => {
+  const restart = (over: Partial<Args["restart"]>) => ({
+    can: true,
+    pending: false,
+    restarting: false,
+    onRestart: vi.fn(),
+    onCancel: vi.fn(),
+    ...over,
+  });
+
+  it("restarts the open thread", () => {
+    const { args, list } = actions({ restart: restart({}) });
+    list.find((a) => a.id === "restart")!.run();
+    expect(args.restart.onRestart).toHaveBeenCalledOnce();
+    expect(list.some((a) => a.id === "cancel-restart")).toBe(false);
+  });
+
+  it("takes back a restart waiting on the turn instead", () => {
+    const { args, list } = actions({ restart: restart({ pending: true }) });
+    list.find((a) => a.id === "cancel-restart")!.run();
+    expect(args.restart.onCancel).toHaveBeenCalledOnce();
+    expect(list.some((a) => a.id === "restart")).toBe(false);
+  });
+
+  it.each([
+    ["the thread cannot restart", { can: false }],
+    ["one is under way", { restarting: true }],
+  ])("is not offered when %s", (_, over) => {
+    const { list } = actions({ restart: restart(over) });
+    expect(list.some((a) => a.id === "restart" || a.id === "cancel-restart")).toBe(false);
   });
 });
 

@@ -1262,6 +1262,39 @@ describe("extension notices", () => {
   });
 });
 
+// Mirrors internal/projection/state_test.go.
+describe("thread restart", () => {
+  it("is pending from the request until a cancel", () => {
+    let s = applyEvent(emptyState("s1"), ev(1, "thread.restart_requested", {}));
+    expect(s.restartPending).toBe(true);
+    s = applyEvent(s, ev(2, "thread.restart_cancelled", {}));
+    expect(s.restartPending).toBe(false);
+    expect(s.items).toEqual([]);
+  });
+
+  it("clears the pending restart and leaves a note when it restarts", () => {
+    let s = applyEvent(emptyState("s1"), ev(1, "thread.restart_requested", {}));
+    s = applyEvent(s, ev(2, "thread.restarted", {}, 5000));
+    expect(s.restartPending).toBe(false);
+    expect(s.items).toEqual([{ id: "restart:2", kind: "notice", noticeKind: "restart", text: "", receivedAt: 5000 }]);
+  });
+
+  it("keeps a failed restart's reason on its note", () => {
+    const s = applyEvent(emptyState("s1"), ev(3, "thread.restarted", { error: "no prompt snapshot" }, 5000));
+    expect(s.restartPending).toBe(false);
+    expect(s.items).toEqual([
+      { id: "restart:3", kind: "notice", noticeKind: "restart", text: "no prompt snapshot", receivedAt: 5000 },
+    ]);
+  });
+
+  it("lands a replayed restart on the same note", () => {
+    let s = applyEvent(emptyState("s1"), ev(2, "thread.restarted", {}, 5000));
+    s = applyEvent({ ...s, seq: 1 }, ev(2, "thread.restarted", {}, 6000));
+    expect(s.items.map((it) => it.id)).toEqual(["restart:2"]);
+    expect(s.items[0].receivedAt).toBe(5000);
+  });
+});
+
 describe("extension statuses", () => {
   const status = (seq: number, key: string, text?: string) =>
     ev(seq, "extension.status", text === undefined ? { key } : { key, text });

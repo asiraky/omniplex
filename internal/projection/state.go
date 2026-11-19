@@ -213,7 +213,8 @@ type Item struct {
 	ChildrenBefore int `json:"childrenBefore,omitempty"`
 
 	// notice
-	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account | model | notify
+	// A restart notice's Text is why it failed, and empty when it worked.
+	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account | model | notify | restart
 	Model      string `json:"model,omitempty"`
 	Effort     string `json:"effort,omitempty"`
 	// From is what the turn before ran on. The log names models by whatever
@@ -501,6 +502,9 @@ type State struct {
 	Phase            string         `json:"phase"` // idle | turn | closed
 	Closed           bool           `json:"closed"`
 	Workspace        WorkspaceState `json:"workspace"`
+	// RestartPending: a restart was asked for while the thread was busy, and
+	// waits for it to settle. The restart itself, or a cancel, clears it.
+	RestartPending bool `json:"restartPending,omitempty"`
 
 	Items []Item `json:"items"`
 	// ItemsBefore is how many items were trimmed from the front of Items when
@@ -1369,6 +1373,29 @@ func (s *State) Apply(ev proto.Event) {
 			if it.Title == "" {
 				it.Title = p.To
 			}
+		})
+
+	case proto.ThreadRestartRequested:
+		s.RestartPending = true
+
+	case proto.ThreadRestartCancelled:
+		s.RestartPending = false
+
+	case proto.ThreadRestarted:
+		var p proto.ThreadRestartedPayload
+		decode(ev.Payload, &p)
+		s.RestartPending = false
+		// A line where the agent's setup changed, anchored to the sequence
+		// like an account change. It is not an account notice: a usage limit
+		// still holds the queue across it (QueueHeld), because the account
+		// the limit is on has not changed.
+		s.upsert("restart:"+strconv.FormatInt(ev.Seq, 10), func(it *Item) {
+			it.Kind = ItemNotice
+			if it.ReceivedAt == 0 {
+				it.ReceivedAt = ev.Timestamp
+			}
+			it.NoticeKind = "restart"
+			it.Text = p.Error
 		})
 
 	case proto.PermissionRequested:

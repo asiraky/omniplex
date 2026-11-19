@@ -1948,3 +1948,60 @@ func TestCloneCopiesQuestions(t *testing.T) {
 		t.Fatalf("clone saw the live answer %q", got)
 	}
 }
+
+// A requested restart is pending until it happens or is cancelled, across a
+// snapshot and on the copy a client gets; each restart leaves a line in the
+// timeline, carrying the error when it failed.
+func TestRestartPendingAndItsNotice(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.ThreadRestartRequested, proto.ThreadRestartRequestedPayload{}))
+	if !s.RestartPending {
+		t.Fatal("not pending after a request")
+	}
+	blob, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := FromSnapshot(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !back.RestartPending || !back.WireCopy(0).RestartPending {
+		t.Fatal("the pending restart was lost across a snapshot or on the wire")
+	}
+	back.Apply(event(t, 3, proto.ThreadRestartCancelled, proto.ThreadRestartCancelledPayload{}))
+	if back.RestartPending {
+		t.Fatal("still pending after a cancel")
+	}
+
+	s.Apply(event(t, 3, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+	s.Apply(event(t, 4, proto.ThreadRestarted, proto.ThreadRestartedPayload{}))
+	s.Apply(event(t, 5, proto.ThreadRestartRequested, proto.ThreadRestartRequestedPayload{}))
+	s.Apply(event(t, 6, proto.ThreadRestarted, proto.ThreadRestartedPayload{Error: "no prompt snapshot"}))
+	if s.RestartPending {
+		t.Fatal("still pending after the restart")
+	}
+	var notes []Item
+	for _, it := range s.Items {
+		if it.Kind == ItemNotice && it.NoticeKind == "restart" {
+			notes = append(notes, it)
+		}
+	}
+	if len(notes) != 2 || notes[0].Text != "" || notes[1].Text != "no prompt snapshot" || notes[1].ReceivedAt != 6000 {
+		t.Fatalf("restart notices = %+v, want a clean one then a failed one", notes)
+	}
+}
+
+// A restart changes nothing about the account, so a usage limit still holds
+// the queue across one.
+func TestRestartDoesNotLiftALimitHold(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "next"}))
+	s.Apply(event(t, 3, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopError, Failure: proto.FailureLimit}))
+	s.Apply(event(t, 4, proto.ThreadRestarted, proto.ThreadRestartedPayload{}))
+	if !s.QueueHeld() || !s.HeldByLimit(s.Queued[0]) {
+		t.Fatal("a restart lifted the limit's hold")
+	}
+}

@@ -69,6 +69,10 @@ func TestFakeBridgeProcess(t *testing.T) {
 	}
 	configDir := filepath.Join(dir, ".claude")
 	transcript := filepath.Join(configDir, "projects", nonAlphanumeric.ReplaceAllString(filepath.Clean(cfg.Cwd), "-"), sid+".jsonl")
+	// What the CLI would have read on boot, for tests of what reaches it.
+	if b, err := os.ReadFile(transcript); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, "booted-on"), b, 0o600)
+	}
 	last := cfg.ResumeAt
 
 	in := bufio.NewScanner(os.Stdin)
@@ -130,6 +134,19 @@ type fakeBridge struct {
 // setup (if any) has prepared its directories.
 func startFakeBridge(t *testing.T, o adapter.CreateOptions, setup func(*fakeBridge)) *fakeBridge {
 	t.Helper()
+	f, sess, err := createOnFakeBridge(t, o, setup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	f.s = sess.(*session)
+	return f
+}
+
+// createOnFakeBridge is startFakeBridge for a start that may fail: it returns
+// CreateSession's answer as it is, and f.s is unset.
+func createOnFakeBridge(t *testing.T, o adapter.CreateOptions, setup func(*fakeBridge)) (*fakeBridge, adapter.Session, error) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake bridge is started by a shell script")
 	}
@@ -162,12 +179,12 @@ func startFakeBridge(t *testing.T, o adapter.CreateOptions, setup func(*fakeBrid
 	}
 	a := &Adapter{ClaudePath: claude, bundledSidecar: bridge}
 	sess, err := a.CreateSession(context.Background(), &fakeHost{}, o)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	f.s = sess.(*session)
-	return f
+	return f, sess, err
+}
+
+// file is the path of conversation id's transcript.
+func (f *fakeBridge) file(id string) string {
+	return filepath.Join(f.configDir, "projects", nonAlphanumeric.ReplaceAllString(filepath.Clean(f.cwd), "-"), id+".jsonl")
 }
 
 // transcript writes conversation id's transcript: one line per entry, each

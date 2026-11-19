@@ -27,7 +27,8 @@ function newestPrompt(items: Item[]): string | undefined {
  * A turn stopped at a usage limit holds the queue on the server until a new
  * turn starts, and arms a continuation for when the limit resets. The hold is
  * for what was queued before the limit, and lifts once the thread moves to
- * another account: the limit was the old one's. Mirrors the server's
+ * another account: the limit was the old one's. A restart does not lift it,
+ * being on the same account. Mirrors the server's
  * projection.State.QueueHeld and HeldByLimit.
  */
 export function limitHold(state: Pick<TranscriptState, "scheduledPrompts" | "turns" | "items">) {
@@ -47,10 +48,13 @@ export function limitHold(state: Pick<TranscriptState, "scheduledPrompts" | "tur
   return { continuation, heldFor };
 }
 
-function newestBesidesNotify(items: Item[]): Item | undefined {
+// The newest item that is news about the conversation: an extension's notice
+// and a restart's are about the session around it, and neither undoes a
+// switch that came before them.
+function newestBesidesSession(items: Item[]): Item | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
-    if (!(it.kind === "notice" && it.noticeKind === "notify")) return it;
+    if (!(it.kind === "notice" && (it.noticeKind === "notify" || it.noticeKind === "restart"))) return it;
   }
   return undefined;
 }
@@ -139,8 +143,9 @@ export function useTranscriptModel(
   }, [state.turns, state.phase, state.closed]);
   // A switch made since the limit hit: the notice it left is the newest item.
   // An extension's notice does not count as anything since: extensions speak
-  // up as the switched session starts, which would hide the switch.
-  const lastItem = newestBesidesNotify(state.items);
+  // up as the switched session starts, which would hide the switch. Nor does
+  // a restart: the thread is still on the account it switched to.
+  const lastItem = newestBesidesSession(state.items);
   const switchedTo =
     lastItem?.kind === "notice" && lastItem.noticeKind === "account" ? lastItem.title : undefined;
 

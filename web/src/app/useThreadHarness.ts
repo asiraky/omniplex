@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { toast } from "~/lib/toast";
 import type { ThreadMeta, ThreadState, Turn } from "~/protocol";
@@ -10,8 +10,8 @@ export type ThreadHarness = ReturnType<typeof useThreadHarness>;
 
 /**
  * The attached thread's harness and what can be changed about it: the
- * account it runs on, its model, effort and permission mode, and re-sending a
- * turn that failed.
+ * account it runs on, its model, effort and permission mode, re-sending a
+ * turn that failed, and restarting the process on the setup as it is now.
  */
 export function useThreadHarness(
   wire: Wire,
@@ -23,6 +23,8 @@ export function useThreadHarness(
   // change neither (nearly all of them) do not rerender the app.
   const threadHarness = useThread(threadStore, harnessOf);
   const threadMode = useThread(threadStore, modeOf);
+  const restartPending = useThread(threadStore, restartPendingOf);
+  const threadClosed = useThread(threadStore, closedOf);
   const activeProviderInstance = harnesses
     .flatMap((h) => h.instances ?? [])
     .find((i) => i.id === (meta?.providerInstance || meta?.harness));
@@ -143,6 +145,33 @@ export function useThreadHarness(
     [activeId, clientRef, harnesses, threadStore, switchModel, retryTurn],
   );
 
+  // Stops the harness and starts it again on the same conversation, so it
+  // picks up a changed system prompt, MCP servers and skills. A busy thread
+  // waits for its turn to end, which the state says through restartPending;
+  // an idle one restarts before the reply, which can take seconds, so the
+  // thread it is for is held here until then. Either way the event says what
+  // happened, so success needs no toast.
+  const [restartingId, setRestartingId] = useState<string | null>(null);
+  const restartThread = useCallback(() => {
+    const client = clientRef.current;
+    if (!activeId || !client) return;
+    const threadId = activeId;
+    setRestartingId(threadId);
+    client
+      .command("restart_thread", { threadId })
+      .catch((e) => toast.error("Could not restart the thread", { description: e.message }))
+      .finally(() => setRestartingId((id) => (id === threadId ? null : id)));
+  }, [activeId, clientRef]);
+  const cancelRestart = useCallback(() => {
+    if (!activeId) return;
+    clientRef.current?.command("cancel_restart", { threadId: activeId }).catch((e) => {
+      toast.error("Could not cancel the restart", { description: e.message });
+    });
+  }, [activeId, clientRef]);
+  // Not offered where the server would refuse it: a closed thread has no
+  // process to restart, and a private chat cannot be restarted.
+  const canRestart = !!activeId && threadClosed === false && !meta?.private;
+
   return {
     activeProviderInstance,
     modeOptions,
@@ -154,8 +183,15 @@ export function useThreadHarness(
     retryTurn,
     switchTargets,
     switchAccount,
+    canRestart,
+    restartPending: !!restartPending,
+    restarting: restartingId !== null && restartingId === activeId,
+    restartThread,
+    cancelRestart,
   };
 }
 
 const harnessOf = (s: ThreadState | null) => s?.harness;
 const modeOf = (s: ThreadState | null) => s?.mode;
+const restartPendingOf = (s: ThreadState | null) => s?.restartPending;
+const closedOf = (s: ThreadState | null) => s?.closed;
