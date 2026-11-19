@@ -273,6 +273,11 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 
 	args := append([]string{"app-server"}, sessionArgs()...)
 	args = append(args, trustArgs(o.Cwd)...)
+	agent, skipped := agentArgs(o)
+	if skipped != "" {
+		host.Logf("codex: compaction prompt left out: %s", skipped)
+	}
+	args = append(args, agent...)
 	var native []string
 	if len(o.MCPServers) > 0 {
 		all, err := nativeServers(o.Env)
@@ -557,6 +562,11 @@ type session struct {
 	// canonical notice can distinguish a human request from auto-compaction.
 	manualCompact bool
 	compaction    compactionCount
+	// context is the size of the last request's context, which is what a
+	// compaction that follows starts from; compactStarted is when the
+	// running compaction's item started, zero when none is.
+	context        int64
+	compactStarted time.Time
 	// decodeWarned holds each notification method and decode error already
 	// logged, so a drifted codex that repeats a bad shape logs it once.
 	decodeWarned map[string]bool
@@ -1558,6 +1568,9 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		var pct float64
 		window := p.TokenUsage.ModelContextWindow
 		used := p.TokenUsage.Last.TotalTokens
+		s.mu.Lock()
+		s.context = used
+		s.mu.Unlock()
 		if used > 0 && window > 0 {
 			// Unclamped, matching the claude path: an over-limit reading is a
 			// real signal, and the meter renders the raw ratio rather than a
@@ -2095,6 +2108,9 @@ func (s *session) handleItem(method, turn string, owner *child, params json.RawM
 		// boundary clears it; when the boundary is a duplicate
 		// (thread/compacted already named it) and goes unsent, clear it here.
 		if !completed {
+			s.mu.Lock()
+			s.compactStarted = time.Now()
+			s.mu.Unlock()
 			s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{State: proto.TurnCompacting}))
 			return
 		}
@@ -2354,12 +2370,21 @@ func (s *session) emitContextCompacted(turnID string, signal compactionSignal) b
 	}
 	manual := s.manualCompact
 	s.manualCompact = false
-	s.mu.Unlock()
-	trigger := "auto"
-	if manual {
-		trigger = "manual"
+	// Codex reports neither size nor time: the size is the last request's,
+	// and the time runs from the item starting, when one did. The size is
+	// spent once, so a compaction with no request since reports none rather
+	// than the old size.
+	p := proto.ContextCompactedPayload{Trigger: "auto", PreTokens: s.context}
+	s.context = 0
+	if !s.compactStarted.IsZero() {
+		p.DurationMs = time.Since(s.compactStarted).Milliseconds()
+		s.compactStarted = time.Time{}
 	}
-	s.emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: trigger}))
+	s.mu.Unlock()
+	if manual {
+		p.Trigger = "manual"
+	}
+	s.emit(proto.Emit(proto.ContextCompacted, p))
 	return true
 }
 
