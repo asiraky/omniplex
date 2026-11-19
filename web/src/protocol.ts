@@ -115,6 +115,9 @@ export interface Item {
   /** For a compaction notice on an agent's thread: the compaction's number
       in the agent's log (1 for the first), for the Inspect link. */
   epoch?: number;
+  /** For a restart notice on an agent's thread: the prompt revision the
+      harness came back up on, for the View change link. */
+  promptRev?: number;
   // artefact: title is its name
   artefactId?: string;
   mediaType?: string;

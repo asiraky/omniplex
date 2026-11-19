@@ -1976,7 +1976,7 @@ func TestRestartPendingAndItsNotice(t *testing.T) {
 	}
 
 	s.Apply(event(t, 3, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
-	s.Apply(event(t, 4, proto.ThreadRestarted, proto.ThreadRestartedPayload{}))
+	s.Apply(event(t, 4, proto.ThreadRestarted, proto.ThreadRestartedPayload{PromptRev: 3}))
 	s.Apply(event(t, 5, proto.ThreadRestartRequested, proto.ThreadRestartRequestedPayload{}))
 	s.Apply(event(t, 6, proto.ThreadRestarted, proto.ThreadRestartedPayload{Error: "no prompt snapshot"}))
 	if s.RestartPending {
@@ -1988,7 +1988,7 @@ func TestRestartPendingAndItsNotice(t *testing.T) {
 			notes = append(notes, it)
 		}
 	}
-	if len(notes) != 2 || notes[0].Text != "" || notes[1].Text != "no prompt snapshot" || notes[1].ReceivedAt != 6000 {
+	if len(notes) != 2 || notes[0].Text != "" || notes[0].PromptRev != 3 || notes[1].Text != "no prompt snapshot" || notes[1].PromptRev != 0 || notes[1].ReceivedAt != 6000 {
 		t.Fatalf("restart notices = %+v, want a clean one then a failed one", notes)
 	}
 }

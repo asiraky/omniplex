@@ -228,6 +228,9 @@ type Item struct {
 	// Epoch is a compaction notice's number in its agent's log, on an agent's
 	// thread only: what the notice's Inspect link opens.
 	Epoch int `json:"epoch,omitempty"`
+	// PromptRev is a restart notice's agent prompt revision, on an agent's
+	// thread only: the revision replies below it ran on.
+	PromptRev int `json:"promptRev,omitempty"`
 	// Level is a notify notice's severity, warning or error; Text is the
 	// extension's message.
 	Level string `json:"level,omitempty"`
@@ -1400,6 +1403,7 @@ func (s *State) Apply(ev proto.Event) {
 			}
 			it.NoticeKind = "restart"
 			it.Text = p.Error
+			it.PromptRev = p.PromptRev
 		})
 
 	case proto.PermissionRequested:

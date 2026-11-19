@@ -119,14 +119,29 @@ function NotifyNotice({ item }: { item: Item }) {
 // line had the new system prompt, MCP servers and skills. A failed restart
 // says why in the server's own words, so it wraps like an extension's message
 // rather than overflowing a phone, and is the one notice drawn as an error:
-// the thread is still on its old setup, which the reader has to know.
+// the thread is still on its old setup, which the reader has to know. On an
+// agent's thread it names the prompt revision it came up on, and links to that
+// revision's change when there is an earlier one to compare it with.
 function RestartNotice({ item }: { item: Item }) {
+  const { current, openAgent } = useAgentNav();
   if (!item.text) {
+    const rev = item.promptRev;
     return (
       <div className="fade-in flex justify-center">
-        <div className="text-muted-foreground flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px]">
+        <div className="text-muted-foreground flex max-w-full flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 rounded-full border px-3 py-1 text-[12px]">
           <RotateCwIcon className="size-3.5 shrink-0" />
-          <span>Thread restarted</span>
+          <span>
+            Thread restarted{rev !== undefined && <>, prompt <span className="font-mono text-[11px]">r{rev}</span></>}
+          </span>
+          {rev !== undefined && rev > 1 && current && (
+            <button
+              type="button"
+              onClick={() => openAgent(current.id, "prompt", { rev })}
+              className="text-primary hit-44 relative font-medium hover:underline"
+            >
+              View change
+            </button>
+          )}
         </div>
       </div>
     );

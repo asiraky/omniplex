@@ -229,6 +229,9 @@ func TestSavingAPromptRestartsTheLiveThreadOntoIt(t *testing.T) {
 		t.Fatalf("restarted on %q, want the new prompt", o.Instructions)
 	}
 	waitFor(t, func() bool { return r.agent(t, ag.ID).LivePromptRev == 2 })
+	if n := restartNotices(stateOf(t, a)); len(n) != 1 || n[0].PromptRev != 2 {
+		t.Fatalf("restart notices = %+v, want one naming r2", n)
+	}
 
 	if _, err := a.Prompt(ctx, "work", nil); err != nil {
 		t.Fatal(err)

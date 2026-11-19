@@ -947,6 +947,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           it.receivedAt ??= ev.timestamp;
           it.noticeKind = "restart";
           it.text = p.error ?? "";
+          if (p.promptRev) it.promptRev = p.promptRev;
         }),
       };
 

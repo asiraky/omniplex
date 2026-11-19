@@ -395,6 +395,9 @@ type ThreadRestartCancelledPayload struct{}
 // a harness resumes the conversation the ordinary way.
 type ThreadRestartedPayload struct {
 	Error string `json:"error,omitempty"`
+	// PromptRev is, on an agent's thread, the prompt revision the new process
+	// started on; 0 on any other thread, or a failed restart.
+	PromptRev int `json:"promptRev,omitempty"`
 }
 
 type ThreadClosedPayload struct {

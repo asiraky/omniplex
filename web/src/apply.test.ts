@@ -1286,6 +1286,11 @@ describe("thread restart", () => {
     expect(s.items).toEqual([{ id: "restart:2", kind: "notice", noticeKind: "restart", text: "", receivedAt: 5000 }]);
   });
 
+  it("keeps the prompt revision an agent's thread came back up on", () => {
+    const s = applyEvent(emptyState("s1"), ev(2, "thread.restarted", { promptRev: 8 }, 5000));
+    expect(s.items[0].promptRev).toBe(8);
+  });
+
   it("keeps a failed restart's reason on its note", () => {
     const s = applyEvent(emptyState("s1"), ev(3, "thread.restarted", { error: "no prompt snapshot" }, 5000));
     expect(s.restartPending).toBe(false);

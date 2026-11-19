@@ -58,6 +58,9 @@ type Actor struct {
 	// startFilled is set once the agent's epoch 0 has been offered the
 	// thread's first message (firstMessageLogged). Loop only.
 	startFilled bool
+	// agentPromptRev is the agent prompt revision the running process of an
+	// agent's thread started on, which its restart notice names. Loop only.
+	agentPromptRev int
 	// restored is true for an actor rebuilt from the log until its harness
 	// first starts. Whatever is queued then was written before the server
 	// went down, so that first start holds it; see cmdActivate. One rebuilt
@@ -1843,6 +1846,7 @@ func (a *Actor) startProcess(ctx context.Context, o adapter.CreateOptions) error
 		return err
 	}
 	if x.agent != nil {
+		a.agentPromptRev = x.agent.promptRev
 		a.startedOn(ctx, x.agent)
 	}
 	a.Cwd, a.sess, a.preparing = cwd, sess, false

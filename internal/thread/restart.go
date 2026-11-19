@@ -180,7 +180,7 @@ func (a *Actor) restart(ctx context.Context) error {
 // a restart that was waiting. A failure goes to the server log too.
 func (a *Actor) noteRestart(err error) {
 	if err == nil {
-		a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{}))
+		a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{PromptRev: a.agentPromptRev}))
 		return
 	}
 	a.logf("restart %s: %v", a.ID, err)

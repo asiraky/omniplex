@@ -62,6 +62,28 @@ describe("NoticeCard restart", () => {
     expect(container.textContent).toBe("Thread restarted");
   });
 
+  it("links an agent's restart to the prompt change it came up on", () => {
+    const openAgent = vi.fn();
+    render(
+      <AgentNavContext.Provider value={{ current: { id: "ag1" } as Agent, openAgent, openThread: () => {} }}>
+        <NoticeCard item={{ ...restart(""), promptRev: 8 }} />
+      </AgentNavContext.Provider>,
+    );
+    expect(screen.getByText("r8")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "View change" }));
+    expect(openAgent).toHaveBeenCalledWith("ag1", "prompt", { rev: 8 });
+  });
+
+  it("has no change to show for the first revision or off an agent's thread", () => {
+    render(
+      <AgentNavContext.Provider value={{ current: { id: "ag1" } as Agent, openAgent: vi.fn(), openThread: () => {} }}>
+        <NoticeCard item={{ ...restart(""), promptRev: 1 }} />
+      </AgentNavContext.Provider>,
+    );
+    render(<NoticeCard item={{ ...restart(""), promptRev: 5 }} />);
+    expect(screen.queryByRole("button", { name: "View change" })).toBeNull();
+  });
+
   it("says why a restart failed", () => {
     const { container } = render(<NoticeCard item={restart("no prompt_snapshot in the transcript")} />);
     expect(container.textContent).toBe("Restart failed: no prompt_snapshot in the transcript");
