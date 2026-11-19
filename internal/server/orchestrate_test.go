@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/asiraky/omniplex/internal/adapter"
-	"github.com/asiraky/omniplex/internal/adapter/claudecode"
 	"github.com/asiraky/omniplex/internal/artefact"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/project"
@@ -467,17 +466,43 @@ func TestStoppingAWaitingThreadDoesNotWakeItAgain(t *testing.T) {
 	}
 }
 
-func TestAPreApprovedOnlyParentCannotGrantEdits(t *testing.T) {
-	modes := (&claudecode.Adapter{}).PermissionModes()
-	parent := agentSettings{Harness: "claude", Model: "x", Mode: "dontAsk"}
-	claude := harnessCatalog{ID: "claude", Modes: modes}
-	if _, err := resolveChildSettings(parent, modes, claude, settingsAsk{Mode: "acceptEdits"}); err == nil {
-		t.Fatal("a dontAsk parent delegated an acceptEdits thread")
+func TestAModeWithNoLevelIsJudgedAgainstItself(t *testing.T) {
+	// narrow and loose have no level: narrow sits between ask and edits,
+	// loose between edits and all.
+	modes := []adapter.PermissionModeMeta{
+		{ID: "ask", Level: adapter.LevelAsk, Default: true},
+		{ID: "narrow"},
+		{ID: "edits", Level: adapter.LevelEdits},
+		{ID: "loose"},
+		{ID: "all", Level: adapter.LevelAll},
 	}
+	same := harnessCatalog{ID: "a", Modes: modes}
 	other := harnessCatalog{ID: "b", Modes: []adapter.PermissionModeMeta{{ID: "ask", Level: adapter.LevelAsk}, {ID: "edits", Level: adapter.LevelEdits}}}
-	got, err := resolveChildSettings(parent, modes, other, settingsAsk{})
-	if err != nil || got.Mode != "ask" {
-		t.Fatalf("another harness under a dontAsk parent = %+v, %v; want ask", got, err)
+	for _, c := range []struct {
+		parent, ask string
+		to          harnessCatalog
+		want        string // "" is refused
+	}{
+		{"narrow", "edits", same, ""},
+		{"narrow", "loose", same, ""},
+		{"narrow", "narrow", same, "narrow"},
+		{"narrow", "ask", same, "ask"},
+		{"narrow", "", other, "ask"},
+		{"ask", "narrow", same, ""},
+		{"edits", "narrow", same, "narrow"},
+		{"edits", "loose", same, ""},
+		{"loose", "edits", same, "edits"},
+		{"loose", "all", same, ""},
+		{"loose", "", other, "edits"},
+	} {
+		parent := agentSettings{Harness: "a", Model: "x", Mode: c.parent}
+		got, err := resolveChildSettings(parent, modes, c.to, settingsAsk{Mode: c.ask})
+		switch {
+		case c.want == "" && err == nil:
+			t.Errorf("a %s parent delegated %s to %s", c.parent, c.ask, c.to.ID)
+		case c.want != "" && (err != nil || got.Mode != c.want):
+			t.Errorf("a %s parent asking %q of %s = %q, %v; want %s", c.parent, c.ask, c.to.ID, got.Mode, err, c.want)
+		}
 	}
 }
 

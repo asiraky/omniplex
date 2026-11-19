@@ -71,28 +71,48 @@ type harnessCatalog struct {
 // asked for is the catalogue's.
 type settingsAsk struct{ Model, Effort, Mode string }
 
-// modeRank places a mode on the shared scale, ask (2) < edits (4) < all
-// (6). A mode with no level sits just above the levelled mode listed before
-// it (odd), since a harness lists its modes most permissive last; level-less
-// modes in a row share a rank. 0 is an unknown mode.
-func modeRank(modes []adapter.PermissionModeMeta, id string) int {
-	rank := 0
-	for _, m := range modes {
-		switch m.Level {
-		case adapter.LevelAsk:
-			rank = 2
-		case adapter.LevelEdits:
-			rank = 4
-		case adapter.LevelAll:
-			rank = 6
-		default:
-			rank |= 1
-		}
-		if m.ID == id {
-			return rank
-		}
+// levelRank is a level on the shared scale: ask (2) < edits (4) < all (6).
+// 0 is no level.
+func levelRank(l string) int {
+	switch l {
+	case adapter.LevelAsk:
+		return 2
+	case adapter.LevelEdits:
+		return 4
+	case adapter.LevelAll:
+		return 6
 	}
 	return 0
+}
+
+// modeRank places a mode on the shared scale; 0 is an unknown mode. A mode
+// with no level is judged by its levelled neighbours, harnesses listing
+// modes least permissive first, and the doubt goes against it: as what a
+// thread may do (granted false) it ranks as the levelled mode before it,
+// ask when there is none; as what a delegated thread would get (granted
+// true) it ranks as the one after it, all when there is none.
+func modeRank(modes []adapter.PermissionModeMeta, id string, granted bool) int {
+	i := slices.IndexFunc(modes, func(m adapter.PermissionModeMeta) bool { return m.ID == id })
+	if i < 0 {
+		return 0
+	}
+	if r := levelRank(modes[i].Level); r > 0 {
+		return r
+	}
+	if granted {
+		for _, m := range modes[i+1:] {
+			if r := levelRank(m.Level); r > 0 {
+				return r
+			}
+		}
+		return 6
+	}
+	for j := i - 1; j >= 0; j-- {
+		if r := levelRank(modes[j].Level); r > 0 {
+			return r
+		}
+	}
+	return 2
 }
 
 // effectiveMode is the mode a thread is in: its own, or its harness's
@@ -198,13 +218,13 @@ func resolveChildSettings(parent agentSettings, parentModes []adapter.Permission
 	}
 
 	parentMode := effectiveMode(parentModes, parent.Mode)
-	ceiling := modeRank(parentModes, parentMode)
+	ceiling := modeRank(parentModes, parentMode, false)
 	if ceiling == 0 {
 		ceiling = 2 // a mode its harness does not list: no more than ask
 	}
 	switch {
 	case ask.Mode != "":
-		rank := modeRank(child.Modes, ask.Mode)
+		rank := modeRank(child.Modes, ask.Mode, true)
 		if rank == 0 {
 			return out, fmt.Errorf("%s has no mode %q; its modes are %s", child.ID, ask.Mode, modeIDs(child.Modes))
 		}
@@ -217,10 +237,7 @@ func resolveChildSettings(parent agentSettings, parentModes []adapter.Permission
 	default:
 		best := 0
 		for _, m := range child.Modes {
-			if m.Level == "" {
-				continue
-			}
-			if r := modeRank(child.Modes, m.ID); r <= ceiling && r > best {
+			if r := levelRank(m.Level); r > 0 && r <= ceiling && r > best {
 				best, out.Mode = r, m.ID
 			}
 		}
@@ -521,6 +538,13 @@ func finished(att string, d thread.Digest, since int) (status string, ok bool) {
 	return "", false
 }
 
+// result is what became of a thread whose result is in: finished, and not
+// still collecting what it delegated.
+func (s *Server) result(l look) (status string, ok bool) {
+	st, ok := finished(l.att, l.d, s.orch.since(l.meta.ID))
+	return st, ok && !s.orch.busy(l.meta.ID)
+}
+
 // statusWord is where a thread stands, in a word or two.
 func statusWord(att string, d thread.Digest) string {
 	switch att {
@@ -638,7 +662,7 @@ func (s *Server) threadRead(ctx context.Context, t toolThread, body []byte) (str
 	}
 	// Reading the end of a finished delegated thread is its result delivered.
 	if desc && next >= l.d.Turns && len(turns) > 0 {
-		if _, done := finished(l.att, l.d, s.orch.since(meta.ID)); done {
+		if _, done := s.result(l); done {
 			s.orch.delivered(meta.ID)
 		}
 	}
@@ -668,7 +692,7 @@ func (s *Server) taskStatus(ctx context.Context, t toolThread, body []byte) (str
 	if n := len(l.d.Approvals); n > 0 {
 		fmt.Fprintf(&b, " %d %s pending: only the user can approve.", n, plural(n, "approval", "approvals"))
 	}
-	if st, done := finished(l.att, l.d, s.orch.since(meta.ID)); done && l.d.Last != nil {
+	if st, done := s.result(l); done && l.d.Last != nil {
 		reply := l.d.Last.Reply
 		cut := utf8.RuneCountInString(reply) > statusReply
 		fmt.Fprintf(&b, "\n\nLast reply (%s):\n%s", st, cmp.Or(thread.KeepTail(reply, statusReply), "(no reply)"))
@@ -889,7 +913,7 @@ func (s *Server) waitOn(ctx context.Context, t toolThread, ids []string, timeout
 		default:
 			b.WriteString(".")
 		}
-		s.orch.oweUnlessOwed(w.l.meta.ID, t.id, pendingTurn(w.l.d))
+		s.orch.claim(w.l.meta.ID, t.id, pendingTurn(w.l.d))
 		b.WriteString(" You will be woken with its result when it finishes.")
 	}
 	if timedOut {
@@ -922,7 +946,7 @@ func (s *Server) checkWait(ctx context.Context, ids []string) ([]waited, bool, e
 			return nil, false, err
 		}
 		w := waited{l: l, status: "working"}
-		if st, ok := finished(l.att, l.d, s.orch.since(id)); ok && !s.orch.busy(id) {
+		if st, ok := s.result(l); ok {
 			w.status, w.done = st, true
 		} else {
 			all = false
@@ -1400,13 +1424,24 @@ func (o *orchestrator) oweUnlessOwed(child, parent string, since int) {
 	o.mu.Unlock()
 }
 
+// claim is oweUnlessOwed for a parent asking after child itself: it is
+// owed even when it was stopped from above before.
+func (o *orchestrator) claim(child, parent string, since int) {
+	o.mu.Lock()
+	if _, ok := o.owed[child]; !ok {
+		o.owed[child] = owed{parent: parent, since: since}
+	}
+	delete(o.abandoned, child)
+	o.mu.Unlock()
+}
+
 // abandon is delivered for a thread stopped from above: its stop is no
 // one's news.
 func (o *orchestrator) abandon(child string) {
-	o.delivered(child)
 	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.drop(child)
 	o.abandoned[child] = true
-	o.mu.Unlock()
 }
 
 // busy reports a thread still collecting what it delegated: a result owed
@@ -1432,6 +1467,11 @@ func (o *orchestrator) busy(id string) bool {
 func (o *orchestrator) delivered(child string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.drop(child)
+}
+
+// drop is delivered under o.mu.
+func (o *orchestrator) drop(child string) {
 	delete(o.owed, child)
 	for _, b := range o.batches {
 		for i := b.sent; i < len(b.entries); i++ {
@@ -1833,6 +1873,11 @@ func (o *orchestrator) pushes(ctx context.Context, list []store.ThreadMeta, byID
 	for id := range o.asked {
 		if _, ok := byID[id]; !ok {
 			delete(o.asked, id)
+		}
+	}
+	for id := range o.abandoned {
+		if _, ok := byID[id]; !ok {
+			delete(o.abandoned, id)
 		}
 	}
 	o.mu.Unlock()

@@ -102,7 +102,9 @@ const (
 	destinationDesc = "project: the project's own, private, never committed. repo: committed into the repository, for everyone who clones it. personal: everywhere, for every project. Defaults to project in a project, else personal."
 )
 
-func intArg(desc string) map[string]any { return map[string]any{"type": "integer", "description": desc} }
+func intArg(desc string) map[string]any {
+	return map[string]any{"type": "integer", "description": desc}
+}
 
 const waitDesc = "How long to wait, in seconds: 1 to 1500. Defaults to 600. The threads carry on when the wait ends."
 
