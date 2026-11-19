@@ -190,3 +190,40 @@ func TestRetryReason(t *testing.T) {
 		}
 	}
 }
+
+// TestCompactionDetail: an agent's log gets pi's summary with the boundary,
+// timed from compaction_start; a plain thread gets the boundary alone, and a
+// failed compaction carries nothing over.
+func TestCompactionDetail(t *testing.T) {
+	cases := []struct {
+		name  string
+		agent bool
+		end   string
+		want  []proto.CompactionDetailPayload
+	}{
+		{"agent", true, compactionEndOK, []proto.CompactionDetailPayload{{Summary: "Summary of conversation..."}}},
+		{"plain thread", false, compactionEndOK, nil},
+		{"failed", true, `{"type":"compaction_end","reason":"threshold","result":null,"aborted":false,"willRetry":false,"errorMessage":"quota exceeded"}`, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := statusSession()
+			s.epochDetail = c.agent
+			feed(t, s, compactionStart)
+			s.compactStarted = s.compactStarted.Add(-2 * time.Second)
+			es := feed(t, s, c.end)
+			var got []proto.CompactionDetailPayload
+			for _, e := range es {
+				if p, ok := e.Payload.(proto.CompactionDetailPayload); ok {
+					got = append(got, p)
+				}
+			}
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("detail = %+v, want %+v", got, c.want)
+			}
+			if comp := compactions(es); len(comp) == 1 && (comp[0].DurationMs < 2000 || comp[0].DurationMs > 60000) {
+				t.Errorf("duration = %dms, want about 2s", comp[0].DurationMs)
+			}
+		})
+	}
+}
