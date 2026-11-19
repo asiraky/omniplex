@@ -534,13 +534,16 @@ function RevisionView({
         <WhoChip author={rev.author} />
         <span className="text-muted-foreground text-[12px]">{fmtDay(rev.createdAt)}</span>
         <span className="flex-1" />
-        {rev.n !== current.n ? (
+        {rev.n === current.n ? (
+          <Marker tone="good">current</Marker>
+        ) : rev.body === current.body ? (
+          // Reverting would write the text that is already current.
+          <Marker>same as {label(current.n)}</Marker>
+        ) : (
           <Button variant="outline" size="sm" className="h-11 md:h-8" onClick={onRevert}>
             <Undo2Icon className="size-3.5" />
             Revert to {label(rev.n)}
           </Button>
-        ) : (
-          <Marker tone="good">current</Marker>
         )}
       </div>
       {rev.reason && (

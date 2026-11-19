@@ -241,6 +241,17 @@ describe("PromptTab", () => {
     await waitFor(() => expect(saveRevision).toHaveBeenCalledWith("a1", "prompt", "old line\n", "Revert to r1", 2));
   });
 
+  it("offers no revert to a revision whose text is already current", async () => {
+    const revisions = vi.fn(async () => [rev(1, "same\n"), rev(2, "other\n"), rev(3, "same\n")]);
+    render(<PromptTab agent={agent({ promptRev: 3, livePromptRev: 3 })} api={mockApi({ revisions })} />);
+
+    const history = await screen.findByRole("region", { name: "History" });
+    fireEvent.click(within(history).getByText("r1").closest("button")!);
+    expect(screen.queryByRole("button", { name: "Revert to r1" })).toBeNull();
+    fireEvent.click(within(history).getByText("r2").closest("button")!);
+    expect(screen.getByRole("button", { name: "Revert to r2" })).toBeTruthy();
+  });
+
   async function typeInto(text: string) {
     const box = await screen.findByRole("textbox", { name: "System prompt" });
     await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe("new line\n"));
