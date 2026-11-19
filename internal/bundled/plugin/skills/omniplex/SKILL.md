@@ -31,7 +31,7 @@ A sign-in is a CLI definition: how to check status, how to sign in, and the env 
 
 ## An agent's own prompt
 
-Only an agent's thread has `propose_prompt_edit`. It proposes a change to the agent's system prompt (`kind: "prompt"`) or compaction instructions (`kind: "compact"`): `find` names the one place to replace, and leaving it out appends `replace` as a new paragraph. Call it only when the user asks you to remember a rule, change your job or update your prompt, and pass their words, quoted, as `reason`. It is a card like the others. Once saved, a prompt applies when this turn ends and compaction instructions at the next compaction. If the user declines, nothing is saved, and the rule lasts only until the next compaction.
+Only an agent's thread has `propose_prompt_edit`. It proposes a change to the agent's system prompt (`kind: "prompt"`) or compaction instructions (`kind: "compact"`): `find` names the one place to replace, and leaving it out appends `replace` as a new paragraph. Call it only when the user asks you to remember a rule, change your job or update your prompt, and pass their words, quoted, as `reason`. It is a card like the others. Once saved, a prompt applies when this turn ends. Compaction instructions apply when the harness reads them: at the next compaction for one that reads them each time, when this turn ends for one that reads them only at start (the thread restarts onto them), and never for one that takes none. The tool's result says which. If the user declines, nothing is saved, and the rule lasts only until the next compaction.
 
 ## When you can use it
 

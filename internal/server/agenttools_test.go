@@ -40,9 +40,14 @@ type mcpTestAdapter struct {
 
 	mu         sync.Mutex
 	reconnects []adapter.MCPServer
+	// compact is how the harness uses an agent's compaction instructions.
+	compact adapter.CompactInstructionsUse
 }
 
 func (a *mcpTestAdapter) ID() string { return a.id }
+func (a *mcpTestAdapter) CompactInstructions() adapter.CompactInstructionsUse {
+	return a.compact
+}
 func (a *mcpTestAdapter) Meta() adapter.HarnessMeta {
 	return adapter.HarnessMeta{ID: a.id, Name: "Harness " + a.id}
 }
@@ -1267,6 +1272,7 @@ func TestAnsweringAPromptEdit(t *testing.T) {
 	cases := []struct {
 		name     string
 		kind     string
+		reads    adapter.CompactReads
 		action   string
 		edits    any
 		wantBody string // "" when nothing is saved
@@ -1274,17 +1280,22 @@ func TestAnsweringAPromptEdit(t *testing.T) {
 		restarts int
 	}{
 		{name: "approve a prompt edit", kind: "prompt", action: "accept", wantBody: "Triage bugs.\n\nBe terse.",
-			wantText: "Saved as revision r2. Your system prompt changes when this turn ends.", restarts: 1},
-		{name: "approve a compaction edit", kind: "compact", action: "accept", wantBody: "Keep state.\n\nBe terse.",
+			wantText: "Saved as revision r2. Your thread has restarted onto it.", restarts: 1},
+		{name: "approve a compaction edit read at each compaction", kind: "compact", reads: adapter.CompactReadsAtCompaction, action: "accept", wantBody: "Keep state.\n\nBe terse.",
 			wantText: "Saved as revision c2. Your compaction instructions apply at the next compaction."},
+		{name: "approve a compaction edit read at start", kind: "compact", reads: adapter.CompactReadsAtStart, action: "accept", wantBody: "Keep state.\n\nBe terse.",
+			wantText: "Saved as revision c2. Your harness reads compaction instructions only when it starts, so your thread has restarted onto them.", restarts: 1},
+		{name: "approve a compaction edit never read", kind: "compact", action: "accept", wantBody: "Keep state.\n\nBe terse.",
+			wantText: "Saved as revision c2. Your harness does not take compaction instructions, so they are kept but not used."},
 		{name: "edit then approve", kind: "prompt", action: "accept", edits: map[string]any{"body": "Triage bugs. Be brief."}, wantBody: "Triage bugs. Be brief.",
-			wantText: "Saved as revision r2. Your system prompt changes when this turn ends. The user edited it first, so the saved text differs from your proposal. It is now:\n\nTriage bugs. Be brief.", restarts: 1},
+			wantText: "Saved as revision r2. Your thread has restarted onto it. The user edited it first, so the saved text differs from your proposal. It is now:\n\nTriage bugs. Be brief.", restarts: 1},
 		{name: "reject", kind: "prompt", action: "decline",
 			wantText: "Nothing was saved. You may follow the rule for the rest of this epoch, but it will not survive compaction."},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := newToolRig(t)
+			r.ctl.compact.Reads = c.reads
 			threadID, agentID := r.agentThread("Triage bugs.", "Keep state.")
 			before := r.restarts(threadID)
 			reply := r.start(context.Background(), threadID, "propose_prompt_edit", map[string]any{"kind": c.kind, "replace": "Be terse.", "reason": `"from now on, be terse"`})
@@ -1336,7 +1347,7 @@ func TestAPromptEditOutrunByAnotherSave(t *testing.T) {
 			threadID, agentID := r.agentThread("Triage bugs.\nLabel bugs.", "Keep state.")
 			reply := r.start(context.Background(), threadID, "propose_prompt_edit", map[string]any{"kind": "prompt", "find": c.find, "replace": "Size bugs.", "reason": `"size them"`})
 			pending, _ := r.waitCard(threadID, 1)
-			if _, _, err := r.mgr.SaveAgentRevision(context.Background(), agentID, store.RevisionPrompt, c.newer, store.AuthorUser, ""); err != nil {
+			if _, _, err := r.mgr.SaveAgentRevision(context.Background(), agentID, store.RevisionPrompt, c.newer, store.AuthorUser, "", 0); err != nil {
 				t.Fatal(err)
 			}
 			out, errMsg := r.resolve(threadID, pending.RequestID, "accept", c.edits)

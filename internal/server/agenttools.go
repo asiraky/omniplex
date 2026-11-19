@@ -853,6 +853,11 @@ func (s *Server) proposePromptEdit(ctx context.Context, t toolThread, c *heldCar
 	if err != nil {
 		return "", err
 	}
+	if a.Kind == store.RevisionCompact {
+		if err := s.mgr.CheckAgentCompact(ctx, ag.ID, after); err != nil {
+			return "", badArgs("%v", err)
+		}
+	}
 	c.agentID, c.editKind, c.fromRev = ag.ID, a.Kind, cur.N
 	c.find, c.replace, c.reason, c.after = a.Find, a.Replace, a.Reason, after
 	card.PromptEdit = &promptEditCard{AgentID: ag.ID, AgentName: ag.Name, Kind: a.Kind, FromRev: cur.N, Before: cur.Body, After: after, Reason: a.Reason}

@@ -61,6 +61,8 @@ type fakeAdapter struct {
 	// startup is what each new session emits as it starts, before anyone
 	// reads it — as pi's extensions do on session_start.
 	startup []proto.Emission
+	// compact is how the fake uses an agent's compaction instructions.
+	compact adapter.CompactInstructionsUse
 }
 
 func TestViewRestoresProjectionWithoutStartingHarness(t *testing.T) {
@@ -238,6 +240,8 @@ func TestHarnessActivationDoesNotBlockUnrelatedView(t *testing.T) {
 }
 
 func (f *fakeAdapter) ID() string { return "fake" }
+
+func (f *fakeAdapter) CompactInstructions() adapter.CompactInstructionsUse { return f.compact }
 
 func (f *fakeAdapter) Meta() adapter.HarnessMeta {
 	return adapter.HarnessMeta{ID: "fake", Name: "Fake", Accent: "oklch(0.7 0 0)"}

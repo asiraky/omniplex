@@ -3,6 +3,7 @@ package thread
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"mime"
 	"os"
@@ -51,14 +52,18 @@ type extras struct {
 	// ephemeral is a private thread's: the harness keeps nothing on disk.
 	ephemeral bool
 	// agent is set for an agent's thread: what its harness is told about
-	// compaction and memory, and the prompt revision it starts on.
+	// compaction and memory, and the revisions it starts on.
 	agent *agentExtras
+	// err is setup the thread cannot start without. Its process is not
+	// started: one would run on less than the thread was promised.
+	err error
 }
 
 // agentExtras is the part of a session's setup an agent decides.
 type agentExtras struct {
 	id          string
 	promptRev   int
+	compactRev  int
 	compactFile string
 	compactAt   int64
 	rawDir      string
@@ -151,7 +156,9 @@ func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, met
 // the agent preamble then the agent's latest prompt, and readies the
 // compaction instructions file its harness reads. An agent that cannot be
 // read leaves the thread starting as a plain project thread, which is
-// better than not starting it at all.
+// better than not starting it at all. A file that cannot be written fails
+// the start: the harness would compact on whatever the file held before, or
+// on its default, and the log would record instructions it never read.
 func agentSetup(ctx context.Context, st *store.Store, meta store.ThreadMeta, x *extras, logf func(string, ...any)) {
 	ag, err := st.Agent(ctx, meta.AgentID)
 	if err != nil {
@@ -169,9 +176,10 @@ func agentSetup(ctx context.Context, st *store.Store, meta store.ThreadMeta, x *
 		return
 	}
 	x.instructions = composeAgentInstructions(prompt.Body)
-	setup := &agentExtras{id: ag.ID, promptRev: prompt.N, compactAt: ag.CompactAt}
+	setup := &agentExtras{id: ag.ID, promptRev: prompt.N, compactRev: compact.N, compactAt: ag.CompactAt}
 	if setup.compactFile, err = writeCompactFile(st, ag.ID, compact.Body); err != nil {
-		logf("compaction instructions of agent %s: %v", ag.ID, err)
+		x.err = fmt.Errorf("writing agent %s's compaction instructions for its harness: %w", ag.ID, err)
+		return
 	}
 	if ag.RawLog {
 		setup.rawDir = filepath.Join(agentDir(st, ag.ID), "raw")

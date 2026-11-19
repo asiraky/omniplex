@@ -59,6 +59,9 @@ type saveAgentRevisionArgs struct {
 	Kind    string `json:"kind"`
 	Body    string `json:"body"`
 	Reason  string `json:"reason"`
+	// BaseRev is the revision the edit started from; the save is refused
+	// when another has been saved since. 0 saves whatever the head.
+	BaseRev int `json:"baseRev,omitempty"`
 }
 
 type agentLogArgs struct {
@@ -88,14 +91,12 @@ func (s *Server) agentCommand(ctx context.Context, name string, raw json.RawMess
 		if err != nil {
 			return nil, err
 		}
-		ag, threadID, err := mgr.CreateAgent(ctx, a)
+		ag, start, err := mgr.CreateAgent(ctx, a)
 		if err != nil {
 			return nil, err
 		}
 		out := map[string]any{"agent": ag}
-		if threadID != "" {
-			out["threadId"] = threadID
-		}
+		startOut(out, start)
 		return out, nil
 
 	case "save_agent":
@@ -133,11 +134,13 @@ func (s *Server) agentCommand(ctx context.Context, name string, raw json.RawMess
 		if err := needAgent(a.AgentID); err != nil {
 			return nil, err
 		}
-		threadID, err := mgr.AgentNewThread(ctx, a.AgentID, a.FirstMessage)
+		start, err := mgr.AgentNewThread(ctx, a.AgentID, a.FirstMessage)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"threadId": threadID}, nil
+		out := map[string]any{}
+		startOut(out, start)
+		return out, nil
 
 	case "agent_revisions":
 		a, err := decode[agentRevisionsArgs](raw)
@@ -166,7 +169,7 @@ func (s *Server) agentCommand(ctx context.Context, name string, raw json.RawMess
 		}
 		// The agent's own edits come through its approved card, never this
 		// command: here it is always the user writing.
-		rev, restart, err := mgr.SaveAgentRevision(ctx, a.AgentID, a.Kind, a.Body, store.AuthorUser, a.Reason)
+		rev, restart, err := mgr.SaveAgentRevision(ctx, a.AgentID, a.Kind, a.Body, store.AuthorUser, a.Reason, a.BaseRev)
 		if err != nil {
 			return nil, err
 		}
@@ -208,6 +211,17 @@ func (s *Server) agentCommand(ctx context.Context, name string, raw json.RawMess
 		return map[string]any{"compaction": d}, nil
 	}
 	return nil, errors.New("unknown agent command " + name)
+}
+
+// startOut adds an agent thread's start to a command's answer: its thread,
+// and the error its first message failed with, as create_thread does.
+func startOut(out map[string]any, start thread.AgentStart) {
+	if start.ThreadID != "" {
+		out["threadId"] = start.ThreadID
+	}
+	if start.PromptError != "" {
+		out["promptError"] = start.PromptError
+	}
 }
 
 func (c *conn) sendAgents() {

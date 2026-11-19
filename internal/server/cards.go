@@ -155,12 +155,16 @@ type heldCard struct {
 	// propose_prompt_edit: the agent, which of its texts, the revision the
 	// edit was made against, the edit itself and what it made of that
 	// revision. saved is the text that was saved, and rebased the newer
-	// revision the edit was applied to instead, if any.
+	// revision the edit was applied to instead, if any. restart is what the
+	// save did to the live thread (thread.Restart*), and reads when the
+	// agent's harness reads compaction instructions.
 	agentID, editKind     string
 	fromRev, rebased      int
 	find, replace, reason string
 	after, saved          string
 	saveNote              string
+	restart               string
+	reads                 adapter.CompactReads
 }
 
 func newHeldCard(t toolThread, kind string) *heldCard {
@@ -745,7 +749,8 @@ func (s *Server) applyAddSignIn(c *heldCard, e cardEdits) (cardOutcome, []string
 // applyPromptEdit saves the agent's edit, or the text the user typed over it,
 // as a new revision the agent wrote, with the user's quoted words as its
 // reason. A prompt revision restarts the live thread onto it, which waits for
-// this turn to end. When the text has moved on since the card was raised,
+// this turn to end; so does a compaction one on a harness that reads its
+// instructions only at start. When the text has moved on since the card was raised,
 // the edit is made again on the newer text if it still applies there; the
 // user's own typed text was written against the old one, so it is refused.
 func (s *Server) applyPromptEdit(ctx context.Context, c *heldCard, e cardEdits) (cardOutcome, []string, error) {
@@ -769,8 +774,15 @@ func (s *Server) applyPromptEdit(ctx context.Context, c *heldCard, e cardEdits) 
 		}
 		c.rebased = cur.N
 	}
-	rev, _, err := s.mgr.SaveAgentRevision(ctx, c.agentID, c.editKind, body, store.AuthorAgent, c.reason)
-	c.saveNote = ""
+	// Saved on the revision just read, so one saved since is refused rather
+	// than overwritten.
+	rev, restart, err := s.mgr.SaveAgentRevision(ctx, c.agentID, c.editKind, body, store.AuthorAgent, c.reason, cur.N)
+	c.saveNote, c.restart = "", restart
+	if reads, readsErr := s.mgr.AgentCompactReads(ctx, c.agentID); readsErr != nil {
+		s.logf("compaction reads of agent %s: %v", c.agentID, readsErr)
+	} else {
+		c.reads = reads
+	}
 	if err != nil {
 		if rev.N == 0 {
 			return cardOutcome{}, nil, err
@@ -795,13 +807,30 @@ func revisionLetter(kind string) string {
 	return "r"
 }
 
-// promptEditText is what the agent is told of its saved prompt edit.
+// promptEditText is what the agent is told of its saved prompt edit: when
+// it takes effect, which for compaction instructions is the harness's.
 func promptEditText(c *heldCard, out cardOutcome, edited bool) string {
 	var b strings.Builder
-	if c.editKind == store.RevisionCompact {
-		fmt.Fprintf(&b, "Saved as revision c%d. Your compaction instructions apply at the next compaction.", out.Revision)
-	} else {
-		fmt.Fprintf(&b, "Saved as revision r%d. Your system prompt changes when this turn ends.", out.Revision)
+	fmt.Fprintf(&b, "Saved as revision %s%d. ", revisionLetter(c.editKind), out.Revision)
+	prompt := map[string]string{
+		thread.RestartPending: "Your system prompt changes when this turn ends.",
+		thread.RestartNow:     "Your thread has restarted onto it.",
+		thread.RestartNone:    "Your system prompt changes when your thread next starts.",
+	}
+	atStart := map[string]string{
+		thread.RestartPending: "they apply once your thread restarts at the end of this turn.",
+		thread.RestartNow:     "your thread has restarted onto them.",
+		thread.RestartNone:    "they apply when your thread next starts.",
+	}
+	switch {
+	case c.editKind != store.RevisionCompact:
+		b.WriteString(prompt[c.restart])
+	case c.reads == adapter.CompactReadsAtCompaction:
+		b.WriteString("Your compaction instructions apply at the next compaction.")
+	case c.reads == adapter.CompactReadsAtStart:
+		b.WriteString("Your harness reads compaction instructions only when it starts, so " + atStart[c.restart])
+	default:
+		b.WriteString("Your harness does not take compaction instructions, so they are kept but not used.")
 	}
 	if c.rebased != 0 {
 		fmt.Fprintf(&b, " The text had changed to %s%d since you proposed this, so your edit was made on that.", revisionLetter(c.editKind), c.rebased)

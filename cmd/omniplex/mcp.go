@@ -305,7 +305,7 @@ var baseTools = []agentTool{
 	{
 		name:        promptEditTool,
 		agentOnly:   true,
-		description: "Propose a change to your own system prompt or compaction instructions. Call it only when the user asks you to remember a rule, change your job or update your prompt; never on your own initiative. With find, the one place find occurs in the current text is replaced; without it, replace is appended as a new paragraph. On approval your system prompt changes when this turn ends; compaction instructions apply at the next compaction. If the user declines, nothing is saved." + writeNote,
+		description: "Propose a change to your own system prompt or compaction instructions. Call it only when the user asks you to remember a rule, change your job or update your prompt; never on your own initiative. With find, the one place find occurs in the current text is replaced; without it, replace is appended as a new paragraph. On approval your system prompt changes when this turn ends. When compaction instructions apply depends on your harness: some read them at each compaction, some only when they start, so your thread restarts onto them when this turn ends, and some not at all; the result says which. If the user declines, nothing is saved." + writeNote,
 		properties: map[string]any{
 			"kind":    strEnum("prompt: your system prompt, your durable brief. compact: the instructions your context is compacted with.", "prompt", "compact"),
 			"find":    str("Text in the current version to replace, long enough to occur exactly once. Omit to append."),

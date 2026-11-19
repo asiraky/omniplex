@@ -55,6 +55,9 @@ type Actor struct {
 	// sent meanwhile waits in the queue, which is what lets the first message
 	// create the thread: it is there for the agent the moment it starts.
 	preparing bool
+	// startFilled is set once the agent's epoch 0 has been offered the
+	// thread's first message (firstMessageLogged). Loop only.
+	startFilled bool
 	// restored is true for an actor rebuilt from the log until its harness
 	// first starts. Whatever is queued then was written before the server
 	// went down, so that first start holds it; see cmdActivate. One rebuilt
@@ -230,6 +233,9 @@ type command struct {
 	delivery     string              // prompt: proto.DeliverySteer, proto.DeliveryQueue, or the default
 	keepImages   bool                // edit_queued_prompt: leave the entry's attachments as they are
 	restoreFiles bool                // rewind: put the checkout back too
+	// agentSettings are the settings SaveAgent hands the agent's live
+	// thread (adoptAgentSettings).
+	agentSettings *agentSettings
 	// from is the harness process a harness event or exit came from. A
 	// process replaced by an account switch, or killed by Stop, still drains
 	// its last events and its exit; those are about a process this actor no
@@ -316,6 +322,7 @@ const (
 	cmdRewind         = "rewind"
 	cmdRestart        = "restart"
 	cmdCancelRestart  = "cancel_restart"
+	cmdAgentSettings  = "agent_settings"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -370,6 +377,9 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 	}
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
+	if x.err != nil {
+		return nil, x.err
+	}
 	sess, err := createSession(ctx, ad, a.newHost(), x.options(adapter.CreateOptions{
 		ThreadID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, ServiceTier: meta.ServiceTier, Env: env,
 	}))
@@ -439,6 +449,9 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	staleStatuses := clearedStatuses(state)
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
+	if x.err != nil {
+		return nil, x.err
+	}
 	sess, err := createSession(ctx, ad, a.newHost(), x.options(adapter.CreateOptions{
 		ThreadID:         meta.ID,
 		Cwd:              meta.Cwd,
@@ -1376,6 +1389,9 @@ func (a *Actor) handle(c command) (stop bool) {
 	case cmdSwitchAccount:
 		c.reply <- cmdResult{err: a.switchAccount(c.account)}
 
+	case cmdAgentSettings:
+		a.takeAgentSettings(*c.agentSettings, c.reply)
+
 	case cmdRestart:
 		pending, err := a.requestRestart(ctx)
 		c.reply <- cmdResult{value: pending, err: err}
@@ -1819,12 +1835,15 @@ func (a *Actor) startProcess(ctx context.Context, o adapter.CreateOptions) error
 	}
 	o.ThreadID, o.Env, o.HarnessSessionID = a.ID, a.env, a.state.HarnessSessionID
 	x := harnessExtras(ctx, a.store, a.adapter, meta, cwd, a.logf)
+	if x.err != nil {
+		return x.err
+	}
 	sess, err := createSession(ctx, a.adapter, a.newHost(), x.options(o))
 	if err != nil {
 		return err
 	}
 	if x.agent != nil {
-		a.startedOnPrompt(ctx, x.agent)
+		a.startedOn(ctx, x.agent)
 	}
 	a.Cwd, a.sess, a.preparing = cwd, sess, false
 	a.pump(sess)
@@ -2023,6 +2042,7 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 			title = proto.AttachmentTitle(images)
 		}
 		_ = a.store.SetTitle(ctx, a.ID, title)
+		a.firstMessageLogged(ctx, prompt)
 	}
 
 	// A turn a human asked for — a prompt, or a continue — is the agent's
@@ -2533,6 +2553,12 @@ func (a *Actor) write(em proto.Emission) error {
 
 	prevPhase := a.wantedPhase()
 	a.state.Apply(ev)
+	switch em.Type {
+	case proto.ThreadRestartRequested:
+		a.restartLogged(ctx, true)
+	case proto.ThreadRestartCancelled, proto.ThreadRestarted, proto.ThreadClosed:
+		a.restartLogged(ctx, false)
+	}
 
 	a.mu.Lock()
 	a.head = ev.Seq

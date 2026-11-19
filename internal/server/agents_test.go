@@ -71,6 +71,10 @@ func TestAgentCommands(t *testing.T) {
 	if saved.Revision.N != 2 || saved.Revision.Author != store.AuthorUser || saved.Restart != thread.RestartPending {
 		t.Fatalf("saved = %+v, want r2 by the user waiting on the turn", saved)
 	}
+	stale := "The prompt changed while you were editing: r2 is the latest. Review it, then save again."
+	if _, msg := c.do("save_agent_revision", map[string]any{"agentId": agentID, "kind": "prompt", "body": "be kind", "baseRev": 1}); msg != stale {
+		t.Fatalf("save on r1 after r2 = %q, want %q", msg, stale)
+	}
 
 	var revs struct {
 		Revisions []store.AgentRevision `json:"revisions"`
@@ -96,14 +100,6 @@ func TestAgentCommands(t *testing.T) {
 	c.ok("agent_compaction", map[string]any{"agentId": agentID, "id": log.Compactions[0].ID}, &detail)
 	if detail.Compaction.Summary != "triage" || len(detail.Compaction.System) != 3 {
 		t.Fatalf("epoch 0 = %+v, want the first message and the system parts", detail.Compaction)
-	}
-
-	var preamble struct {
-		Text string `json:"text"`
-	}
-	c.ok("agent_preamble", map[string]any{}, &preamble)
-	if preamble.Text != mgr.AgentPreamble() {
-		t.Fatalf("preamble = %q", preamble.Text)
 	}
 
 	var renamed struct {

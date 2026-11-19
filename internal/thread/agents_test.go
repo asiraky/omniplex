@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/store"
 )
@@ -21,9 +22,16 @@ type agentRig struct {
 
 func newAgentRig(t *testing.T) agentRig {
 	t.Helper()
+	return newAgentRigReading(t, adapter.CompactInstructionsUse{Reads: adapter.CompactReadsAtCompaction})
+}
+
+// newAgentRigReading is a rig whose harness uses compaction instructions
+// the way use says.
+func newAgentRigReading(t *testing.T, use adapter.CompactInstructionsUse) agentRig {
+	t.Helper()
 	t.Setenv("OMNIPLEX_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	st, _ := testProject(t, t.TempDir())
-	fa := &fakeAdapter{}
+	fa := &fakeAdapter{compact: use}
 	mgr := newManager(st, func(string, ...any) {}, fa)
 	t.Cleanup(mgr.Shutdown)
 	return agentRig{mgr: mgr, fa: fa, st: st}
@@ -44,14 +52,14 @@ func (r agentRig) create(t *testing.T, n NewAgent) (store.Agent, *Actor) {
 		n.Compact = "keep the task"
 	}
 	before := r.fa.thread()
-	ag, threadID, err := r.mgr.CreateAgent(context.Background(), n)
+	ag, start, err := r.mgr.CreateAgent(context.Background(), n)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !n.Start {
 		return ag, nil
 	}
-	return ag, r.running(t, threadID, before)
+	return ag, r.running(t, start.ThreadID, before)
 }
 
 // running waits for the thread's harness to start, a new one after before.
@@ -213,7 +221,7 @@ func TestSavingAPromptRestartsTheLiveThreadOntoIt(t *testing.T) {
 	ag, a := r.create(t, NewAgent{Start: true, Workspace: "local"})
 	waitFor(t, func() bool { return r.agent(t, ag.ID).LivePromptRev == 1 })
 
-	rev, restart, err := r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionPrompt, "be terser", store.AuthorUser, "")
+	rev, restart, err := r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionPrompt, "be terser", store.AuthorUser, "", 0)
 	if err != nil || restart != RestartNow || rev.N != 2 {
 		t.Fatalf("save on an idle thread = r%d %q, %v; want r2 restarted now", rev.N, restart, err)
 	}
@@ -226,7 +234,7 @@ func TestSavingAPromptRestartsTheLiveThreadOntoIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	nextInput(t, r.fa.thread())
-	_, restart, err = r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionPrompt, "be kind", store.AuthorAgent, "you asked")
+	_, restart, err = r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionPrompt, "be kind", store.AuthorAgent, "you asked", 0)
 	if err != nil || restart != RestartPending {
 		t.Fatalf("save on a busy thread = %q, %v; want pending", restart, err)
 	}
@@ -234,7 +242,7 @@ func TestSavingAPromptRestartsTheLiveThreadOntoIt(t *testing.T) {
 		t.Fatalf("agent at r%d live r%d, want r3 waiting on r2", got.PromptRev, got.LivePromptRev)
 	}
 
-	_, restart, err = r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionCompact, "keep less", store.AuthorUser, "")
+	_, restart, err = r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionCompact, "keep less", store.AuthorUser, "", 0)
 	if err != nil || restart != RestartNone {
 		t.Fatalf("compact save = %q, %v; want no restart", restart, err)
 	}
@@ -247,7 +255,7 @@ func TestSavingAPromptRestartsTheLiveThreadOntoIt(t *testing.T) {
 func TestSavingAPromptWithNoLiveThreadRestartsNothing(t *testing.T) {
 	r := newAgentRig(t)
 	ag, _ := r.create(t, NewAgent{Workspace: "local"})
-	_, restart, err := r.mgr.SaveAgentRevision(context.Background(), ag.ID, store.RevisionPrompt, "x", store.AuthorUser, "")
+	_, restart, err := r.mgr.SaveAgentRevision(context.Background(), ag.ID, store.RevisionPrompt, "x", store.AuthorUser, "", 0)
 	if err != nil || restart != RestartNone {
 		t.Fatalf("save = %q, %v; want none", restart, err)
 	}
@@ -260,10 +268,11 @@ func TestNewThreadArchivesTheLiveOne(t *testing.T) {
 	nextInput(t, r.fa.thread())
 
 	before := r.fa.thread()
-	threadID, err := r.mgr.AgentNewThread(ctx, ag.ID, "second")
+	start, err := r.mgr.AgentNewThread(ctx, ag.ID, "second")
 	if err != nil {
 		t.Fatal(err)
 	}
+	threadID := start.ThreadID
 	r.running(t, threadID, before)
 	if threadID == old.ID || r.agent(t, ag.ID).ThreadID != threadID {
 		t.Fatalf("new thread %s, agent on %s; want the agent moved to a new thread", threadID, r.agent(t, ag.ID).ThreadID)
@@ -297,7 +306,7 @@ func TestEpochZeroShowsTheSystemPromptItStartedOn(t *testing.T) {
 	r := newAgentRig(t)
 	ctx := context.Background()
 	ag, a := r.create(t, NewAgent{Start: true, Workspace: "local"})
-	_, _, _ = r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionPrompt, "newer", store.AuthorUser, "")
+	_, _, _ = r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionPrompt, "newer", store.AuthorUser, "", 0)
 	_, rows, _, _ := r.mgr.AgentLog(ctx, ag.ID, a.ID)
 
 	d, err := r.mgr.AgentCompaction(ctx, ag.ID, rows[0].ID)
@@ -378,5 +387,323 @@ func TestSaveAgentChangesOnlyWhatItIsGiven(t *testing.T) {
 	}
 	if _, err := r.mgr.SaveAgent(ctx, ag.ID, AgentPatch{Name: &blank}); err == nil {
 		t.Fatal("saved a blank name")
+	}
+}
+
+// Settings saved on an agent reach its live thread the way the composer's
+// do: a running harness is switched, and a thread with no process starts its
+// next one on them.
+func TestSaveAgentAppliesToTheLiveThread(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		exited  bool
+		patch   func() AgentPatch
+		running func(t *testing.T, r agentRig, a *Actor)
+		resumed func(t *testing.T, o adapter.CreateOptions)
+	}{
+		{
+			name: "a running harness is switched",
+			patch: func() AgentPatch {
+				mode, name := "acceptEdits", "Renamed"
+				return AgentPatch{Mode: &mode, Name: &name}
+			},
+			running: func(t *testing.T, r agentRig, a *Actor) {
+				if got := r.fa.thread().currentMode(); got != "acceptEdits" {
+					t.Fatalf("harness mode = %q, want the saved one", got)
+				}
+				if s := stateOf(t, a); s.Mode != "acceptEdits" {
+					t.Fatalf("thread mode = %q, want the saved one", s.Mode)
+				}
+				if meta, _ := r.st.Thread(context.Background(), a.ID); meta.Title != "Renamed" {
+					t.Fatalf("thread title = %q, want the agent's new name", meta.Title)
+				}
+			},
+		},
+		{
+			name:   "a thread with no process starts on them",
+			exited: true,
+			patch: func() AgentPatch {
+				model, effort := "m2", "high"
+				return AgentPatch{Model: &model, Effort: &effort}
+			},
+			resumed: func(t *testing.T, o adapter.CreateOptions) {
+				if o.Model != "m2" || o.Effort != "high" {
+					t.Fatalf("resumed on model %q effort %q, want m2 high", o.Model, o.Effort)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newAgentRig(t)
+			ctx := context.Background()
+			ag, a := r.create(t, NewAgent{Start: true, Workspace: "local", Mode: "manual", Model: "m1", Effort: "low"})
+			if tc.exited {
+				r.fa.thread().Close()
+				waitFor(t, func() bool { _, ok := r.mgr.Peek(a.ID); return !ok })
+			}
+			_, starts := lastOpts(r.fa)
+			if _, err := r.mgr.SaveAgent(ctx, ag.ID, tc.patch()); err != nil {
+				t.Fatal(err)
+			}
+			if _, n := lastOpts(r.fa); n != starts {
+				t.Fatalf("saving started %d harnesses, want none", n-starts)
+			}
+			if tc.running != nil {
+				tc.running(t, r, a)
+			}
+			if tc.resumed != nil {
+				if _, err := r.mgr.Get(ctx, a.ID); err != nil {
+					t.Fatal(err)
+				}
+				o, _ := lastOpts(r.fa)
+				tc.resumed(t, o)
+			}
+		})
+	}
+}
+
+// When a harness reads its compaction instructions decides what a new
+// revision takes, and which instructions a compaction is logged on.
+func TestACompactSaveReachesTheHarnessWhenItReadsThem(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		reads     adapter.CompactReads
+		restart   string
+		epochZero int
+		rev       int
+		body      string
+	}{
+		{"read at each compaction", adapter.CompactReadsAtCompaction, RestartNone, 1, 2, "keep less"},
+		{"read at start", adapter.CompactReadsAtStart, RestartPending, 1, 1, "keep the task"},
+		{"never read", adapter.CompactReadsNever, RestartNone, 0, 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newAgentRigReading(t, adapter.CompactInstructionsUse{Reads: tc.reads})
+			ctx := context.Background()
+			ag, a := r.create(t, NewAgent{Start: true, Workspace: "local"})
+			waitFor(t, func() bool { return r.agent(t, ag.ID).LivePromptRev == 1 })
+			res, err := a.Prompt(ctx, "work", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			nextInput(t, r.fa.thread())
+
+			_, restart, err := r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionCompact, "keep less", store.AuthorUser, "", 0)
+			if err != nil || restart != tc.restart {
+				t.Fatalf("compact save on a busy thread = %q, %v; want %q", restart, err, tc.restart)
+			}
+			if got := r.agent(t, ag.ID).RestartPending; got != (tc.restart == RestartPending) {
+				t.Fatalf("agent restart pending = %v", got)
+			}
+			r.fa.thread().emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: "auto"}))
+			waitFor(t, func() bool { return countEvents(t, r.st, a.ID, proto.ContextCompacted) == 1 })
+			rows, _ := r.st.ThreadCompactions(ctx, a.ID)
+			if len(rows) != 2 || rows[0].CompactRev != tc.epochZero {
+				t.Fatalf("log = %+v, want epoch 0 at c%d", rows, tc.epochZero)
+			}
+			row, _ := r.st.Compaction(ctx, rows[1].ID)
+			if row.CompactRev != tc.rev || row.Instructions != tc.body {
+				t.Fatalf("compaction logged on c%d %q, want c%d %q", row.CompactRev, row.Instructions, tc.rev, tc.body)
+			}
+			if tc.restart != RestartPending {
+				return
+			}
+
+			// The turn ends, the thread restarts onto c2, and its next
+			// compaction is on it.
+			before := r.fa.thread()
+			before.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: res.TurnID, StopReason: proto.StopEndTurn}))
+			waitFor(t, func() bool { th := r.fa.thread(); return th != before })
+			waitFor(t, func() bool { got := r.agent(t, ag.ID); return got.LiveCompactRev == 2 && !got.RestartPending })
+			r.fa.thread().emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: "auto"}))
+			waitFor(t, func() bool { return countEvents(t, r.st, a.ID, proto.ContextCompacted) == 2 })
+			rows, _ = r.st.ThreadCompactions(ctx, a.ID)
+			if row, _ := r.st.Compaction(ctx, rows[2].ID); row.CompactRev != 2 || row.Instructions != "keep less" {
+				t.Fatalf("after the restart, compaction logged on c%d %q, want c2", row.CompactRev, row.Instructions)
+			}
+		})
+	}
+}
+
+// Instructions longer than the harness takes are refused, not cut off.
+func TestCompactionInstructionsOverTheHarnessCapAreRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		ok   bool
+	}{
+		{"at the cap", "0123456789", true},
+		{"over it", "0123456789a", false},
+		{"over it in UTF-16", "012345678😀", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newAgentRigReading(t, adapter.CompactInstructionsUse{Reads: adapter.CompactReadsAtCompaction, MaxChars: 10})
+			ctx := context.Background()
+			_, _, err := r.mgr.CreateAgent(ctx, NewAgent{ProjectID: "p1", Harness: "fake", Name: "x", Prompt: "p", Compact: tc.body})
+			if (err == nil) != tc.ok {
+				t.Fatalf("create: err = %v, want ok %v", err, tc.ok)
+			}
+			ag, _ := r.create(t, NewAgent{Workspace: "local", Compact: "short"})
+			_, _, err = r.mgr.SaveAgentRevision(ctx, ag.ID, store.RevisionCompact, tc.body, store.AuthorUser, "", 0)
+			if (err == nil) != tc.ok {
+				t.Fatalf("save: err = %v, want ok %v", err, tc.ok)
+			}
+		})
+	}
+}
+
+// What the harness says about a compaction reaches the agent page's
+// subscribers, with a new log version.
+func TestFilingCompactionDetailTellsSubscribers(t *testing.T) {
+	r := newAgentRig(t)
+	ag, a := r.create(t, NewAgent{Start: true, Workspace: "local"})
+	r.fa.thread().emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: "auto"}))
+	waitFor(t, func() bool { return countEvents(t, r.st, a.ID, proto.ContextCompacted) == 1 })
+	waitFor(t, func() bool {
+		rows, _ := r.st.ThreadCompactions(context.Background(), a.ID)
+		return rows[1].BoundarySeq != 0
+	})
+	version := r.agent(t, ag.ID).LogVersion
+	_, sub := r.mgr.SubscribeAgents()
+
+	r.fa.thread().emit(proto.Emit(proto.CompactionDetail, proto.CompactionDetailPayload{Summary: "carry on"}))
+	select {
+	case <-sub:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agents subscribers were not told of the detail")
+	}
+	if got := r.agent(t, ag.ID).LogVersion; got == version {
+		t.Fatalf("log version stayed %d after the detail was filed", got)
+	}
+}
+
+// A thread started with no first message logs the first one it gets as its
+// epoch 0, once.
+func TestEpochZeroTakesTheFirstMessageWhenStartedWithout(t *testing.T) {
+	for _, tc := range []struct {
+		name, kickoff, want string
+	}{
+		{"no kickoff", "", "hello there"},
+		{"a kickoff", "triage", "triage"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newAgentRig(t)
+			ctx := context.Background()
+			_, a := r.create(t, NewAgent{Start: true, Workspace: "local", Kickoff: tc.kickoff})
+			if tc.kickoff != "" {
+				nextInput(t, r.fa.thread())
+				r.fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: stateOf(t, a).Turns[0].ID, StopReason: proto.StopEndTurn}))
+				waitFor(t, func() bool { return stateOf(t, a).Phase == "idle" })
+			}
+			runTurn(t, a, r.fa, "hello there", "r1")
+			runTurn(t, a, r.fa, "and again", "r2")
+			rows, _ := r.st.ThreadCompactions(ctx, a.ID)
+			if len(rows) != 1 || rows[0].SummaryChars != len(tc.want) {
+				t.Fatalf("epoch 0 = %+v, want %q", rows, tc.want)
+			}
+		})
+	}
+}
+
+// The compaction instructions file is part of an agent thread's start: one
+// that cannot be written fails it.
+func TestAnUnwritableCompactionFileFailsTheStart(t *testing.T) {
+	r := newAgentRig(t)
+	ctx := context.Background()
+	ag, a := r.create(t, NewAgent{Start: true, Workspace: "local"})
+	r.fa.thread().Close()
+	waitFor(t, func() bool { _, ok := r.mgr.Peek(a.ID); return !ok })
+	path := filepath.Join(agentDir(r.st, ag.ID), "compact.md")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(path, "in-the-way"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, starts := lastOpts(r.fa)
+	if _, err := r.mgr.Get(ctx, a.ID); err == nil {
+		t.Fatal("the thread started without its compaction instructions")
+	}
+	if _, n := lastOpts(r.fa); n != starts {
+		t.Fatalf("%d harnesses started, want none", n-starts)
+	}
+}
+
+// New thread run twice at once still leaves the agent one live thread: the
+// second waits for the first and archives the thread it made.
+func TestConcurrentNewThreadsLeaveOneLiveThread(t *testing.T) {
+	r := newAgentRig(t)
+	ctx := context.Background()
+	ag, _ := r.create(t, NewAgent{Start: true, Workspace: "local"})
+	errs := make(chan error, 3)
+	for range 3 {
+		go func() {
+			_, err := r.mgr.AgentNewThread(ctx, ag.ID, "")
+			errs <- err
+		}()
+	}
+	for range 3 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	live := r.agent(t, ag.ID).ThreadID
+	waitFor(t, func() bool {
+		threads, _ := r.st.ListThreads(ctx)
+		open := 0
+		for _, th := range threads {
+			if th.AgentID == ag.ID && th.Phase != "closed" {
+				if th.ID != live {
+					return false
+				}
+				open++
+			}
+		}
+		return open == 1
+	})
+}
+
+// A project goes with its archived agents, and refuses while one is live.
+func TestDeletingAProjectTakesItsArchivedAgents(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		archive bool
+		plain   bool
+		want    error
+	}{
+		{"a live agent", false, false, store.ErrProjectHasAgents},
+		{"an archived agent", true, false, nil},
+		{"an archived agent and a thread of its own", true, true, store.ErrProjectInUse},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newAgentRig(t)
+			ctx := context.Background()
+			ag, a := r.create(t, NewAgent{Start: true, Workspace: "local"})
+			if tc.plain {
+				before := r.fa.thread()
+				p, err := r.mgr.CreateProject(ctx, CreateProjectOptions{ProjectID: "p1"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.running(t, p.ID, before)
+			}
+			if tc.archive {
+				if err := r.mgr.ArchiveAgent(ctx, ag.ID); err != nil {
+					t.Fatal(err)
+				}
+				waitFor(t, func() bool { m, _ := r.st.Thread(ctx, a.ID); return m.Phase == "closed" })
+			}
+			err := r.mgr.DeleteProject(ctx, "p1")
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("delete = %v, want %v", err, tc.want)
+			}
+			_, agentErr := r.st.Agent(ctx, ag.ID)
+			_, threadErr := r.st.Thread(ctx, a.ID)
+			_, dirErr := os.Stat(agentDir(r.st, ag.ID))
+			gone := errors.Is(agentErr, store.ErrNotFound) && errors.Is(threadErr, store.ErrNotFound) && errors.Is(dirErr, os.ErrNotExist)
+			if gone != (tc.want == nil) {
+				t.Fatalf("agent %v, thread %v, files %v; want gone %v", agentErr, threadErr, dirErr, tc.want == nil)
+			}
+		})
 	}
 }
