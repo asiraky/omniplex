@@ -195,15 +195,28 @@ const lines = (text: string) => text.split("\n");
  * The part of a proposal the user edits: the lines it changes, between what
  * it leaves alone at either end. A 40-line prompt with one rule added is one
  * line to edit, not 40 to scroll through on a phone.
+ *
+ * Blank lines at the edges of the change stay outside it. An appended rule
+ * arrives as a blank separator and the rule, and a separator in the box is
+ * one the user deletes without noticing, gluing the rule onto the line above.
  */
 export function editableSpan(before: string, after: string): { head: string[]; middle: string; tail: string[] } {
+  const b = lines(after);
+  let { head, tail } = changedSpan(before, after);
+  while (head < b.length - tail && b[head].trim() === "") head++;
+  while (tail < b.length - head && b[b.length - 1 - tail].trim() === "") tail++;
+  return { head: b.slice(0, head), middle: b.slice(head, b.length - tail).join("\n"), tail: b.slice(b.length - tail) };
+}
+
+/** How many lines at each end the two texts share. */
+function changedSpan(before: string, after: string): { head: number; tail: number } {
   const a = lines(before);
   const b = lines(after);
   let head = 0;
   while (head < a.length && head < b.length && a[head] === b[head]) head++;
   let tail = 0;
   while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
-  return { head: b.slice(0, head), middle: b.slice(head, b.length - tail).join("\n"), tail: b.slice(b.length - tail) };
+  return { head, tail };
 }
 
 /** The whole text the edited span makes, or undefined when it is the proposal as sent. */
@@ -212,7 +225,16 @@ export function promptEditBody(card: Card, middle: string): string | undefined {
   if (!edit) return undefined;
   const span = editableSpan(edit.before, edit.after);
   if (middle === span.middle) return undefined;
-  const body = [...span.head, ...(middle === "" ? [] : lines(middle)), ...span.tail].join("\n");
+  let body: string;
+  if (middle === "") {
+    // Cleared, the change goes, and the blank lines that only separated it go
+    // with it.
+    const { head, tail } = changedSpan(edit.before, edit.after);
+    const b = lines(edit.after);
+    body = [...b.slice(0, head), ...b.slice(b.length - tail)].join("\n");
+  } else {
+    body = [...span.head, ...lines(middle), ...span.tail].join("\n");
+  }
   return body === edit.after ? undefined : body;
 }
 

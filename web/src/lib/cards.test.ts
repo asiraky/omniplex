@@ -299,6 +299,13 @@ describe("prompt_edit edits", () => {
     expect(promptEditBody(card("a\nc", "a\nb\nc"), "")).toBe("a\nc");
   });
 
+  it("keeps an appended rule's blank separator out of the box and in the result", () => {
+    const appended = card("a\nb", "a\nb\n\nnew rule");
+    expect(editableSpan("a\nb", "a\nb\n\nnew rule").middle).toBe("new rule");
+    expect(promptEditBody(appended, "better rule")).toBe("a\nb\n\nbetter rule");
+    expect(promptEditBody(appended, "")).toBe("a\nb");
+  });
+
   it("can put text into a proposal that only removed lines", () => {
     expect(promptEditBody(card("a\nb\nc", "a\nc"), "x")).toBe("a\nx\nc");
   });
