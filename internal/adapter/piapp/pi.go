@@ -167,6 +167,13 @@ func agentDir(env map[string]string) string {
 	return filepath.Join(home, ".pi", "agent")
 }
 
+// CompactInstructions: never. This adapter hands pi no compaction
+// instructions, so pi compacts with its own prompt and an agent's are kept
+// but not used.
+func (a *Adapter) CompactInstructions() adapter.CompactInstructionsUse {
+	return adapter.CompactInstructionsUse{Reads: adapter.CompactReadsNever}
+}
+
 func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, o adapter.CreateOptions) (adapter.Session, error) {
 	if o.Mode != "" && o.Mode != "full-access" {
 		return nil, fmt.Errorf("pi does not have a %q permission mode; it always runs with full access", o.Mode)

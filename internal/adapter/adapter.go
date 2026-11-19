@@ -94,12 +94,14 @@ type CreateOptions struct {
 	// "agent": a thread with a saved brief). All are empty on other threads.
 
 	// CompactInstructionsFile is the path of a file holding the instructions
-	// the harness gives its compactor. Claude reads the file each time it
-	// compacts, so an edit applies at the next compaction, and adds it to its
-	// own compaction prompt. Codex reads it once, when the process starts, and
-	// replaces its default prompt with it (ignoring it on providers that
-	// compact remotely). An adapter whose harness has no such setting ignores
-	// it.
+	// the harness gives its compactor. When the harness reads it, and how much
+	// of it, is the adapter's CompactInstructionsReader answer: Claude reads
+	// it each time it compacts and adds it to its own compaction prompt;
+	// Codex reads it once, when the process starts, and replaces its default
+	// prompt with it (ignoring it on providers that compact remotely). An
+	// adapter whose harness has no such setting ignores it. Set on every
+	// agent's session, whatever its harness: adapters read a non-empty one as
+	// "this is an agent's session".
 	CompactInstructionsFile string
 
 	// CompactAt is the context size, in tokens, at which the harness compacts
@@ -187,6 +189,45 @@ type ConfiguredMCPServer struct {
 type MCPControl interface {
 	MCPStatus(ctx context.Context) ([]MCPServerStatus, error)
 	ReconnectMCP(ctx context.Context, server MCPServer) error
+}
+
+// CompactReads is when a harness reads CreateOptions.CompactInstructionsFile.
+// The zero value is never, which is also what an adapter that does not say
+// means.
+type CompactReads int
+
+const (
+	// CompactReadsNever: the harness compacts with its own prompt only.
+	CompactReadsNever CompactReads = iota
+	// CompactReadsAtStart: read once, as the process starts, so an edit
+	// applies from the next process.
+	CompactReadsAtStart
+	// CompactReadsAtCompaction: read every time it compacts, so an edit
+	// applies at the next compaction with no restart.
+	CompactReadsAtCompaction
+)
+
+// CompactInstructionsUse is how a harness uses an agent's compaction
+// instructions: when it reads them, and the most of them it takes, in
+// characters as the harness counts them (UTF-16 code units), or 0 for no
+// limit.
+type CompactInstructionsUse struct {
+	Reads    CompactReads
+	MaxChars int
+}
+
+// CompactInstructionsReader is an optional adapter capability saying how its
+// harness uses CreateOptions.CompactInstructionsFile.
+type CompactInstructionsReader interface {
+	CompactInstructions() CompactInstructionsUse
+}
+
+// CompactInstructionsOf is the adapter's answer, or never when it gives none.
+func CompactInstructionsOf(ad Adapter) CompactInstructionsUse {
+	if r, ok := ad.(CompactInstructionsReader); ok {
+		return r.CompactInstructions()
+	}
+	return CompactInstructionsUse{}
 }
 
 // ErrMCPUnsupported is returned by an MCPControl that cannot do what was asked.

@@ -37,3 +37,9 @@ func agentArgs(o adapter.CreateOptions) (args []string, skipped string) {
 	}
 	return args, skipped
 }
+
+// CompactInstructions: codex reads the prompt file once, as the app-server
+// loads its config (agentArgs), and takes it whole.
+func (a *Adapter) CompactInstructions() adapter.CompactInstructionsUse {
+	return adapter.CompactInstructionsUse{Reads: adapter.CompactReadsAtStart}
+}
