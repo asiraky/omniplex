@@ -97,8 +97,25 @@ func (s *Server) handleAgentTool(w http.ResponseWriter, r *http.Request) {
 	var (
 		text string
 		card *heldCard
+		gone bool
 	)
 	switch name := r.PathValue("name"); name {
+	case "delegate_task":
+		text, gone, err = s.delegateTask(ctx, t, body)
+	case "thread_list":
+		text, err = s.threadList(ctx, t)
+	case "thread_read":
+		text, err = s.threadRead(ctx, t, body)
+	case "thread_send":
+		text, err = s.threadSend(ctx, t, body)
+	case "thread_wait":
+		text, gone, err = s.threadWait(ctx, t, body)
+	case "thread_interrupt":
+		text, err = s.threadInterrupt(ctx, t, body)
+	case "task_status":
+		text, err = s.taskStatus(ctx, t, body)
+	case "thread_pending":
+		text, err = s.threadPending(ctx, t, body)
 	case "list_mcp_servers":
 		text, err = s.listMCPServers(ctx, t)
 	case "list_skills":
@@ -114,11 +131,11 @@ func (s *Server) handleAgentTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err == nil && card != nil {
-		var gone bool
+		// the caller may leave; the card stays answerable
 		text, gone, err = s.raiseAndWait(ctx, card, text)
-		if gone {
-			return // the caller left; the card stays answerable
-		}
+	}
+	if gone {
+		return // the caller left: it wants no reply
 	}
 	if err != nil {
 		var te *toolError

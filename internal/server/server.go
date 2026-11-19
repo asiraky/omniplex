@@ -92,6 +92,9 @@ type Server struct {
 	// cards is what the agent proposed through omniplex's tools, waiting
 	// on the user.
 	cards *cardBook
+	// orch wakes threads with what the threads they delegated did, and
+	// pushes the user when one of those needs them.
+	orch *orchestrator
 
 	// live tracks open WebSockets so revoking a device can close the ones it
 	// already holds. liveMu also guards each conn's presence, so the set of
@@ -182,11 +185,13 @@ func New(o Options) *Server {
 		logf:          o.Logf,
 		cards:         newCardBook(),
 	}
-	if s.mgr != nil {
-		s.mgr.SetCardLive(s.cards.live)
-	}
 	if s.logf == nil {
 		s.logf = func(string, ...any) {}
+	}
+	s.orch = newOrchestrator(s)
+	if s.mgr != nil {
+		s.mgr.SetCardLive(s.cards.live)
+		s.orch.start()
 	}
 	if o.BoxDir != "" {
 		s.boxSocket = boxSocketName(o.BoxDir)
@@ -206,6 +211,12 @@ func New(o Options) *Server {
 		}
 	}
 	return s
+}
+
+// Close stops the server's background work. The manager is the caller's to
+// shut down, after this.
+func (s *Server) Close() {
+	s.orch.close()
 }
 
 func (s *Server) Handler() http.Handler {
