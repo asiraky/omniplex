@@ -121,4 +121,14 @@ describe("sidebarOrder", () => {
       ]);
     });
   });
+
+  it("walks past delegated threads under a listed parent, but not orphans", () => {
+    const withChildren = [
+      ...threads,
+      { ...thread("b1", "p1"), parentId: "b" },
+      { ...thread("b2", "p1"), parentId: "b1" },
+      { ...thread("o", "p1"), parentId: "gone" },
+    ];
+    expect(ids(sidebarOrder(withChildren, projects, view()))).toEqual(["c", "b", "d", "o", "a", "e"]);
+  });
 });

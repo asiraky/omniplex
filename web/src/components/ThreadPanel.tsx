@@ -15,6 +15,7 @@ import type {
   FileTree,
   PullRequest,
   ThreadChanges,
+  ThreadMeta,
   ThreadState,
 } from "~/protocol";
 
@@ -31,6 +32,8 @@ export function ThreadPanel({
   pr,
   onAddToChat,
   onAddComment,
+  threads,
+  onOpenThread,
 }: {
   clientRef: RefObject<Client | null>;
   threadId: string;
@@ -40,6 +43,9 @@ export function ThreadPanel({
   onAddToChat: (quoted: string) => void;
   /** A comment on a diff line, as a block for the composer. */
   onAddComment: (block: string) => void;
+  /** Every thread, for the ones this one delegated. */
+  threads: ThreadMeta[];
+  onOpenThread: (id: string) => void;
 }) {
   const threadStore = useThreadStore();
 
@@ -166,6 +172,8 @@ export function ThreadPanel({
         onAddToChat={onAddToChat}
         onAddComment={onAddComment}
         onOpenPath={openTerminalPath}
+        threads={threads}
+        onOpenThread={onOpenThread}
       />
     </Suspense>
   );

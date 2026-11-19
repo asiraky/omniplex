@@ -1,4 +1,4 @@
-import { ArrowLeftIcon, BotIcon, SquareIcon } from "lucide-react";
+import { ArrowLeftIcon, BotIcon, ChevronRightIcon, SquareIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { shallow, useThread, useThreadStore } from "~/app/threadStore";
@@ -9,7 +9,8 @@ import { Spinner } from "~/components/ui/spinner";
 import { fmtTokens } from "~/lib/format";
 import { childJobs, isLive, jobLabel, jobTree, liveJobsLabel } from "~/lib/jobs";
 import { cn } from "~/lib/utils";
-import type { Item, Job, JobKind, ThreadState } from "~/protocol";
+import type { Item, Job, JobKind, ThreadMeta, ThreadState } from "~/protocol";
+import { childStatus, descendants, threadTree, type ChildStatus, type Descendant } from "~/threadTree";
 import { useLatest } from "~/useLatest";
 
 import { mergeChildren, useAgentChildren } from "./useAgentChildren";
@@ -26,6 +27,10 @@ export interface JobsSurfaceProps {
    * again, whatever is on screen.
    */
   focus?: JobFocus;
+  /** Every thread, for the ones this one delegated. */
+  threads?: ThreadMeta[];
+  /** Opens a delegated thread in full, in place of this one. */
+  onOpenThread?: (id: string) => void;
 }
 
 export interface JobFocus {
@@ -117,6 +122,49 @@ function JobRow({
           <SquareIcon className="size-3.5 fill-current" />
         </button>
       )}
+    </div>
+  );
+}
+
+const CHILD_TONE: Record<ChildStatus, string> = {
+  Working: "bg-primary animate-pulse",
+  "Needs approval": "bg-attention ring-2 ring-attention/40",
+  "Needs answer": "bg-attention ring-2 ring-attention/40",
+  Failed: "bg-destructive",
+  Done: "bg-success",
+  Stopped: "bg-muted-foreground",
+};
+
+/**
+ * A thread this one delegated: its title, what it runs on, and how it stands.
+ * The whole row opens it, in full, in place of this thread. As tall as a
+ * thumb, and both lines truncate rather than wrap at a phone's width.
+ */
+function ThreadJobRow({ child, onOpen }: { child: Descendant; onOpen?: (id: string) => void }) {
+  const { thread: t, depth } = child;
+  const status = childStatus(t);
+  const waiting = status === "Needs approval" || status === "Needs answer";
+  return (
+    <div style={{ marginLeft: `${Math.min(depth, 4) * 0.75}rem` }}>
+      <button
+        type="button"
+        onClick={() => onOpen?.(t.id)}
+        disabled={!onOpen}
+        className="bg-card/60 hover:bg-accent/40 focus-visible:ring-ring flex min-h-[3.25rem] w-full items-center gap-2.5 rounded-lg border px-3 py-1.5 text-left outline-none focus-visible:ring-2"
+      >
+        <span aria-hidden className={cn("size-2 shrink-0 rounded-full", CHILD_TONE[status])} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[12.5px] font-medium">{t.title || "Untitled"}</span>
+          <span className="text-muted-foreground block truncate text-[11px]">
+            <span className={cn(waiting && "text-attention-foreground font-medium", status === "Failed" && "text-destructive")}>
+              {status}
+            </span>
+            {" · "}
+            {[t.harness, t.model].filter(Boolean).join(" · ")}
+          </span>
+        </span>
+        <ChevronRightIcon aria-hidden className="text-muted-foreground size-4 shrink-0" />
+      </button>
     </div>
   );
 }
@@ -408,11 +456,17 @@ function RosterTotals({ jobs, partial }: { jobs: Job[]; partial: boolean }) {
 }
 
 /** The jobs roster: agents, shells and monitors running beside the conversation. */
-export function JobsSurface({ threadId, command, loadAllJobs, focus }: JobsSurfaceProps) {
+export function JobsSurface({ threadId, command, loadAllJobs, focus, threads, onOpenThread }: JobsSurfaceProps) {
   // `jobs` is the roster, `items` feeds an agent's transcript pane, and
   // `jobsBefore` says the snapshot left some out.
   const state = useThread(useThreadStore(), surfaceFields, shallow);
   const tree = useMemo(() => jobTree(state.jobs), [state.jobs]);
+  // The threads this one delegated, all the way down, from the list the app
+  // already holds.
+  const delegated = useMemo(
+    () => (threads ? descendants(threadTree(threads), threadId) : []),
+    [threads, threadId],
+  );
   const [openId, setOpenId] = useState<string | null>(null);
   // Each focus is taken once, during render, so the job is open in the same
   // paint as the tab that shows it. A job not in the list yet stays asked
@@ -446,12 +500,12 @@ export function JobsSurface({ threadId, command, loadAllJobs, focus }: JobsSurfa
   // most of it can be shells the roster would not show anyway.
   const missing = (state.jobsBefore ?? 0) > 0;
 
-  if (tree.length === 0 && !(missing && loadAllJobs)) {
+  if (tree.length === 0 && delegated.length === 0 && !(missing && loadAllJobs)) {
     return (
       <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
         <BotIcon className="size-5 opacity-60" />
         <p className="text-[13px]">No jobs yet.</p>
-        <p className="text-[12px]">Subagents, background shells and monitors show up here.</p>
+        <p className="text-[12px]">Subagents, delegated threads, background shells and monitors show up here.</p>
       </div>
     );
   }
@@ -459,6 +513,14 @@ export function JobsSurface({ threadId, command, loadAllJobs, focus }: JobsSurfa
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="scroll-thin min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain p-2">
+        {delegated.length > 0 && (
+          <section className="space-y-1.5">
+            <p className="text-muted-foreground px-1 text-[10px] font-semibold tracking-wide uppercase">Threads</p>
+            {delegated.map((c) => (
+              <ThreadJobRow key={c.thread.id} child={c} onOpen={onOpenThread} />
+            ))}
+          </section>
+        )}
         {SECTIONS.map(({ kind, title }) => {
           const rows = tree.filter((j) => j.kind === kind);
           if (rows.length === 0) return null;

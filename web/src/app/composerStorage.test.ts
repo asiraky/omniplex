@@ -7,6 +7,7 @@ import {
   DRAFT_DEBOUNCE_MS,
   LAPSED_REASON,
   loadAttachments,
+  loadMentions,
   loadDrafts,
   loadOutbox,
   loadStashes,
@@ -14,6 +15,7 @@ import {
   persistOutbox,
   persistStashes,
   saveAttachments,
+  saveMentions,
   UPLOAD_LAPSED_REASON,
 } from "./composerStorage";
 import { createDraftStore } from "./draftStore";
@@ -512,3 +514,19 @@ describe("what storage holds", () => {
 function bare(commandId: string) {
   return { commandId, threadId: "t1", text: "x", attachments: [] };
 }
+
+describe("mentions", () => {
+  it("come back after a reload, and go once a thread's list empties", () => {
+    const first = { t1: [{ id: "a", title: "Plan" }], t2: [{ id: "b", title: "Fix" }] };
+    saveMentions({}, first);
+    expect(loadMentions()).toEqual(first);
+    saveMentions(first, { ...first, t1: [] });
+    expect(loadMentions()).toEqual({ t2: [{ id: "b", title: "Fix" }] });
+  });
+
+  it("skips entries that are not mentions", () => {
+    localStorage.setItem("omniplex.mentions.v1:t1", JSON.stringify([{ id: "a", title: "Plan" }, { id: 3 }, "x"]));
+    localStorage.setItem("omniplex.mentions.v1:t2", "not json");
+    expect(loadMentions()).toEqual({ t1: [{ id: "a", title: "Plan" }] });
+  });
+});

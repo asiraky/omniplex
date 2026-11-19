@@ -56,6 +56,7 @@ import type {
   FileTree,
   PullRequest,
   ThreadChanges,
+  ThreadMeta,
   ThreadState,
 } from "~/protocol";
 import { useLatest } from "~/useLatest";
@@ -116,6 +117,10 @@ export interface PanelProps {
   onAddComment?: (block: string) => void;
   /** A file path clicked in a terminal's output. */
   onOpenPath?: (path: string, line?: number) => void;
+  /** Every thread, for the jobs surface's list of the ones this one delegated. */
+  threads?: ThreadMeta[];
+  /** Opens a delegated thread in full. */
+  onOpenThread?: (id: string) => void;
 }
 
 function surfaceLabel(s: Surface, artefacts: Artefact[]): string {
@@ -251,6 +256,8 @@ function PanelBody({
   onAddToChat,
   onAddComment,
   onOpenPath,
+  threads,
+  onOpenThread,
   inSheet,
 }: PanelProps & { inSheet?: boolean }) {
   // The tab model, persisted per thread so the panel reopens as it was left.
@@ -601,7 +608,14 @@ function PanelBody({
           />
         )}
         {active?.kind === "jobs" && (
-          <JobsSurface threadId={threadId} command={command} loadAllJobs={loadAllJobs} focus={jobFocus} />
+          <JobsSurface
+            threadId={threadId}
+            command={command}
+            loadAllJobs={loadAllJobs}
+            focus={jobFocus}
+            threads={threads}
+            onOpenThread={onOpenThread}
+          />
         )}
         {active?.kind === "artefacts" && <ArtefactList artefacts={artefacts} onOpen={openArtefact} />}
         {active?.kind === "artefact" &&

@@ -2,17 +2,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { uuid } from "~/client";
 import { isImageAttachment, stageFile, uploadStaged, type Attachment } from "~/lib/attachments";
+import type { ThreadMention } from "~/lib/threadMentions";
 import type { ThreadMeta } from "~/protocol";
 
 import {
   loadAttachments,
   loadDrafts,
+  loadMentions,
   loadOutbox,
   loadStashes,
   persistDrafts,
   persistOutbox,
   persistStashes,
   saveAttachments,
+  saveMentions,
 } from "./composerStorage";
 import { createDraftStore, PARAGRAPH, type Drafts } from "./draftStore";
 import { createOutbox, type Outbox, type OutboxSend } from "./outbox";
@@ -53,6 +56,35 @@ export function useComposerDrafts(threads: ThreadMeta[]) {
   // upload starts as soon as a picture is picked, so by send time this is a
   // list of ids the server already holds.
   const [attachments, setAttachments] = useState(restored.attachments);
+  // Threads named with `@` for the next message, per thread like the files.
+  // They go as links at the end of the prompt, and only then leave.
+  const [mentions, setMentions] = useState(restored.mentions);
+  const savedMentions = useRef(restored.mentions);
+  useEffect(() => {
+    saveMentions(savedMentions.current, mentions);
+    savedMentions.current = mentions;
+  }, [mentions]);
+  const addMention = useCallback((threadId: string, m: ThreadMention) => {
+    setMentions((all) => {
+      const list = all[threadId] ?? [];
+      return list.some((x) => x.id === m.id) ? all : { ...all, [threadId]: [...list, m] };
+    });
+  }, []);
+  const removeMention = useCallback((threadId: string, id: string) => {
+    setMentions((all) => {
+      const list = all[threadId];
+      if (!list?.some((x) => x.id === id)) return all;
+      return { ...all, [threadId]: list.filter((x) => x.id !== id) };
+    });
+  }, []);
+  const clearMentions = useCallback((threadId: string) => {
+    setMentions((all) => {
+      if (!all[threadId]) return all;
+      const rest = { ...all };
+      delete rest[threadId];
+      return rest;
+    });
+  }, []);
 
   useEffect(() => persistDrafts(draftStore), [draftStore]);
   useEffect(() => persistOutbox(outbox), [outbox]);
@@ -371,6 +403,13 @@ export function useComposerDrafts(threads: ThreadMeta[]) {
       }
       return changed ? next : all;
     });
+    setMentions((all) => {
+      const gone = Object.keys(all).filter((id) => !live.has(id) && seenThreads.current.has(id));
+      if (gone.length === 0) return all;
+      const next = { ...all };
+      for (const id of gone) delete next[id];
+      return next;
+    });
     outbox.prune((id) => live.has(id) || !seenThreads.current.has(id));
     // And the stashes, thumbnails and all.
     const stashes = stashStore.all();
@@ -407,6 +446,10 @@ export function useComposerDrafts(threads: ThreadMeta[]) {
       attachFiles,
       attachToDraft,
       removeAttachment,
+      mentions,
+      addMention,
+      removeMention,
+      clearMentions,
       stashDraft,
       unstash,
       dropStash,
@@ -427,6 +470,10 @@ export function useComposerDrafts(threads: ThreadMeta[]) {
       attachFiles,
       attachToDraft,
       removeAttachment,
+      mentions,
+      addMention,
+      removeMention,
+      clearMentions,
       stashDraft,
       unstash,
       dropStash,
@@ -450,9 +497,11 @@ function restoreSaved() {
     attachments = restoreAttachments(attachments, entry, before);
   }
   const stashes: Stashes = loadStashes();
+  const mentions = loadMentions();
   const threadIds = new Set([
     ...Object.keys(drafts),
     ...Object.keys(attachments),
+    ...Object.keys(mentions),
     ...Object.keys(stashes),
     ...entries.map((e) => e.threadId),
   ]);
@@ -462,6 +511,7 @@ function restoreSaved() {
     draftStore: createDraftStore(drafts),
     outbox,
     attachments,
+    mentions,
     stashStore: createStashStore(stashes),
     threadIds,
   };

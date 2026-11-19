@@ -3,7 +3,7 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { emptyState } from "~/apply";
-import type { Item, Job, ThreadState } from "~/protocol";
+import type { Item, Job, ThreadMeta, ThreadState } from "~/protocol";
 import { createThreadStore, ThreadStoreContext } from "~/app/threadStore";
 import { render, wrap } from "~/test/harness";
 
@@ -183,5 +183,26 @@ describe("a job asked for from outside", () => {
 
     act(() => store.set({ ...state }));
     expect(screen.getByText("planned")).toBeTruthy();
+  });
+});
+
+describe("delegated threads", () => {
+  const meta = (id: string, over: Partial<ThreadMeta> = {}) =>
+    ({ id, title: `T ${id}`, harness: "claude", createdAt: 0, ...over }) as ThreadMeta;
+
+  it("lists every thread delegated from this one, with its status, and opens the one tapped", () => {
+    const onOpenThread = vi.fn();
+    const threads = [
+      meta("s1"),
+      meta("c1", { parentId: "s1", attention: "needs_answer" }),
+      meta("g1", { parentId: "c1", attention: "working" }),
+      meta("x", { parentId: "elsewhere" }),
+    ];
+    mount(thread({ jobs: [] }), <JobsSurface threadId="s1" command={vi.fn()} threads={threads} onOpenThread={onOpenThread} />);
+    expect(screen.getByRole("button", { name: /T c1/ }).textContent).toContain("Needs answer");
+    expect(screen.getByRole("button", { name: /T g1/ }).textContent).toContain("Working");
+    expect(screen.queryByRole("button", { name: /T x/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /T g1/ }));
+    expect(onOpenThread).toHaveBeenCalledWith("g1");
   });
 });

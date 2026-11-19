@@ -20,11 +20,12 @@ import type { ArtefactRef } from "~/lib/artefacts";
 import type { PickerFocus } from "~/components/ModelPicker";
 import { isComposing } from "~/lib/ime";
 import { recentPrompts, stepHistory, type HistoryPosition } from "~/lib/promptHistory";
+import type { ThreadMention } from "~/lib/threadMentions";
 import { typeInto } from "~/lib/typeInto";
 import { currentPlatform, formatShortcut } from "~/lib/keybindings";
 import type { PickerInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
-import type { Delivery, HarnessMeta, Usage } from "~/protocol";
+import type { Delivery, HarnessMeta, ThreadMeta, Usage } from "~/protocol";
 import { useFileDrop } from "~/useFileDrop";
 import { useLatest } from "~/useLatest";
 import { useIsDesktop } from "~/useMediaQuery";
@@ -186,6 +187,15 @@ interface ComposerProps {
   /** The thread's parked drafts. Without it the composer has no menu, for
       parked drafts or for recent prompts. */
   stash?: ComposerStash;
+  /** The threads an `@` can name. Omitted, `@` is ordinary text. */
+  mentionable?: ThreadMeta[];
+  /** Threads staged to go with the next message, as chips beside the
+      attachments. Owned by the parent, like the attachments. */
+  mentions?: ThreadMention[];
+  onAddMention?: (mention: ThreadMention) => void;
+  onRemoveMention?: (id: string) => void;
+  /** The staged threads went with a prompt. */
+  onMentionsSent?: () => void;
 }
 
 const NO_HARNESSES: HarnessMeta[] = [];
@@ -203,6 +213,7 @@ function canDictate(): boolean {
 }
 
 const NO_ATTACHMENTS: Attachment[] = [];
+const NO_MENTIONS: ThreadMention[] = [];
 // The tallest the composer grows before it scrolls. Matches max-h-[200px] on
 // the textarea, which has to stay a literal for Tailwind to see it.
 const COMPOSER_MAX_PX = 200;
@@ -263,6 +274,11 @@ export function Composer({
   dictation,
   history = NO_PROMPTS,
   stash,
+  mentionable,
+  mentions = NO_MENTIONS,
+  onAddMention,
+  onRemoveMention,
+  onMentionsSent,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -319,12 +335,16 @@ export function Composer({
     sendDisabled,
     runClientAction,
     onRunComposerAction,
+    mentionable,
+    onMention: onAddMention,
   });
   const { send, cannotSend, sendableAttachments, scheduleBlock, tooMuch } = useComposerSend({
     draft,
     draftRef,
     changeDraft,
     attachments,
+    mentions,
+    onMentionsSent,
     disabled,
     sendDisabled,
     waiting,
@@ -527,6 +547,8 @@ export function Composer({
           tooMuch={tooMuch}
           onRemove={onRemoveAttachment}
           onRetry={onRetryAttachment}
+          mentions={mentions}
+          onRemoveMention={onRemoveMention}
         />
         <CommandMenu
           open={menu.open}
