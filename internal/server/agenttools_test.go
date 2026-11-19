@@ -1144,3 +1144,222 @@ func TestRedactAgentToolInput(t *testing.T) {
 		t.Errorf("short value: %s", got)
 	}
 }
+
+// agentThread starts an agent's live thread in a new project, the agent's
+// prompt and compaction instructions at r1 and c1.
+func (r *toolRig) agentThread(prompt, compact string) (threadID, agentID string) {
+	r.t.Helper()
+	ctx := context.Background()
+	now := proto.NowMillis()
+	p := project.Project{ID: fmt.Sprintf("p%d", time.Now().UnixNano()), Name: "Kiosk", Home: r.t.TempDir(), CreatedAt: now, UpdatedAt: now}
+	if err := r.st.CreateProject(ctx, p); err != nil {
+		r.t.Fatal(err)
+	}
+	ag, err := r.st.CreateAgent(ctx, store.Agent{ProjectID: p.ID, Name: "Triage", Harness: r.ctl.id}, prompt, compact)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	threadID = "t-" + p.ID
+	meta := store.ThreadMeta{ID: threadID, Cwd: p.Home, Harness: r.ctl.id, ProjectID: p.ID, AgentID: ag.ID, Phase: "idle", Model: "test-model", Mode: "default", CreatedAt: now, UpdatedAt: now}
+	if err := r.st.CreateThread(ctx, meta); err != nil {
+		r.t.Fatal(err)
+	}
+	if err := r.st.SetAgentThread(ctx, ag.ID, threadID); err != nil {
+		r.t.Fatal(err)
+	}
+	if _, err := r.mgr.Get(ctx, threadID); err != nil {
+		r.t.Fatal(err)
+	}
+	return threadID, ag.ID
+}
+
+// revisions is the agent's revisions of a kind, newest first.
+func (r *toolRig) revisions(agentID, kind string) []store.AgentRevision {
+	r.t.Helper()
+	revs, err := r.st.AgentRevisions(context.Background(), agentID, kind)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return revs
+}
+
+func (r *toolRig) restarts(threadID string) int {
+	r.t.Helper()
+	evs, err := r.st.ReadEvents(context.Background(), threadID, 0, 10000)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	n := 0
+	for _, ev := range evs {
+		if ev.Type == proto.ThreadRestarted {
+			n++
+		}
+	}
+	return n
+}
+
+func TestPromptEditIsOnlyForAnAgentsThread(t *testing.T) {
+	r := newToolRig(t)
+	threadID, _ := r.projectThread(r.ctl.id)
+	got := r.call(threadID, "propose_prompt_edit", map[string]any{"kind": "prompt", "replace": "Be terse.", "reason": `"remember to be terse"`})
+	if got.code != http.StatusForbidden {
+		t.Fatalf("a plain thread got %+v", got)
+	}
+	if n := len(r.cards(threadID)); n != 0 {
+		t.Fatalf("%d cards raised", n)
+	}
+}
+
+func TestPromptEditProposesTheWholeTextAfterTheEdit(t *testing.T) {
+	const prompt = "You triage bugs.\nLabel each one.\n"
+	cases := []struct {
+		name        string
+		kind, find  string
+		replace     string
+		before      string
+		after       string
+		refusal     string
+		refusalCode int
+	}{
+		{name: "append", kind: "prompt", replace: "Never close an issue.", before: prompt, after: "You triage bugs.\nLabel each one.\n\nNever close an issue."},
+		{name: "replace", kind: "prompt", find: "Label each one.", replace: "Label and size each one.", before: prompt, after: "You triage bugs.\nLabel and size each one.\n"},
+		{name: "append to the compaction instructions", kind: "compact", replace: "Keep the open issue numbers.", before: "Keep state.", after: "Keep state.\n\nKeep the open issue numbers."},
+		{name: "find missing", kind: "prompt", find: "Close stale ones.", replace: "x", refusal: "find text not in the current system prompt"},
+		{name: "find ambiguous", kind: "prompt", find: "e", replace: "x", refusal: "occurs"},
+		{name: "unknown kind", kind: "notes", replace: "x", refusal: "kind is prompt or compact"},
+		{name: "nothing to append", kind: "prompt", replace: "  ", refusal: "append"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := newToolRig(t)
+			threadID, agentID := r.agentThread(prompt, "Keep state.")
+			args := map[string]any{"kind": c.kind, "replace": c.replace, "reason": `"remember this"`}
+			if c.find != "" {
+				args["find"] = c.find
+			}
+			if c.refusal != "" {
+				got := r.call(threadID, "propose_prompt_edit", args)
+				if got.code != http.StatusBadRequest || !strings.Contains(got.err, c.refusal) {
+					t.Fatalf("got %+v, want a refusal saying %q", got, c.refusal)
+				}
+				if n := len(r.cards(threadID)); n != 0 {
+					t.Fatalf("%d cards raised", n)
+				}
+				return
+			}
+			reply := r.start(context.Background(), threadID, "propose_prompt_edit", args)
+			pending, card := r.waitCard(threadID, 1)
+			e := card.PromptEdit
+			if card.Kind != "prompt_edit" || e == nil {
+				t.Fatalf("card %+v", card)
+			}
+			want := promptEditCard{AgentID: agentID, AgentName: "Triage", Kind: c.kind, FromRev: 1, Before: c.before, After: c.after, Reason: `"remember this"`}
+			if *e != want {
+				t.Fatalf("card proposes %+v, want %+v", *e, want)
+			}
+			r.resolve(threadID, pending.RequestID, "decline", nil)
+			wait(t, reply)
+		})
+	}
+}
+
+func TestAnsweringAPromptEdit(t *testing.T) {
+	cases := []struct {
+		name     string
+		kind     string
+		action   string
+		edits    any
+		wantBody string // "" when nothing is saved
+		wantText string
+		restarts int
+	}{
+		{name: "approve a prompt edit", kind: "prompt", action: "accept", wantBody: "Triage bugs.\n\nBe terse.",
+			wantText: "Saved as revision r2. Your system prompt changes when this turn ends.", restarts: 1},
+		{name: "approve a compaction edit", kind: "compact", action: "accept", wantBody: "Keep state.\n\nBe terse.",
+			wantText: "Saved as revision c2. Your compaction instructions apply at the next compaction."},
+		{name: "edit then approve", kind: "prompt", action: "accept", edits: map[string]any{"body": "Triage bugs. Be brief."}, wantBody: "Triage bugs. Be brief.",
+			wantText: "Saved as revision r2. Your system prompt changes when this turn ends. The user edited it first, so the saved text differs from your proposal. It is now:\n\nTriage bugs. Be brief.", restarts: 1},
+		{name: "reject", kind: "prompt", action: "decline",
+			wantText: "Nothing was saved. You may follow the rule for the rest of this epoch, but it will not survive compaction."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := newToolRig(t)
+			threadID, agentID := r.agentThread("Triage bugs.", "Keep state.")
+			before := r.restarts(threadID)
+			reply := r.start(context.Background(), threadID, "propose_prompt_edit", map[string]any{"kind": c.kind, "replace": "Be terse.", "reason": `"from now on, be terse"`})
+			pending, _ := r.waitCard(threadID, 1)
+			out, errMsg := r.resolve(threadID, pending.RequestID, c.action, c.edits)
+			if errMsg != "" {
+				t.Fatalf("resolve: %s", errMsg)
+			}
+			got := wait(t, reply)
+			if got.code != http.StatusOK || got.text != c.wantText {
+				t.Fatalf("tool replied %d %q %q, want %q", got.code, got.text, got.err, c.wantText)
+			}
+			revs := r.revisions(agentID, c.kind)
+			if c.wantBody == "" {
+				if len(revs) != 1 || out.Result != projection.CardDeclined || out.Revision != 0 {
+					t.Fatalf("declined, yet %d revisions and outcome %+v", len(revs), out)
+				}
+			} else {
+				latest := revs[0]
+				if len(revs) != 2 || latest.N != 2 || latest.Body != c.wantBody || latest.Author != store.AuthorAgent || latest.Reason != `"from now on, be terse"` {
+					t.Fatalf("saved %+v, want r2 %q by the agent with its reason", latest, c.wantBody)
+				}
+				if out.Result != projection.CardSaved || out.Revision != 2 || out.Edited != (c.edits != nil) {
+					t.Fatalf("outcome %+v", out)
+				}
+			}
+			if n := r.restarts(threadID) - before; n != c.restarts {
+				t.Fatalf("%d restarts, want %d", n, c.restarts)
+			}
+		})
+	}
+}
+
+func TestAPromptEditOutrunByAnotherSave(t *testing.T) {
+	cases := []struct {
+		name     string
+		find     string
+		newer    string
+		edits    any
+		wantBody string // "" when the approval fails
+	}{
+		{name: "the edit still applies", find: "Label bugs.", newer: "Triage bugs.\nLabel bugs.\nBe kind.", wantBody: "Triage bugs.\nSize bugs.\nBe kind."},
+		{name: "the edit no longer applies", find: "Label bugs.", newer: "Triage bugs."},
+		{name: "the user's own text was written against the old one", find: "Label bugs.", newer: "Triage bugs.\nLabel bugs.\nBe kind.", edits: map[string]any{"body": "Size everything."}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := newToolRig(t)
+			threadID, agentID := r.agentThread("Triage bugs.\nLabel bugs.", "Keep state.")
+			reply := r.start(context.Background(), threadID, "propose_prompt_edit", map[string]any{"kind": "prompt", "find": c.find, "replace": "Size bugs.", "reason": `"size them"`})
+			pending, _ := r.waitCard(threadID, 1)
+			if _, _, err := r.mgr.SaveAgentRevision(context.Background(), agentID, store.RevisionPrompt, c.newer, store.AuthorUser, ""); err != nil {
+				t.Fatal(err)
+			}
+			out, errMsg := r.resolve(threadID, pending.RequestID, "accept", c.edits)
+			if c.wantBody == "" {
+				if errMsg == "" || !strings.Contains(errMsg, "r2") {
+					t.Fatalf("approved over a newer revision: %+v %q", out, errMsg)
+				}
+				if len(r.cards(threadID)) != 1 || len(r.revisions(agentID, store.RevisionPrompt)) != 2 {
+					t.Fatal("a failed approval saved something or dropped the card")
+				}
+				r.resolve(threadID, pending.RequestID, "decline", nil)
+				wait(t, reply)
+				return
+			}
+			if errMsg != "" || out.Revision != 3 {
+				t.Fatalf("resolve: %+v %s", out, errMsg)
+			}
+			if got := r.revisions(agentID, store.RevisionPrompt)[0]; got.Body != c.wantBody {
+				t.Fatalf("saved %q, want %q", got.Body, c.wantBody)
+			}
+			if got := wait(t, reply); !strings.Contains(got.text, "r3") || !strings.Contains(got.text, "r2") {
+				t.Fatalf("tool replied %q, want it to name r3 and the r2 it was made on", got.text)
+			}
+		})
+	}
+}

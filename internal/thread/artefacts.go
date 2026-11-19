@@ -3,6 +3,7 @@ package thread
 import (
 	"context"
 	"errors"
+	"maps"
 	"mime"
 	"os"
 	"path/filepath"
@@ -120,6 +121,17 @@ func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, met
 	}
 	if ToolServers != nil {
 		x.mcp = ToolServers(meta.ID, home)
+		// An agent's thread is offered propose_prompt_edit; the server still
+		// refuses it to any other thread.
+		if meta.AgentID != "" {
+			for i := range x.mcp {
+				x.mcp[i].Env = maps.Clone(x.mcp[i].Env)
+				if x.mcp[i].Env == nil {
+					x.mcp[i].Env = map[string]string{}
+				}
+				x.mcp[i].Env["OMNIPLEX_AGENT_ID"] = meta.AgentID
+			}
+		}
 	}
 	x.mcp = append(x.mcp, userMCPServers(ctx, ad, meta.ProjectID)...)
 	cfg, err := userconfig.Load()
