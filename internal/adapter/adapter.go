@@ -44,9 +44,10 @@ type CreateOptions struct {
 	// Restart marks a resume that replaces a process the conversation was
 	// already running in, to pick up the session's current setup: its
 	// Instructions above all. A harness that pins its system prompt in the
-	// conversation's own record rewrites it to Instructions before the new
-	// process reads it, and fails the start when it cannot: resuming quietly
-	// on the old prompt is what a restart exists to prevent. Only set with
+	// conversation's own record makes the resumed conversation run on
+	// Instructions instead, by rewriting that record or telling the resumed
+	// conversation, and fails the start when it cannot: resuming quietly on
+	// the old prompt is what a restart exists to prevent. Only set with
 	// Resume, and only once the harness has run a turn.
 	Restart bool
 

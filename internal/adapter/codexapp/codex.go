@@ -429,8 +429,9 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if err := s.died(s.conn.Call(ctx, method, startParams, &startRes)); err != nil {
 		// A rollout too large to read back is not a missing thread: starting
 		// a fresh one would quietly drop the whole conversation. Nor is a
-		// codex that died on the resume.
-		if o.HarnessSessionID == "" || jsonrpc.TooLarge(err) || s.gone() {
+		// codex that died on the resume. Nor a restart: the thread was
+		// running a moment ago, and a fresh one would drop it just the same.
+		if o.HarnessSessionID == "" || o.Restart || jsonrpc.TooLarge(err) || s.gone() {
 			_ = s.Close()
 			return nil, fmt.Errorf("codex %s: %w", method, err)
 		}
@@ -444,6 +445,12 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		}
 	}
 	s.threadID = startRes.Thread.ID
+	if o.Restart && o.HarnessSessionID != "" {
+		if err := s.injectInstructions(ctx, o.Instructions); err != nil {
+			_ = s.Close()
+			return nil, err
+		}
+	}
 	// The thread's resolved model is recorded even when the caller named none:
 	// it is what the account-usage aggregation prices against, and a session
 	// that never said must not report a blank forever. The CLI's answer is
