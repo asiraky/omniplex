@@ -58,9 +58,10 @@ type Actor struct {
 	// startFilled is set once the agent's epoch 0 has been offered the
 	// thread's first message (firstMessageLogged). Loop only.
 	startFilled bool
-	// agentPromptRev is the agent prompt revision the running process of an
-	// agent's thread started on, which its restart notice names. Loop only.
-	agentPromptRev int
+	// promptMovedTo is the agent prompt revision the running process of an
+	// agent's thread moved it onto, which its restart notice names; 0 when
+	// the process started on the same one as the last, or on none. Loop only.
+	promptMovedTo int
 	// restored is true for an actor rebuilt from the log until its harness
 	// first starts. Whatever is queued then was written before the server
 	// went down, so that first start holds it; see cmdActivate. One rebuilt
@@ -225,6 +226,7 @@ type command struct {
 	emission     *proto.Emission
 	ready        *proto.WorkspaceReadyPayload // activate: the provisioned workspace, recorded once the harness is up
 	hard         bool                         // close: append thread.closed, rather than just disposing
+	liveOnly     bool                         // restart: refuse with ErrNotReady rather than start a process
 	resume       bool                         // activate: resume an existing harness conversation
 	reply        chan cmdResult
 	model        string
@@ -324,7 +326,6 @@ const (
 	cmdRead           = "read"
 	cmdRewind         = "rewind"
 	cmdRestart        = "restart"
-	cmdRestartLive    = "restart_live"
 	cmdCancelRestart  = "cancel_restart"
 	cmdAgentSettings  = "agent_settings"
 )
@@ -1292,7 +1293,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		// A restart still waiting when its process went away, with the
 		// server or on its own, is carried out by this start, as is one an
 		// agent's edit needed while no process was running to restart.
-		restartDue := c.resume && (a.state.RestartPending || a.agentSetupBehind(ctx))
+		restartDue := c.resume && (a.state.RestartPending || hasRunATurn(a.state) && a.agentRevisionsBehind(ctx))
 		if err := a.startProcess(ctx, adapter.CreateOptions{
 			Cwd: cwd, Model: model, Mode: mode, Effort: effort, ServiceTier: tier, Resume: c.resume,
 			Restart: restartDue && hasRunATurn(a.state),
@@ -1398,11 +1399,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		a.takeAgentSettings(*c.agentSettings, c.reply)
 
 	case cmdRestart:
-		pending, err := a.requestRestart(ctx)
-		c.reply <- cmdResult{value: pending, err: err}
-
-	case cmdRestartLive:
-		if a.sess == nil {
+		if c.liveOnly && a.sess == nil {
 			c.reply <- cmdResult{err: ErrNotReady}
 			return false
 		}
@@ -1855,8 +1852,8 @@ func (a *Actor) startProcess(ctx context.Context, o adapter.CreateOptions) error
 	if err != nil {
 		return err
 	}
+	a.promptMovedTo = 0
 	if x.agent != nil {
-		a.agentPromptRev = x.agent.promptRev
 		a.startedOn(ctx, x.agent)
 	}
 	a.Cwd, a.sess, a.preparing = cwd, sess, false

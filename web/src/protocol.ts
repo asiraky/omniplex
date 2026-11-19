@@ -116,7 +116,8 @@ export interface Item {
       in the agent's log (1 for the first), for the Inspect link. */
   epoch?: number;
   /** For a restart notice on an agent's thread: the prompt revision the
-      harness came back up on, for the View change link. */
+      restart moved it onto, for the View change link. Absent when the
+      restart kept the same prompt. */
   promptRev?: number;
   // artefact: title is its name
   artefactId?: string;

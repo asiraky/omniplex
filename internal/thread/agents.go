@@ -618,12 +618,12 @@ func (a *Actor) agentOf(ctx context.Context) (store.Agent, bool) {
 	return ag, true
 }
 
-// agentSetupBehind is whether this is an agent's live thread whose last
+// agentRevisionsBehind is whether this is an agent's live thread whose last
 // process started on an older prompt than the agent's latest, or on older
 // compaction instructions when its harness reads them only at start: its
 // next start has to restart onto them rather than resume on what the
 // harness pinned.
-func (a *Actor) agentSetupBehind(ctx context.Context) bool {
+func (a *Actor) agentRevisionsBehind(ctx context.Context) bool {
 	ag, ok := a.agentOf(ctx)
 	if !ok || ag.ThreadID != a.ID || ag.LivePromptRev == 0 {
 		return false
@@ -646,7 +646,9 @@ func (a *Actor) notifyAgents() {
 // startedOn records the revisions a process of the agent's live thread
 // started on: the prompt's, which is how the agent page tells a restart
 // still to come from one done, and the compaction instructions', which are
-// what a harness that reads them only at start compacts on. A thread the
+// what a harness that reads them only at start compacts on. It also notes
+// whether this start moved the thread onto a newer prompt, which its restart
+// notice names. A thread the
 // agent has just been unlinked from, or not yet linked to, counts as live:
 // New thread links the new one only once it exists, and its process may
 // start before that.
@@ -654,6 +656,9 @@ func (a *Actor) startedOn(ctx context.Context, x *agentExtras) {
 	ag, err := a.store.Agent(ctx, x.id)
 	if err != nil || (ag.ThreadID != a.ID && ag.ThreadID != "") {
 		return
+	}
+	if ag.LivePromptRev != 0 && ag.LivePromptRev != x.promptRev {
+		a.promptMovedTo = x.promptRev
 	}
 	if err := a.store.SetAgentLiveRevs(ctx, x.id, x.promptRev, x.compactRev); err != nil {
 		a.logf("live revisions of agent %s: %v", x.id, err)

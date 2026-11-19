@@ -232,6 +232,13 @@ func TestSavingAPromptRestartsTheLiveThreadOntoIt(t *testing.T) {
 	if n := restartNotices(stateOf(t, a)); len(n) != 1 || n[0].PromptRev != 2 {
 		t.Fatalf("restart notices = %+v, want one naming r2", n)
 	}
+	// A restart that changes no prompt names none.
+	if _, err := a.Restart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := restartNotices(stateOf(t, a)); len(n) != 2 || n[1].PromptRev != 0 {
+		t.Fatalf("restart notices = %+v, want the second naming no revision", n)
+	}
 
 	if _, err := a.Prompt(ctx, "work", nil); err != nil {
 		t.Fatal(err)

@@ -54,18 +54,18 @@ func (m *Manager) CancelRestart(ctx context.Context, threadID string) error {
 
 // Restart is RestartThread for this actor.
 func (a *Actor) Restart(ctx context.Context) (pending bool, err error) {
-	return a.restartBy(ctx, cmdRestart)
+	return a.restartCmd(ctx, false)
 }
 
 // restartLive is Restart for a thread whose process is running. With none
 // running it starts nothing and is ErrNotReady: an agent thread's next start
-// restarts onto the agent's revisions by itself (agentSetupBehind).
+// restarts onto the agent's revisions by itself (agentRevisionsBehind).
 func (a *Actor) restartLive(ctx context.Context) (pending bool, err error) {
-	return a.restartBy(ctx, cmdRestartLive)
+	return a.restartCmd(ctx, true)
 }
 
-func (a *Actor) restartBy(ctx context.Context, kind string) (pending bool, err error) {
-	v, err := a.call(ctx, command{kind: kind})
+func (a *Actor) restartCmd(ctx context.Context, liveOnly bool) (pending bool, err error) {
+	v, err := a.call(ctx, command{kind: cmdRestart, liveOnly: liveOnly})
 	if err != nil {
 		return false, err
 	}
@@ -201,7 +201,7 @@ func (a *Actor) restart(ctx context.Context) error {
 // a restart that was waiting. A failure goes to the server log too.
 func (a *Actor) noteRestart(err error) {
 	if err == nil {
-		a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{PromptRev: a.agentPromptRev}))
+		a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{PromptRev: a.promptMovedTo}))
 		return
 	}
 	a.logf("restart %s: %v", a.ID, err)
