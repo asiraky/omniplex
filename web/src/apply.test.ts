@@ -1267,7 +1267,7 @@ describe("thread restart", () => {
   it("is pending from the request until a cancel", () => {
     let s = applyEvent(emptyState("s1"), ev(1, "thread.restart_requested", {}));
     expect(s.restartPending).toBe(true);
-    s = applyEvent(s, ev(2, "thread.restart_cancelled", { reason: "cancelled" }));
+    s = applyEvent(s, ev(2, "thread.restart_cancelled", {}));
     expect(s.restartPending).toBe(false);
     expect(s.items).toEqual([]);
   });

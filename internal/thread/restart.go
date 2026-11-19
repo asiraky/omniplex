@@ -6,6 +6,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/ephemeral"
+	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
@@ -59,12 +60,14 @@ func (a *Actor) CancelRestart(ctx context.Context) error {
 
 // requestRestart restarts an idle thread now, and marks a busy one to restart
 // once it settles (restartIfDue). Asking again while one waits changes
-// nothing.
+// nothing. A thread with no process restarts now whatever its state says: a
+// turn a server restart cut off will never end on its own, and the restart's
+// start settles it as activation would.
 func (a *Actor) requestRestart(ctx context.Context) (pending bool, err error) {
 	if err := a.restartRefusal(); err != nil {
 		return false, err
 	}
-	if a.restartBusy() {
+	if a.sess != nil && a.restartBusy() {
 		if !a.state.RestartPending {
 			if err := a.append(proto.Emit(proto.ThreadRestartRequested, proto.ThreadRestartRequestedPayload{})); err != nil {
 				return false, err
@@ -104,12 +107,13 @@ func (a *Actor) restartRefusal() error {
 }
 
 // restartBusy says the process is in the middle of something a restart would
-// cut short: a turn, a Stop, a change on its way to the harness, a rewind, or
-// the continuation of work a server restart interrupted, not yet sent. Shells
+// cut short: a turn, a Stop, a change on its way to the harness, a rewind, a
+// prompt the harness was handed and has yet to read, or the continuation of
+// work a server restart interrupted, not yet sent. Shells
 // and background jobs do not count. They die with the process, and that is
 // accepted.
 func (a *Actor) restartBusy() bool {
-	if a.turnActive != "" || a.state.Phase != "idle" || a.stopping != nil || a.controlPending > 0 || a.rewinding {
+	if a.turnActive != "" || a.state.Phase != "idle" || a.stopping != nil || a.controlPending > 0 || a.rewinding || len(a.sent) > 0 {
 		return true
 	}
 	a.mu.Lock()
@@ -122,7 +126,7 @@ func (a *Actor) restartBusy() bool {
 // queue is dispatched, so a prompt queued behind the restart runs on the new
 // process. An actor with no process leaves it waiting: one restored only to
 // be looked at must not start a harness on its own, and the next start of
-// its process carries the restart out.
+// its process carries the restart out (cmdActivate).
 func (a *Actor) restartIfDue(ctx context.Context) {
 	if !a.state.RestartPending || a.sess == nil || a.state.Closed || a.restartBusy() {
 		return
@@ -138,9 +142,6 @@ func (a *Actor) restartIfDue(ctx context.Context) {
 // way. Either way the outcome is logged, which also ends a requested
 // restart.
 func (a *Actor) restart(ctx context.Context) error {
-	// A conversation that has never run has nothing pinned for a harness to
-	// rewrite.
-	ran := len(a.state.Turns) > 0 || a.state.HarnessSessionID != ""
 	fresh := a.sess == nil
 	if !fresh {
 		// Dropping the process first is what marks its exit, still on its way
@@ -159,7 +160,7 @@ func (a *Actor) restart(ctx context.Context) error {
 	}
 	err := a.startProcess(ctx, adapter.CreateOptions{
 		Cwd: a.Cwd, Model: a.state.Model, Mode: a.state.Mode, Effort: a.state.Effort, ServiceTier: a.state.ServiceTier,
-		Resume: true, Restart: ran,
+		Resume: true, Restart: restartRan(a.state),
 	})
 	if err != nil {
 		a.logf("restart %s: %v", a.ID, err)
@@ -175,6 +176,13 @@ func (a *Actor) restart(ctx context.Context) error {
 	a.holdRestored()
 	a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{}))
 	return nil
+}
+
+// restartRan says the conversation has run a turn, so its harness may have
+// pinned the setup it ran on. Not the session id: a harness can report one
+// as it starts, before it has written anything.
+func restartRan(s *projection.State) bool {
+	return len(s.Turns) > 0
 }
 
 // noAdapter is why a thread with no adapter cannot start a harness. A pending

@@ -379,11 +379,8 @@ type ThreadAccountChangedPayload struct {
 // ThreadRestartRequestedPayload carries nothing: the request is the event.
 type ThreadRestartRequestedPayload struct{}
 
-// ThreadRestartCancelledPayload says why a requested restart will not happen,
-// when anyone gave a reason.
-type ThreadRestartCancelledPayload struct {
-	Reason string `json:"reason,omitempty"`
-}
+// ThreadRestartCancelledPayload carries nothing: the cancel is the event.
+type ThreadRestartCancelledPayload struct{}
 
 // ThreadRestartedPayload is empty for a restart that worked. Error is why one
 // failed: the old process is gone either way, and the next command that needs

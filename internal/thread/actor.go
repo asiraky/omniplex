@@ -1265,9 +1265,16 @@ func (a *Actor) handle(c command) (stop bool) {
 		if c.resume {
 			cwd, model, mode, effort, tier = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort, a.state.ServiceTier
 		}
+		// A restart still waiting when its process went away, with the
+		// server or on its own, is carried out by this start.
+		restartDue := c.resume && a.state.RestartPending
 		if err := a.startProcess(ctx, adapter.CreateOptions{
 			Cwd: cwd, Model: model, Mode: mode, Effort: effort, ServiceTier: tier, Resume: c.resume,
+			Restart: restartDue && restartRan(a.state),
 		}); err != nil {
+			if restartDue {
+				a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{Error: err.Error()}))
+			}
 			c.reply <- cmdResult{err: err}
 			return false
 		}
@@ -1278,6 +1285,9 @@ func (a *Actor) handle(c command) (stop bool) {
 			a.settleResumed()
 		}
 		a.holdRestored()
+		if restartDue {
+			a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{}))
+		}
 		c.reply <- cmdResult{}
 
 	case cmdStopJob:

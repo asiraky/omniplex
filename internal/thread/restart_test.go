@@ -351,6 +351,10 @@ func TestRestartOfAThreadThatNeverRan(t *testing.T) {
 	fa := &fakeAdapter{}
 	mgr, a, _ := restartSetup(t, fa)
 	old := fa.thread()
+	// Real harnesses report their conversation id as they start, before
+	// they have written anything to resume.
+	old.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{HarnessSessionID: "conv-1"}))
+	waitFor(t, func() bool { return stateOf(t, a).HarnessSessionID == "conv-1" })
 	if pending, err := mgr.RestartThread(context.Background(), a.ID); err != nil || pending {
 		t.Fatalf("restart = pending %v, %v", pending, err)
 	}
@@ -424,5 +428,71 @@ func TestRestartOfAThreadWithNoProcess(t *testing.T) {
 	}
 	if s := stateOf(t, b); len(restartNotices(s)) != 1 || len(s.Turns) != 1 {
 		t.Fatalf("notices %d turns %d; want the note on the kept transcript", len(restartNotices(s)), len(s.Turns))
+	}
+}
+
+// A turn a server restart cut off never ends on its own, so a restart of its
+// thread does not wait for it: it starts the process now, on the restart's
+// terms, and closes the dead turn as activation would. Sending the
+// continuation stays the manager's recovery's job.
+func TestRestartOfAnInterruptedTurnDoesNotWait(t *testing.T) {
+	first := &fakeAdapter{}
+	mgr, a, st := restartSetup(t, first)
+	ctx := context.Background()
+	if _, err := a.Prompt(ctx, "keep going", nil); err != nil {
+		t.Fatal(err)
+	}
+	<-first.thread().prompts
+	waitFor(t, func() bool { return stateOf(t, a).Phase == "turn" })
+	id := a.ID
+	mgr.Shutdown()
+
+	resumed := &fakeAdapter{}
+	mgr = newManager(st, func(string, ...any) {}, resumed)
+	t.Cleanup(mgr.Shutdown)
+	pending, err := mgr.RestartThread(ctx, id)
+	if err != nil || pending {
+		t.Fatalf("restart = pending %v, %v; want done", pending, err)
+	}
+	if o, n := lastOpts(resumed); n != 1 || !o.Resume || !o.Restart {
+		t.Fatalf("%d starts, resume %v restart %v; want one restart", n, o.Resume, o.Restart)
+	}
+	b, _ := mgr.Peek(id)
+	s := stateOf(t, b)
+	if s.RestartPending || len(restartNotices(s)) != 1 {
+		t.Fatalf("pending %v notices %d; want one restart, done", s.RestartPending, len(restartNotices(s)))
+	}
+	if turn := s.Turns[len(s.Turns)-1]; !turn.Done {
+		t.Fatal("the interrupted turn is still open after the restart")
+	}
+}
+
+// A restart still waiting when its harness died with the turn is carried out
+// by the next start, not by a plain resume and a second start after it.
+func TestPendingRestartIsCarriedOutByTheNextStart(t *testing.T) {
+	fa := &fakeAdapter{}
+	mgr, a, _ := restartSetup(t, fa)
+	ctx := context.Background()
+	runTurn(t, a, fa, "first", "r1")
+	if _, err := a.Prompt(ctx, "work", nil); err != nil {
+		t.Fatal(err)
+	}
+	nextInput(t, fa.thread())
+	if pending, err := a.Restart(ctx); err != nil || !pending {
+		t.Fatalf("restart mid-turn = pending %v, %v; want pending", pending, err)
+	}
+	fa.thread().Close()
+	waitFor(t, func() bool { _, ok := mgr.Peek(a.ID); return !ok })
+	_, starts := lastOpts(fa)
+
+	b, err := mgr.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o, n := lastOpts(fa); n != starts+1 || !o.Resume || !o.Restart {
+		t.Fatalf("%d starts, resume %v restart %v; want one start that restarts", n-starts, o.Resume, o.Restart)
+	}
+	if s := stateOf(t, b); s.RestartPending || len(restartNotices(s)) != 1 {
+		t.Fatalf("pending %v notices %d; want the restart done once", s.RestartPending, len(restartNotices(s)))
 	}
 }

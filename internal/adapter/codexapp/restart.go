@@ -13,13 +13,15 @@ import (
 // The old instructions stay where they were, earlier in the history; the
 // message says these replace them.
 
-// restartNote is the developer message a restart appends.
+// restartNote is the developer message a restart appends. It holds whatever
+// the instructions are now, changed or not: the adapter can't see the ones the
+// thread started on.
 func restartNote(instructions string) string {
-	const lead = "This thread was restarted and its developer instructions changed."
+	const lead = "This thread was restarted."
 	if instructions == "" {
-		return lead + " The developer instructions given earlier in this conversation no longer apply."
+		return lead + " It has no developer instructions now; any given earlier in this conversation no longer apply."
 	}
-	return lead + " These replace the developer instructions given earlier in this conversation:\n\n" + instructions
+	return lead + " These are its developer instructions from now on, replacing any given earlier in this conversation:\n\n" + instructions
 }
 
 // injectInstructions appends a restart's instructions to the thread's history.
