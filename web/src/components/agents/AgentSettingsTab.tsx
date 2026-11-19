@@ -99,7 +99,7 @@ export function AgentSettingsTab({
         />
       </Row>
       {efforts.length > 0 && (
-        <Row title="Effort" hint="Applies from the next message.">
+        <Row title="Effort" hint="Applies from the next message." wide>
           <Segmented
             label="Effort"
             radio
@@ -197,12 +197,15 @@ function Row({
   hint,
   after,
   last,
+  wide,
   children,
 }: {
   title: string;
   hint: string;
   after?: ReactNode;
   last?: boolean;
+  /** Sized to its control, for one with more to show than the usual column holds. */
+  wide?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -211,7 +214,7 @@ function Row({
         <b className="block text-[14px] font-medium">{title}</b>
         <span className="text-muted-foreground mt-0.5 block text-[12px] leading-relaxed">{hint}</span>
       </div>
-      <div className="w-full min-w-0 md:w-[260px] md:shrink-0">
+      <div className={cn("w-full min-w-0 md:shrink-0", wide ? "md:w-auto" : "md:w-[260px]")}>
         {children}
         {after}
       </div>
