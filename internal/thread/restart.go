@@ -109,9 +109,8 @@ func (a *Actor) restartRefusal() error {
 // restartBusy says the process is in the middle of something a restart would
 // cut short: a turn, a Stop, a change on its way to the harness, a rewind, a
 // prompt the harness was handed and has yet to read, or the continuation of
-// work a server restart interrupted, not yet sent. Shells
-// and background jobs do not count. They die with the process, and that is
-// accepted.
+// work a server restart interrupted, not yet sent. Shells and background jobs
+// do not count. They die with the process, and that is accepted.
 func (a *Actor) restartBusy() bool {
 	if a.turnActive != "" || a.state.Phase != "idle" || a.stopping != nil || a.controlPending > 0 || a.rewinding || len(a.sent) > 0 {
 		return true
@@ -160,11 +159,10 @@ func (a *Actor) restart(ctx context.Context) error {
 	}
 	err := a.startProcess(ctx, adapter.CreateOptions{
 		Cwd: a.Cwd, Model: a.state.Model, Mode: a.state.Mode, Effort: a.state.Effort, ServiceTier: a.state.ServiceTier,
-		Resume: true, Restart: restartRan(a.state),
+		Resume: true, Restart: hasRunATurn(a.state),
 	})
 	if err != nil {
-		a.logf("restart %s: %v", a.ID, err)
-		a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{Error: err.Error()}))
+		a.noteRestart(err)
 		return err
 	}
 	if fresh {
@@ -174,14 +172,25 @@ func (a *Actor) restart(ctx context.Context) error {
 		a.settleResumed()
 	}
 	a.holdRestored()
-	a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{}))
+	a.noteRestart(nil)
 	return nil
 }
 
-// restartRan says the conversation has run a turn, so its harness may have
+// noteRestart logs a restart's outcome as the timeline's note, which also ends
+// a restart that was waiting. A failure goes to the server log too.
+func (a *Actor) noteRestart(err error) {
+	if err == nil {
+		a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{}))
+		return
+	}
+	a.logf("restart %s: %v", a.ID, err)
+	a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{Error: err.Error()}))
+}
+
+// hasRunATurn says the conversation has run a turn, so its harness may have
 // pinned the setup it ran on. Not the session id: a harness can report one
 // as it starts, before it has written anything.
-func restartRan(s *projection.State) bool {
+func hasRunATurn(s *projection.State) bool {
 	return len(s.Turns) > 0
 }
 

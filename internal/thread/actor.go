@@ -1270,10 +1270,10 @@ func (a *Actor) handle(c command) (stop bool) {
 		restartDue := c.resume && a.state.RestartPending
 		if err := a.startProcess(ctx, adapter.CreateOptions{
 			Cwd: cwd, Model: model, Mode: mode, Effort: effort, ServiceTier: tier, Resume: c.resume,
-			Restart: restartDue && restartRan(a.state),
+			Restart: restartDue && hasRunATurn(a.state),
 		}); err != nil {
 			if restartDue {
-				a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{Error: err.Error()}))
+				a.noteRestart(err)
 			}
 			c.reply <- cmdResult{err: err}
 			return false
@@ -1286,7 +1286,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		a.holdRestored()
 		if restartDue {
-			a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{}))
+			a.noteRestart(nil)
 		}
 		c.reply <- cmdResult{}
 

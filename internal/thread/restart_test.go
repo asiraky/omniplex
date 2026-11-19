@@ -496,3 +496,19 @@ func TestPendingRestartIsCarriedOutByTheNextStart(t *testing.T) {
 		t.Fatalf("pending %v notices %d; want the restart done once", s.RestartPending, len(restartNotices(s)))
 	}
 }
+
+// A prompt the harness was handed but has yet to start a turn on keeps a
+// restart waiting: replacing the process then would lose it.
+func TestRestartWaitsForAPromptTheHarnessHasNotRead(t *testing.T) {
+	w := newProjectionWriter()
+	w.write(t, proto.Emit(proto.WorkspaceRequested, proto.WorkspaceRequestedPayload{ProjectID: "p"}))
+	w.write(t, proto.Emit(proto.WorkspaceReady, proto.WorkspaceReadyPayload{Cwd: "/w"}))
+	a := &Actor{state: w.state, sess: &fakeThread{}, sent: map[string]bool{}}
+	if a.restartBusy() {
+		t.Fatal("an idle thread with nothing handed over is busy")
+	}
+	a.sent["q1"] = true
+	if !a.restartBusy() {
+		t.Fatal("a prompt the harness has yet to read does not keep the restart waiting")
+	}
+}
