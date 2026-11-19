@@ -951,6 +951,20 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         }),
       };
 
+    case "thread.agent_started":
+      // An agent's thread's first line: the revisions it started on. One per
+      // thread, so the id is fixed. Mirrors internal/projection/state.go.
+      return {
+        ...s,
+        items: upsert(s, "agent:started", (it) => {
+          it.kind = "notice";
+          it.receivedAt ??= ev.timestamp;
+          it.noticeKind = "started";
+          it.promptRev = p.promptRev;
+          if (p.compactRev) it.compactRev = p.compactRev;
+        }),
+      };
+
     case "extension.notified":
       // Info is a toast and nothing more, raised by the live event rather
       // than here (this also runs on replay). A warning or an error is worth

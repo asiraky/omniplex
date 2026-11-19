@@ -294,6 +294,9 @@ func (m *Manager) startAgentThread(ctx context.Context, ag store.Agent, first st
 	if _, err := m.store.AddCompaction(ctx, store.Compaction{AgentID: ag.ID, ThreadID: a.ID, Trigger: "start", PromptRev: ag.PromptRev, CompactRev: compactRev, Summary: first}); err != nil {
 		m.logf("epoch 0 of %s: %v", a.ID, err)
 	}
+	// The thread's first line names its epoch 0. Only here, where the agent
+	// starts it: a resume or a restart is the same thread going on.
+	a.enqueueEmission(proto.Emit(proto.ThreadAgentStarted, proto.ThreadAgentStartedPayload{PromptRev: ag.PromptRev, CompactRev: compactRev}))
 	if err := m.store.SetAgentThread(ctx, ag.ID, a.ID); err != nil {
 		return start, err
 	}

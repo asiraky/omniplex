@@ -121,3 +121,40 @@ describe("NoticeCard compaction", () => {
     expect(screen.queryByRole("button", { name: "Inspect" })).toBeNull();
   });
 });
+
+describe("NoticeCard agent start", () => {
+  const started = (over: Partial<Item> = {}) =>
+    notice({ id: "agent:started", noticeKind: "started", promptRev: 3, compactRev: 2, ...over });
+  const agent = { id: "ag1", name: "backlog" } as Agent;
+  const withAgent = (item: Item, current?: Agent, threadId?: string) => {
+    const openAgent = vi.fn();
+    const { container } = render(
+      <AgentNavContext.Provider value={{ current, threadId, openAgent, openThread: () => {} }}>
+        <NoticeCard item={item} />
+      </AgentNavContext.Provider>,
+    );
+    return { openAgent, container };
+  };
+
+  it("names the agent and the revisions its thread started on", () => {
+    const { container } = withAgent(started(), agent);
+    expect(container.textContent).toBe("backlog started, prompt r3, compaction c2Inspect");
+  });
+
+  it("names no compaction revision for a harness that never reads one", () => {
+    const { container } = withAgent(started({ compactRev: undefined }), agent);
+    expect(container.textContent).toBe("backlog started, prompt r3Inspect");
+  });
+
+  it("opens epoch 0 of the thread the notice is in", () => {
+    const { openAgent } = withAgent(started(), { ...agent, threadId: "live" }, "old");
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    expect(openAgent).toHaveBeenCalledWith("ag1", "log", { thread: "old", epoch: 0 });
+  });
+
+  it("has nothing to inspect until the agent is known", () => {
+    const { container } = withAgent(started());
+    expect(container.textContent).toBe("Agent started, prompt r3, compaction c2");
+    expect(screen.queryByRole("button", { name: "Inspect" })).toBeNull();
+  });
+});

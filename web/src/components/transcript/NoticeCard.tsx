@@ -1,6 +1,7 @@
 import {
   ArchiveIcon,
   ArrowRightLeftIcon,
+  BotIcon,
   OctagonXIcon,
   RotateCwIcon,
   SparklesIcon,
@@ -13,9 +14,9 @@ import { cn } from "~/lib/utils";
 import type { Item } from "~/protocol";
 
 // A system event as one quiet centered line in the flow: a switch of model or
-// effort, of account, a restart, a compaction boundary, or something a harness
-// extension warned about. The reader mostly needs to know it happened, not to stop and
-// read it.
+// effort, of account, a restart, an agent thread's start, a compaction boundary,
+// or something a harness extension warned about. The reader mostly needs to
+// know it happened, not to stop and read it.
 export function NoticeCard({
   item,
   describeSettings,
@@ -58,7 +59,39 @@ export function NoticeCard({
     );
   }
   if (item.noticeKind === "restart") return <RestartNotice item={item} />;
+  if (item.noticeKind === "started") return <StartedNotice item={item} />;
   return <CompactionNotice item={item} />;
+}
+
+// The first line of an agent's thread: the brief it started on, which is its
+// epoch 0 in the agent's log. The name is the agent's as it is now.
+function StartedNotice({ item }: { item: Item }) {
+  const { current, threadId, openAgent } = useAgentNav();
+  return (
+    <div className="fade-in flex justify-center">
+      <div className="text-muted-foreground flex max-w-full flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 rounded-full border px-3 py-1 text-[12px]">
+        <BotIcon className="size-3.5 shrink-0" />
+        <span className="min-w-0 break-words">
+          {current?.name ?? "Agent"} started, prompt <span className="font-mono text-[11px]">r{item.promptRev}</span>
+          {item.compactRev !== undefined && (
+            <>
+              , compaction <span className="font-mono text-[11px]">c{item.compactRev}</span>
+            </>
+          )}
+        </span>
+        {current && (
+          <button
+            type="button"
+            // The thread goes along, as on a compaction: this one may be archived.
+            onClick={() => openAgent(current.id, "log", { ...(threadId ? { thread: threadId } : {}), epoch: 0 })}
+            className="text-primary hit-44 relative font-medium hover:underline"
+          >
+            Inspect
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // A compaction boundary. On an agent's thread it is a row in the agent's log,

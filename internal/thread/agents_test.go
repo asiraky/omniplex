@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/store"
 )
@@ -841,5 +842,70 @@ func TestDeletingAProjectTakesItsArchivedAgents(t *testing.T) {
 				t.Fatalf("agent %v, thread %v, files %v; want gone %v", agentErr, threadErr, dirErr, tc.want == nil)
 			}
 		})
+	}
+}
+
+func startedNotices(s *projection.State) []projection.Item {
+	var out []projection.Item
+	for _, it := range s.Items {
+		if it.Kind == projection.ItemNotice && it.NoticeKind == "started" {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// An agent's thread opens on a line naming the revisions it started on. A
+// restart and a resume after the server went down are the same thread going
+// on and add none; the agent's next thread opens on its own.
+func TestAnAgentThreadOpensOnTheRevisionsItStartedOn(t *testing.T) {
+	r := newAgentRig(t)
+	ctx := context.Background()
+	ag, a := r.create(t, NewAgent{Start: true, Workspace: "local"})
+	if n := startedNotices(stateOf(t, a)); len(n) != 1 || n[0].PromptRev != 1 || n[0].CompactRev != 1 {
+		t.Fatalf("started notices = %+v, want one naming r1 and c1", n)
+	}
+	if s := stateOf(t, a); s.Items[0].NoticeKind != "started" {
+		t.Fatalf("first item = %+v, want the started notice", s.Items[0])
+	}
+
+	if _, err := a.Restart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a.Dispose("test")
+	b, err := r.mgr.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countEvents(t, r.st, a.ID, proto.ThreadAgentStarted); n != 1 {
+		t.Fatalf("%d started events after a restart and a resume, want 1", n)
+	}
+	if n := startedNotices(stateOf(t, b)); len(n) != 1 {
+		t.Fatalf("started notices = %+v, want still one", n)
+	}
+
+	for _, kind := range []string{store.RevisionPrompt, store.RevisionCompact} {
+		if _, _, err := r.mgr.SaveAgentRevision(ctx, ag.ID, kind, "next "+kind, store.AuthorUser, "", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := r.fa.thread()
+	start, err := r.mgr.AgentNewThread(ctx, ag.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := r.running(t, start.ThreadID, before)
+	if n := startedNotices(stateOf(t, c)); len(n) != 1 || n[0].PromptRev != 2 || n[0].CompactRev != 2 {
+		t.Fatalf("new thread's started notices = %+v, want one naming r2 and c2", n)
+	}
+}
+
+// A harness that never reads compaction instructions started on none, and
+// its line names none.
+func TestAStartedNoticeNamesNoInstructionsAHarnessNeverReads(t *testing.T) {
+	r := newAgentRigReading(t, adapter.CompactInstructionsUse{Reads: adapter.CompactReadsNever})
+	_, a := r.create(t, NewAgent{Start: true, Workspace: "local"})
+	if n := startedNotices(stateOf(t, a)); len(n) != 1 || n[0].PromptRev != 1 || n[0].CompactRev != 0 {
+		t.Fatalf("started notices = %+v, want one naming r1 and no instructions", n)
 	}
 }

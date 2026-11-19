@@ -31,6 +31,11 @@ const (
 	// change it is a line in the timeline; it also ends a requested restart,
 	// whether it worked or not.
 	ThreadRestarted = "thread.restarted"
+	// ThreadAgentStarted is the first line of an agent's thread: the prompt
+	// and compaction instructions revisions it started on, its epoch 0. It
+	// is written once, when the agent starts the thread; a resume or a
+	// restart of the thread writes none.
+	ThreadAgentStarted = "thread.agent_started"
 	// ThreadRewound cuts the thread back to just before a turn: that turn and
 	// everything after it leave the transcript, and the harness has already
 	// forgotten them by the time this is written.
@@ -399,6 +404,13 @@ type ThreadRestartedPayload struct {
 	// moved it onto; 0 when it kept the same prompt, on any other thread, or
 	// on a failed restart.
 	PromptRev int `json:"promptRev,omitempty"`
+}
+
+// ThreadAgentStartedPayload is the revisions an agent's thread started on.
+// CompactRev is 0 for a harness that never reads compaction instructions.
+type ThreadAgentStartedPayload struct {
+	PromptRev  int `json:"promptRev"`
+	CompactRev int `json:"compactRev,omitempty"`
 }
 
 type ThreadClosedPayload struct {

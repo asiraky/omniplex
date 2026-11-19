@@ -1291,6 +1291,13 @@ describe("thread restart", () => {
     expect(s.items[0].promptRev).toBe(8);
   });
 
+  it("opens an agent's thread on the revisions it started on", () => {
+    const s = applyEvent(emptyState("s1"), ev(2, "thread.agent_started", { promptRev: 3, compactRev: 2 }, 5000));
+    expect(s.items).toEqual([
+      { id: "agent:started", kind: "notice", noticeKind: "started", promptRev: 3, compactRev: 2, receivedAt: 5000 },
+    ]);
+  });
+
   it("keeps a failed restart's reason on its note", () => {
     const s = applyEvent(emptyState("s1"), ev(3, "thread.restarted", { error: "no prompt snapshot" }, 5000));
     expect(s.restartPending).toBe(false);

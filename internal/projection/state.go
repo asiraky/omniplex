@@ -214,7 +214,7 @@ type Item struct {
 
 	// notice
 	// A restart notice's Text is why it failed, and empty when it worked.
-	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account | model | notify | restart
+	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account | model | notify | restart | started
 	Model      string `json:"model,omitempty"`
 	Effort     string `json:"effort,omitempty"`
 	// From is what the turn before ran on. The log names models by whatever
@@ -229,8 +229,11 @@ type Item struct {
 	// thread only: what the notice's Inspect link opens.
 	Epoch int `json:"epoch,omitempty"`
 	// PromptRev is a restart notice's agent prompt revision, on an agent's
-	// thread only: the revision replies below it ran on.
-	PromptRev int `json:"promptRev,omitempty"`
+	// thread only: the revision replies below it ran on. A started notice's
+	// is the one the thread started on, with CompactRev its compaction
+	// instructions'.
+	PromptRev  int `json:"promptRev,omitempty"`
+	CompactRev int `json:"compactRev,omitempty"`
 	// Level is a notify notice's severity, warning or error; Text is the
 	// extension's message.
 	Level string `json:"level,omitempty"`
@@ -1404,6 +1407,21 @@ func (s *State) Apply(ev proto.Event) {
 			it.NoticeKind = "restart"
 			it.Text = p.Error
 			it.PromptRev = p.PromptRev
+		})
+
+	case proto.ThreadAgentStarted:
+		var p proto.ThreadAgentStartedPayload
+		decode(ev.Payload, &p)
+		// The agent's thread's first line. A thread has one, so the id is
+		// fixed rather than the sequence's.
+		s.upsert("agent:started", func(it *Item) {
+			it.Kind = ItemNotice
+			if it.ReceivedAt == 0 {
+				it.ReceivedAt = ev.Timestamp
+			}
+			it.NoticeKind = "started"
+			it.PromptRev = p.PromptRev
+			it.CompactRev = p.CompactRev
 		})
 
 	case proto.PermissionRequested:

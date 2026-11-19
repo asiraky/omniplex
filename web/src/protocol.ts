@@ -98,7 +98,7 @@ export interface Item {
       /api/threads/{id}/items/{itemId}/content. */
   truncated?: boolean;
   // notice
-  noticeKind?: "compaction" | "account" | "model" | "notify" | "restart";
+  noticeKind?: "compaction" | "account" | "model" | "notify" | "restart" | "started";
   /** For a model notice: the model and effort the thread switched to. */
   model?: string;
   effort?: string;
@@ -117,8 +117,12 @@ export interface Item {
   epoch?: number;
   /** For a restart notice on an agent's thread: the prompt revision the
       restart moved it onto, for the View change link. Absent when the
-      restart kept the same prompt. */
+      restart kept the same prompt. For a started notice: the revision the
+      agent's thread started on. */
   promptRev?: number;
+  /** For a started notice: the compaction instructions revision the thread
+      started on; absent for a harness that never reads them. */
+  compactRev?: number;
   // artefact: title is its name
   artefactId?: string;
   mediaType?: string;
