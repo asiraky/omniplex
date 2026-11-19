@@ -425,7 +425,9 @@ function Field({
   children: ReactNode;
 }) {
   return (
-    <div className="mb-4">
+    // relative: a hidden label is absolutely placed, and with no positioned
+    // ancestor it lands against the page and stretches the document.
+    <div className="relative mb-4">
       <div className={cn("mb-1.5 flex min-h-6 items-center gap-1", hideLabel && "sr-only")}>
         {htmlFor ? (
           <label htmlFor={htmlFor} className="flex-1 text-[14px] font-medium">

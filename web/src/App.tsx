@@ -169,7 +169,6 @@ export function App() {
   const deletion = useThreadDeletion({ wire, activeId, select });
 
   const pr = useActivePR(wire, activeId, meta);
-  useThreadTitle(activeId, threadStore, meta);
 
   const accentOf = useCallback(
     (id: string) => harnesses.find((h) => h.id === id)?.accent,
@@ -200,10 +199,16 @@ export function App() {
   const appendToChat = useAppendToChat({ activeId, store });
   const turnRunning = useThread(threadStore, isInTurn);
 
+  const { page, openPage, closePage } = screens;
+  const pageAgent = page?.kind === "agent" ? agents.find((a) => a.id === page.agentId) : undefined;
+  useThreadTitle(activeId, threadStore, meta, {
+    agentName: current?.name,
+    pageTitle: page ? (page.kind === "agent" ? pageAgent?.name || "Agent" : "New agent") : undefined,
+  });
+
   // Leaving an agent page: for a thread, else the draft it was opened over,
   // else nothing (on a phone, the sidebar). closePage makes it a Back when
   // that is where the page was opened from.
-  const { page, openPage, closePage } = screens;
   const { setSidebarOpen, startNew: startFresh } = nav;
   const creatingDraft = !!nav.creating;
   const leavePage = useCallback(
@@ -550,7 +555,6 @@ export function App() {
     );
   }
 
-  const pageAgent = page?.kind === "agent" ? agents.find((a) => a.id === page.agentId) : undefined;
   // The agent the sidebar marks: the page's, else the attached thread's.
   const activeAgentId = page ? (page.kind === "agent" ? page.agentId : null) : (current?.id ?? null);
   const dialogAgent = agentDialog && (agents.find((a) => a.id === agentDialog.agent.id) ?? agentDialog.agent);

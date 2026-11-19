@@ -191,6 +191,9 @@ func scanAgent(sc interface{ Scan(...any) error }) (Agent, error) {
 	return a, err
 }
 
+// initialReason is r1's and c1's reason: what the agent was created with.
+const initialReason = "Initial brief"
+
 // CreateAgent stores a new agent with its first prompt and compaction
 // instructions, r1 and c1, both the user's. The id is made here when a.ID is
 // empty.
@@ -224,8 +227,8 @@ func (s *Store) CreateAgent(ctx context.Context, a Agent, prompt, compact string
 		}
 		for _, r := range []struct{ kind, body string }{{RevisionPrompt, prompt}, {RevisionCompact, compact}} {
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO agent_revisions (agent_id, kind, n, body, author, reason, created_at) VALUES (?,?,1,?,?,'',?)`,
-				a.ID, r.kind, r.body, AuthorUser, now); err != nil {
+				`INSERT INTO agent_revisions (agent_id, kind, n, body, author, reason, created_at) VALUES (?,?,1,?,?,?,?)`,
+				a.ID, r.kind, r.body, AuthorUser, initialReason, now); err != nil {
 				return err
 			}
 		}
