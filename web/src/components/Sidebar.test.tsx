@@ -221,12 +221,12 @@ describe("Sidebar", () => {
     expect(props.onOpenChange).not.toHaveBeenCalled();
   });
 
-  describe("terminal row", () => {
-    const terminalRow = () => screen.getByRole("button", { name: /^Terminal/ });
+  describe("terminal button", () => {
+    const terminalButton = () => screen.getByRole("button", { name: "Terminal" });
 
     it("opens the box terminal and leaves a docked sidebar open", () => {
       const props = renderSidebar();
-      fireEvent.click(terminalRow());
+      fireEvent.click(terminalButton());
       expect(props.onOpenTerminal).toHaveBeenCalledOnce();
       expect(props.onOpenChange).not.toHaveBeenCalled();
     });
@@ -234,20 +234,20 @@ describe("Sidebar", () => {
     it("puts the phone's sheet away as it opens the terminal", () => {
       viewport("phone");
       const props = renderSidebar();
-      fireEvent.click(terminalRow());
+      fireEvent.click(terminalButton());
       expect(props.onOpenTerminal).toHaveBeenCalledOnce();
       expect(props.onOpenChange).toHaveBeenCalledWith(false);
     });
 
-    it("is the active row while the terminal is open, and the thread behind it is not", () => {
+    it("is current while the terminal is open, and the thread behind it is not", () => {
       renderSidebar({ activeId: "a", terminalOpen: true });
-      expect(terminalRow().getAttribute("aria-current")).toBe("page");
+      expect(terminalButton().getAttribute("aria-current")).toBe("page");
       expect(document.querySelector('[aria-current="true"]')).toBeNull();
     });
 
     it("gives the active row back to the thread once the terminal closes", () => {
       renderSidebar({ activeId: "a", terminalOpen: false });
-      expect(terminalRow().getAttribute("aria-current")).toBeNull();
+      expect(terminalButton().getAttribute("aria-current")).toBeNull();
       expect(screen.getByRole("button", { name: /^Thread a/ }).getAttribute("aria-current")).toBe("true");
     });
 
@@ -257,7 +257,7 @@ describe("Sidebar", () => {
       try {
         const props = renderSidebar({ projects });
         expect(screen.getByText(/hidden by the filter/)).toBeTruthy();
-        fireEvent.click(terminalRow());
+        fireEvent.click(terminalButton());
         expect(props.onOpenTerminal).toHaveBeenCalledOnce();
       } finally {
         localStorage.clear();

@@ -4,7 +4,6 @@ import {
   FolderPlusIcon,
   HatGlassesIcon,
   SearchIcon,
-  ServerIcon,
   SettingsIcon,
   PanelLeftIcon,
   SparklesIcon,
@@ -372,50 +371,6 @@ function ThreadList({
 }
 
 /**
- * The way to the shell on the box. Above the list's scroller and outside the
- * filter, so it is always in the same place, one tap away; the full width of
- * the sheet on a phone. It says where the shell runs and nothing else: the
- * row cannot know the shell's directory or whether it is busy without a
- * connection of its own.
- */
-function TerminalRow({
-  active,
-  onOpen,
-}: {
-  active: boolean;
-  onOpen: () => void;
-}) {
-  const chord = useShortcut("toggleTerminal");
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      aria-current={active ? "page" : undefined}
-      className={cn(
-        "focus-visible:ring-ring mx-3 mt-1 block cursor-pointer rounded-lg border px-3 py-2.5 text-left outline-none focus-visible:ring-2 md:mx-2 md:px-2.5 md:py-2",
-        active
-          ? "bg-sidebar-accent text-sidebar-accent-foreground border-transparent"
-          : "bg-background/40 hover:bg-sidebar-accent/60",
-      )}
-    >
-      <span className="flex items-center gap-2">
-        <SquareTerminalIcon aria-hidden className="size-3.5 shrink-0" />
-        <span className="text-[13px] font-medium">Terminal</span>
-        {chord && (
-          <span aria-hidden className="ml-auto">
-            <KbdChord shortcut={chord.shortcut} platform={chord.platform} />
-          </span>
-        )}
-      </span>
-      <span className="text-muted-foreground mt-1 flex items-center gap-1.5 font-mono text-[11px] md:text-[10px]">
-        <ServerIcon aria-hidden className="size-3 shrink-0" />
-        box
-      </span>
-    </button>
-  );
-}
-
-/**
  * The way into the palette, which is also how a phone searches threads. A
  * search-box shape that takes the row's spare width on desktop, with ⌘K in
  * its corner where hints are shown; a thumb-sized icon on a phone, where the
@@ -566,8 +521,6 @@ function SidebarPanel({
         </div>
       </div>
 
-      <TerminalRow active={props.terminalOpen} onOpen={openTerminal} />
-
       <nav
         aria-label="Threads"
         // The scroller a drag nudges along when the row nears an edge.
@@ -597,10 +550,12 @@ function SidebarPanel({
 
       <Separator />
 
-      {/* From md up the first three hug their 24px glyphs. A touch screen
-          that wide (an iPad) gets 44px tall targets back as hit area, 40px
-          wide: the 8px gaps are all there is between them. */}
-      <div className="flex items-center gap-2 px-3 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
+      {/* The gaps are tight so the count keeps a line to itself. On a phone
+          the 44px targets abut: their padding is the spacing. From md up the
+          icons hug their 24px glyphs, 4px apart; a touch screen that wide (an
+          iPad) gets 44px tall targets back as hit area, no wider than the
+          pitch so neighbours' targets do not overlap. */}
+      <div className="flex items-center px-3 md:gap-1 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
         {/* Filtered, the count says so: with grouping gone there is nothing
             else on screen to admit that threads are missing. */}
         <span className="text-muted-foreground flex-1 text-[11px]">
@@ -608,6 +563,22 @@ function SidebarPanel({
             ? `${shownCount} of ${props.threads.length} threads`
             : `${props.threads.length} thread${props.threads.length === 1 ? "" : "s"}`}
         </span>
+        {/* The shell on the box: always on screen, whatever the filter
+            hides. */}
+        <IconButton
+          label="Terminal"
+          shortcut="toggleTerminal"
+          onClick={openTerminal}
+          aria-current={props.terminalOpen ? "page" : undefined}
+          className={cn(
+            "hit-44 relative [--hit-w:28px] md:size-6",
+            props.terminalOpen
+              ? "bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent dark:hover:bg-sidebar-accent"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          <SquareTerminalIcon />
+        </IconButton>
         {/* The account-level Usage page: one tap from wherever the list
             already is, and reachable with nothing open. */}
         <Tooltip>
@@ -615,7 +586,7 @@ function SidebarPanel({
             <IconButton
               label="Usage and limits"
               onClick={props.onShowUsage}
-              className="text-muted-foreground hover:text-foreground hit-44 relative [--hit-w:40px] md:size-6"
+              className="text-muted-foreground hover:text-foreground hit-44 relative [--hit-w:28px] md:size-6"
             >
               <ActivityIcon />
             </IconButton>
@@ -628,7 +599,7 @@ function SidebarPanel({
         <IconButton
           label="Skills, MCP and sign-ins"
           onClick={props.onShowSkills}
-          className="text-muted-foreground hover:text-foreground hit-44 relative [--hit-w:40px] md:size-6"
+          className="text-muted-foreground hover:text-foreground hit-44 relative [--hit-w:28px] md:size-6"
         >
           <BlocksIcon />
         </IconButton>
@@ -641,14 +612,14 @@ function SidebarPanel({
               // The dot stays a dot; the target around it is thumb-sized on a
               // phone and shrinks to the dot again from md up, where touch
               // keeps a thumb's target as hit area.
-              className="focus-visible:ring-ring hit-44 relative flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-full [--hit-w:40px] outline-none focus-visible:ring-2 md:size-6"
+              className="focus-visible:ring-ring hit-44 relative flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-full [--hit-w:28px] outline-none focus-visible:ring-2 md:size-6"
             >
               <StatusDot status={props.status} />
             </button>
           </TooltipTrigger>
           <TooltipContent>How to reach this server</TooltipContent>
         </Tooltip>
-        <IconButton label="Settings" shortcut="settings" onClick={props.onShowSettings} className="hit-44 relative">
+        <IconButton label="Settings" shortcut="settings" onClick={props.onShowSettings} className="hit-44 relative [--hit-w:32px]">
           <SettingsIcon />
         </IconButton>
         <ThemeToggle />
