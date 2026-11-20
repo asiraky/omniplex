@@ -30,6 +30,7 @@ export const AgentRow = memo(function AgentRow({
   agent,
   thread,
   active,
+  childNeedsYou = false,
   accentOf,
   onOpen,
   onOpenAgent,
@@ -38,7 +39,10 @@ export const AgentRow = memo(function AgentRow({
   agent: Agent;
   /** The agent's live thread, as the list has it; absent with none. */
   thread: ThreadMeta | undefined;
+  /** The agent is on screen: its page, its thread, or what that thread delegated. */
   active: boolean;
+  /** Something the agent's thread delegated is waiting on the user. */
+  childNeedsYou?: boolean;
   accentOf: (harness: string) => string | undefined;
   onOpen: (agent: Agent) => void;
   onOpenAgent: (agentId: string, tab?: AgentTab) => void;
@@ -46,7 +50,7 @@ export const AgentRow = memo(function AgentRow({
 }) {
   const now = useNow();
   const live = !!agent.threadId;
-  const pending = needsYou(thread);
+  const pending = needsYou(thread) || childNeedsYou;
   const busy = !!thread && rowStatus(thread) === "busy";
   // Quiet unless it wants something or is working, like a read thread's row.
   const recede = !active && !pending && !busy;

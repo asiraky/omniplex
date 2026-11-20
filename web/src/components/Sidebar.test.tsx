@@ -1192,6 +1192,22 @@ describe("Sidebar: agents", () => {
     expect(screen.getByRole("button", { name: "Agent backlog, needs you" })).toBeTruthy();
   });
 
+  it("stands for what the agent's thread delegated, which has no row", () => {
+    renderSidebar({
+      threads: [
+        thread("a"),
+        thread("t-live", { agentId: "backlog" }),
+        thread("kid", { parentId: "t-live", attention: "needs_answer" }),
+      ],
+      projects,
+      agents: [live],
+      activeId: "kid",
+    });
+    expect(screen.queryByRole("button", { name: /^Thread kid/ })).toBeNull();
+    const row = screen.getByRole("button", { name: "Agent backlog, needs you" });
+    expect(row.getAttribute("aria-current")).toBe("true");
+  });
+
   it("makes a new agent in the project whose + was pressed", () => {
     const props = renderSidebar({ threads, projects, agents: [live] });
     fireEvent.click(screen.getByRole("button", { name: "New agent in other" }));

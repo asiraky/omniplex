@@ -393,7 +393,9 @@ function ThreadList({
         key={a.id}
         agent={a}
         thread={a.threadId ? tree.byId.get(a.threadId) : undefined}
-        active={a.id === activeAgentId}
+        // Delegated threads have no rows, so the agent's stands for them.
+        active={a.id === activeAgentId || (!!a.threadId && marks.childActive.has(a.threadId))}
+        childNeedsYou={!!a.threadId && marks.childNeedsYou.has(a.threadId)}
         accentOf={accentOf}
         onOpen={onOpenAgentRow}
         onOpenAgent={onOpenAgent}
