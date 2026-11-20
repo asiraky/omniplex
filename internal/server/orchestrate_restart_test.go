@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
@@ -350,5 +351,46 @@ func TestARestartLeavesAWakeThatRanAlone(t *testing.T) {
 	r.h.mu.Unlock()
 	if started != 0 || len(r.wakes(parent)) != 0 {
 		t.Fatalf("parent's harness started %d times and woken %q after the restart, want neither", started, r.wakes(parent))
+	}
+}
+
+// A wait that fails leaves nothing owed for its threads that were not owed
+// before it: after a restart, one of them finishing wakes nobody.
+func TestAFailedWaitOwesNothingAfterARestart(t *testing.T) {
+	r := newRestartRig(t)
+	parent, _ := r.parent()
+	ctx := context.Background()
+	done := r.delegate(parent, "quick")
+	eventually(t, "the parent is woken with its result", func() bool { return len(r.wakes(parent)) == 1 })
+	a, err := r.mgr.Get(ctx, done)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Prompt(ctx, "HOLD again", nil); err != nil {
+		t.Fatal(err)
+	}
+	r.running("HOLD again")
+	gone := r.delegate(parent, "HOLD gone")
+	r.running("HOLD gone")
+
+	res := r.start(ctx, parent, "thread_wait", map[string]any{"ids": []string{done, gone}, "timeout_seconds": 600})
+	eventually(t, "the wait holds the thread it does not owe", func() bool {
+		owed, err := r.st.OwedResults(ctx)
+		return err == nil && slices.ContainsFunc(owed, func(o store.OwedResult) bool { return o.Child == done })
+	})
+	if err := r.mgr.Delete(ctx, gone, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-res; got.code == http.StatusOK {
+		t.Fatalf("thread_wait on a deleted thread = %q, want an error", got.text)
+	}
+
+	r.restart()
+	eventually(t, "the thread's cut turn is continued", func() bool {
+		return slices.ContainsFunc(r.h.promptsOf(done), func(p string) bool { return strings.HasPrefix(p, "[omniplex]") })
+	})
+	time.Sleep(3 * wakeWindow)
+	if w := r.wakes(parent); len(w) != 0 || r.srv.orch.busy(parent) {
+		t.Fatalf("parent woken with %q after a failed wait and a restart, want nothing owed", w)
 	}
 }
