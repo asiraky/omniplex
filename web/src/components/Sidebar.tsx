@@ -550,12 +550,12 @@ function SidebarPanel({
 
       <Separator />
 
-      {/* Six controls leave the count little room, so the gaps are tight.
-          On a phone the 44px targets abut: their padding is the spacing.
-          From md up the first four hug their 24px glyphs, 4px apart; a touch
-          screen that wide (an iPad) gets 44px tall targets back as hit area,
-          28px wide so neighbours' targets do not overlap. */}
-      <div className="flex items-center gap-0 px-3 md:gap-1 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
+      {/* The gaps are tight so the count keeps a line to itself. On a phone
+          the 44px targets abut: their padding is the spacing. From md up the
+          icons hug their 24px glyphs, 4px apart; a touch screen that wide (an
+          iPad) gets 44px tall targets back as hit area, no wider than the
+          pitch so neighbours' targets do not overlap. */}
+      <div className="flex items-center px-3 md:gap-1 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
         {/* Filtered, the count says so: with grouping gone there is nothing
             else on screen to admit that threads are missing. */}
         <span className="text-muted-foreground flex-1 text-[11px]">
@@ -563,8 +563,7 @@ function SidebarPanel({
             ? `${shownCount} of ${props.threads.length} threads`
             : `${props.threads.length} thread${props.threads.length === 1 ? "" : "s"}`}
         </span>
-        {/* The shell on the box: here rather than above the list, where it
-            took a whole row, and still always on screen whatever the filter
+        {/* The shell on the box: always on screen, whatever the filter
             hides. */}
         <IconButton
           label="Terminal"
@@ -574,7 +573,7 @@ function SidebarPanel({
           className={cn(
             "hit-44 relative [--hit-w:28px] md:size-6",
             props.terminalOpen
-              ? "bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent"
+              ? "bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent dark:hover:bg-sidebar-accent"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
@@ -620,7 +619,7 @@ function SidebarPanel({
           </TooltipTrigger>
           <TooltipContent>How to reach this server</TooltipContent>
         </Tooltip>
-        <IconButton label="Settings" shortcut="settings" onClick={props.onShowSettings} className="hit-44 relative">
+        <IconButton label="Settings" shortcut="settings" onClick={props.onShowSettings} className="hit-44 relative [--hit-w:32px]">
           <SettingsIcon />
         </IconButton>
         <ThemeToggle />
