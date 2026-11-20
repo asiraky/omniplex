@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 
+import type { Command } from "~/lib/agentApi";
 import { toast } from "~/lib/toast";
 import type { ThreadMeta, ThreadState, Turn } from "~/protocol";
 
@@ -168,6 +169,15 @@ export function useThreadHarness(
       toast.error("Could not cancel the restart", { description: e.message });
     });
   }, [activeId, clientRef]);
+  // Any other command, for the header's agent actions, which act on the
+  // agent rather than this thread.
+  const command = useCallback<Command>(
+    (name, args) => {
+      const client = clientRef.current;
+      return client ? client.command(name, args) : Promise.reject(new Error("Not connected"));
+    },
+    [clientRef],
+  );
   // Not offered where the server would refuse it: a closed thread has no
   // process to restart, and a private chat cannot be restarted.
   const canRestart = !!activeId && threadClosed === false && !meta?.private;
@@ -188,6 +198,7 @@ export function useThreadHarness(
     restarting: restartingId !== null && restartingId === activeId,
     restartThread,
     cancelRestart,
+    command,
   };
 }
 

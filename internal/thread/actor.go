@@ -55,6 +55,13 @@ type Actor struct {
 	// sent meanwhile waits in the queue, which is what lets the first message
 	// create the thread: it is there for the agent the moment it starts.
 	preparing bool
+	// startFilled is set once the agent's epoch 0 has been offered the
+	// thread's first message (firstMessageLogged). Loop only.
+	startFilled bool
+	// promptMovedTo is the agent prompt revision the running process of an
+	// agent's thread moved it onto, which its restart notice names; 0 when
+	// the process started on the same one as the last, or on none. Loop only.
+	promptMovedTo int
 	// restored is true for an actor rebuilt from the log until its harness
 	// first starts. Whatever is queued then was written before the server
 	// went down, so that first start holds it; see cmdActivate. One rebuilt
@@ -143,6 +150,9 @@ type Actor struct {
 	// onPhase fires when the thread moves between idle and turn, so a
 	// thread list rendered elsewhere can follow along.
 	onPhase func()
+	// onAgents fires when this thread changes its agent: a compaction, a
+	// setting written through, the prompt revision a process started on.
+	onAgents func()
 
 	// recovery is set by Resume when the log shows a turn the server died in
 	// the middle of, or background work the agent was waiting on. Recover
@@ -216,6 +226,7 @@ type command struct {
 	emission     *proto.Emission
 	ready        *proto.WorkspaceReadyPayload // activate: the provisioned workspace, recorded once the harness is up
 	hard         bool                         // close: append thread.closed, rather than just disposing
+	liveOnly     bool                         // restart: refuse with ErrNotReady rather than start a process
 	resume       bool                         // activate: resume an existing harness conversation
 	reply        chan cmdResult
 	model        string
@@ -227,6 +238,9 @@ type command struct {
 	delivery     string              // prompt: proto.DeliverySteer, proto.DeliveryQueue, or the default
 	keepImages   bool                // edit_queued_prompt: leave the entry's attachments as they are
 	restoreFiles bool                // rewind: put the checkout back too
+	// agentSettings are the settings SaveAgent hands the agent's live
+	// thread (adoptAgentSettings).
+	agentSettings *agentSettings
 	// from is the harness process a harness event or exit came from. A
 	// process replaced by an account switch, or killed by Stop, still drains
 	// its last events and its exit; those are about a process this actor no
@@ -313,6 +327,7 @@ const (
 	cmdRewind         = "rewind"
 	cmdRestart        = "restart"
 	cmdCancelRestart  = "cancel_restart"
+	cmdAgentSettings  = "agent_settings"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -367,6 +382,9 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 	}
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
+	if x.err != nil {
+		return nil, x.err
+	}
 	sess, err := createSession(ctx, ad, a.newHost(), x.options(adapter.CreateOptions{
 		ThreadID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, ServiceTier: meta.ServiceTier, Env: env,
 	}))
@@ -436,6 +454,9 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	staleStatuses := clearedStatuses(state)
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
+	if x.err != nil {
+		return nil, x.err
+	}
 	sess, err := createSession(ctx, ad, a.newHost(), x.options(adapter.CreateOptions{
 		ThreadID:         meta.ID,
 		Cwd:              meta.Cwd,
@@ -1270,8 +1291,9 @@ func (a *Actor) handle(c command) (stop bool) {
 			cwd, model, mode, effort, tier = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort, a.state.ServiceTier
 		}
 		// A restart still waiting when its process went away, with the
-		// server or on its own, is carried out by this start.
-		restartDue := c.resume && a.state.RestartPending
+		// server or on its own, is carried out by this start, as is one an
+		// agent's edit needed while no process was running to restart.
+		restartDue := c.resume && (a.state.RestartPending || hasRunATurn(a.state) && a.agentRevisionsBehind(ctx))
 		if err := a.startProcess(ctx, adapter.CreateOptions{
 			Cwd: cwd, Model: model, Mode: mode, Effort: effort, ServiceTier: tier, Resume: c.resume,
 			Restart: restartDue && hasRunATurn(a.state),
@@ -1373,7 +1395,14 @@ func (a *Actor) handle(c command) (stop bool) {
 	case cmdSwitchAccount:
 		c.reply <- cmdResult{err: a.switchAccount(c.account)}
 
+	case cmdAgentSettings:
+		a.takeAgentSettings(*c.agentSettings, c.reply)
+
 	case cmdRestart:
+		if c.liveOnly && a.sess == nil {
+			c.reply <- cmdResult{err: ErrNotReady}
+			return false
+		}
 		pending, err := a.requestRestart(ctx)
 		c.reply <- cmdResult{value: pending, err: err}
 
@@ -1816,9 +1845,16 @@ func (a *Actor) startProcess(ctx context.Context, o adapter.CreateOptions) error
 	}
 	o.ThreadID, o.Env, o.HarnessSessionID = a.ID, a.env, a.state.HarnessSessionID
 	x := harnessExtras(ctx, a.store, a.adapter, meta, cwd, a.logf)
+	if x.err != nil {
+		return x.err
+	}
 	sess, err := createSession(ctx, a.adapter, a.newHost(), x.options(o))
 	if err != nil {
 		return err
+	}
+	a.promptMovedTo = 0
+	if x.agent != nil {
+		a.startedOn(ctx, x.agent)
 	}
 	a.Cwd, a.sess, a.preparing = cwd, sess, false
 	a.pump(sess)
@@ -2017,6 +2053,7 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 			title = proto.AttachmentTitle(images)
 		}
 		_ = a.store.SetTitle(ctx, a.ID, title)
+		a.firstMessageLogged(ctx, prompt, images)
 	}
 
 	// A turn a human asked for — a prompt, or a continue — is the agent's
@@ -2504,15 +2541,35 @@ func (a *Actor) write(em proto.Emission) error {
 		a.holdTurnStatus(em)
 		return nil
 	}
+	// What a harness says about a compaction belongs in its agent's log,
+	// not the thread's: it can run to the whole summary and every file
+	// re-read, which no transcript reader wants on the wire.
+	if em.Type == proto.CompactionDetail {
+		a.fileCompactionDetail(ctx, em)
+		return nil
+	}
+	var compactionID int64
+	if em.Type == proto.ContextCompacted {
+		em, compactionID = a.recordCompaction(ctx, em)
+	}
 
 	ev, err := a.store.Append(ctx, a.ID, em)
 	if err != nil {
 		a.logf("append %s on %s: %v", em.Type, a.ID, err)
 		return err
 	}
+	if compactionID != 0 {
+		a.compactionLogged(ctx, compactionID, ev.Seq)
+	}
 
 	prevPhase := a.wantedPhase()
 	a.state.Apply(ev)
+	switch em.Type {
+	case proto.ThreadRestartRequested:
+		a.restartLogged(ctx, true)
+	case proto.ThreadRestartCancelled, proto.ThreadRestarted, proto.ThreadClosed:
+		a.restartLogged(ctx, false)
+	}
 
 	a.mu.Lock()
 	a.head = ev.Seq

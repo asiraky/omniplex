@@ -1,9 +1,13 @@
 import {
+  ArchiveIcon,
+  BotIcon,
   CheckIcon,
+  ChevronRightIcon,
   CopyIcon,
   CornerLeftUpIcon,
   EllipsisIcon,
   HatGlassesIcon,
+  HistoryIcon,
   LinkIcon,
   PanelLeftIcon,
   PanelRightIcon,
@@ -13,21 +17,26 @@ import {
   PlugIcon,
   RotateCwIcon,
   SearchIcon,
+  SettingsIcon,
+  SquarePenIcon,
+  TerminalIcon,
   XIcon,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { Suspense, useRef, useState } from "react";
 
 import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import type { PanelControls } from "~/app/usePanel";
 import type { ThreadHarness } from "~/app/useThreadHarness";
 import type { TranscriptCopy } from "~/app/useTranscriptCopy";
+import { useAgentNav } from "~/lib/agentNav";
 import { liveJobCount } from "~/lib/jobs";
 import type { CommandId } from "~/lib/keybindings";
 import { threadTitle } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
-import type { ThreadMeta, ThreadState } from "~/protocol";
+import type { Agent, ThreadMeta, ThreadState } from "~/protocol";
 import { useShortcutLabel } from "~/useShortcuts";
 
+import { NewAgentThreadDialog, RestartAgentDialog } from "./agents/lazyDialogs";
 import { ExtensionStatuses } from "./ExtensionStatuses";
 import { IconButton } from "./IconButton";
 import { TitleEditor } from "./TitleEditor";
@@ -36,6 +45,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuShortcut,
   DropdownMenuTrigger,
@@ -61,6 +71,16 @@ type Actions = {
   /** Opens the transcript's find bar, which takes focus. */
   onFind: () => void;
   harness: ThreadHarness;
+  /** The agent this thread runs for: its page and New thread replace pin. */
+  agent: Agent | undefined;
+  /**
+   * The thread is one the agent archived, not its live one: it still reads as
+   * the agent's, but restarting it or moving it on would act on another thread.
+   */
+  archived: boolean;
+  onNewAgentThread: () => void;
+  /** Asks before restarting an agent's thread, which kills its shells. */
+  onRestartAgent: () => void;
 };
 
 /** Copying a thread's /thread/<id> link, and whether one was just copied. */
@@ -112,7 +132,29 @@ export function ThreadHeader({
   // The attached thread, as far as the bar shows it: a frame that changes
   // neither field leaves the header alone.
   const thread = useThread(useThreadStore(), headerFields, shallow);
-  const actions = thread && { activeId, meta, onSetPinned, copy, link, panel, onShowMcp, onFind, harness };
+  // An agent's thread belongs to the agent: its name, revisions and New
+  // thread stand where a thread's own title, pin and rename would.
+  const { current: agent, openAgent } = useAgentNav();
+  const [newThreadOpen, setNewThreadOpen] = useState(false);
+  const onNewAgentThread = () => setNewThreadOpen(true);
+  const [restartOpen, setRestartOpen] = useState(false);
+  const onRestartAgent = () => setRestartOpen(true);
+  const archived = !!agent && agent.threadId !== activeId;
+  const actions = thread && {
+    activeId,
+    meta,
+    onSetPinned,
+    copy,
+    link,
+    panel,
+    onShowMcp,
+    onFind,
+    harness,
+    agent,
+    archived,
+    onNewAgentThread,
+    onRestartAgent,
+  };
   return (
     <header className="px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
       <div className="flex items-center gap-2">
@@ -129,15 +171,19 @@ export function ThreadHeader({
 
         {actions ? (
           <>
-            <HeaderTitle
-              threadId={activeId}
-              title={threadTitle(meta, thread.title)}
-              editing={renamingId !== null && renamingId === activeId}
-              onEdit={() => setRenamingId(activeId)}
-              onDone={() => setRenamingId(null)}
-              onRename={onRename}
-              delegatedBy={parent && onOpenThread ? { parent, open: () => onOpenThread(parent.id) } : undefined}
-            />
+            {agent ? (
+              <AgentTitle agent={agent} archived={archived} onOpen={() => openAgent(agent.id, "prompt")} />
+            ) : (
+              <HeaderTitle
+                threadId={activeId}
+                title={threadTitle(meta, thread.title)}
+                editing={renamingId !== null && renamingId === activeId}
+                onEdit={() => setRenamingId(activeId)}
+                onDone={() => setRenamingId(null)}
+                onRename={onRename}
+                delegatedBy={parent && onOpenThread ? { parent, open: () => onOpenThread(parent.id) } : undefined}
+              />
+            )}
             {meta?.private && (
               <span
                 title="Kept in memory only. Closing it deletes it."
@@ -169,6 +215,16 @@ export function ThreadHeader({
       {/* A phone's row is the title and one menu, with no room between: the
           chips take a line of their own, there only while there are any. */}
       {actions && !isDesktop && <ExtensionStatuses statuses={thread.extensionStatuses} inline={false} />}
+      {agent && !archived && (newThreadOpen || restartOpen) && (
+        <Suspense fallback={null}>
+          {newThreadOpen && (
+            <NewAgentThreadDialog agent={agent} command={harness.command} onClose={() => setNewThreadOpen(false)} />
+          )}
+          {restartOpen && (
+            <RestartAgentDialog agent={agent} command={harness.command} onClose={() => setRestartOpen(false)} />
+          )}
+        </Suspense>
+      )}
     </header>
   );
 }
@@ -256,6 +312,117 @@ function HeaderTitle({
   );
 }
 
+// A prompt revision saved but not yet running: the restart onto it waits for
+// the turn to end. The agent says when a restart is pending; the revisions
+// alone could disagree for good if that restart never comes.
+function restartWaiting(agent: Agent) {
+  return !!agent.restartPending && agent.livePromptRev !== undefined && agent.livePromptRev < agent.promptRev;
+}
+
+/**
+ * An agent thread's title: the agent's name and the prompt revision it runs
+ * on, one tap to the agent's page. No pencil: the name belongs to the agent
+ * and changes in its Settings. While a saved revision waits on the turn, the
+ * pill says which one is coming. An archived thread never ran on the agent's
+ * current revision, so it is marked archived instead.
+ */
+function AgentTitle({ agent, archived, onOpen }: { agent: Agent; archived: boolean; onOpen: () => void }) {
+  const waiting = !archived && restartWaiting(agent);
+  return (
+    <div className="flex min-w-0 flex-1 items-center">
+      <button
+        type="button"
+        onClick={onOpen}
+        title={`Open ${agent.name}`}
+        className="hover:bg-accent flex min-h-11 min-w-0 items-center gap-1.5 rounded-md px-1.5 md:min-h-8"
+      >
+        <BotIcon aria-hidden className="text-primary size-4 shrink-0" />
+        <span className="min-w-0 truncate text-[13px] font-medium">{agent.name}</span>
+        <span
+          className={cn(
+            "flex shrink-0 items-center gap-1 rounded-full border px-1.5 font-mono text-[10.5px] leading-4",
+            waiting ? "border-attention/50 bg-attention/15 text-attention-foreground" : "text-muted-foreground",
+          )}
+        >
+          {waiting && <RotateCwIcon aria-hidden className="size-2.5" />}
+          {archived && <ArchiveIcon aria-hidden className="size-2.5" />}
+          {archived ? (
+            "archived"
+          ) : waiting ? (
+            <>
+              r{agent.livePromptRev}
+              <span aria-hidden>→</span>r{agent.promptRev}
+            </>
+          ) : (
+            `r${agent.promptRev}`
+          )}
+        </span>
+        <ChevronRightIcon aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The agent's part of a thread menu: its page's tabs, then the two ways to
+ * move its thread on. Restart keeps the transcript; New thread archives it,
+ * so it asks first. An archived thread has only the tabs: both would act on
+ * the agent's live thread, not the one on screen.
+ */
+function AgentMenuItems({ actions }: { actions: Actions }) {
+  const { openAgent } = useAgentNav();
+  const agent = actions.agent;
+  if (!agent) return null;
+  const restart = threadRestart(actions);
+  return (
+    <>
+      <DropdownMenuLabel className="text-muted-foreground text-[11px] font-normal">{agent.name}</DropdownMenuLabel>
+      <DropdownMenuItem onSelect={() => openAgent(agent.id, "prompt")}>
+        <TerminalIcon />
+        <MenuText title="Prompt" sub={`r${agent.promptRev}`} />
+      </DropdownMenuItem>
+      <DropdownMenuItem onSelect={() => openAgent(agent.id, "compact")}>
+        <ArchiveIcon />
+        <MenuText title="Compaction" sub={`c${agent.compactRev}`} />
+      </DropdownMenuItem>
+      <DropdownMenuItem onSelect={() => openAgent(agent.id, "log")}>
+        <HistoryIcon />
+        <MenuText title="Log" sub={`${agent.epoch} compaction${agent.epoch === 1 ? "" : "s"}`} />
+      </DropdownMenuItem>
+      <DropdownMenuItem onSelect={() => openAgent(agent.id, "settings")}>
+        <SettingsIcon /> Settings
+      </DropdownMenuItem>
+      {!actions.archived && (
+        <>
+          <DropdownMenuSeparator />
+          {restart && (
+            <DropdownMenuItem onSelect={restart.run} disabled={restart.restarting}>
+              {restart.restarting ? <Spinner /> : <RotateCwIcon />}
+              <MenuText
+                title={restart.restarting ? "Restarting thread…" : restart.label}
+                sub={restart.pending ? "Waiting for the turn to end" : "Keeps the transcript"}
+              />
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem onSelect={actions.onNewAgentThread}>
+            <SquarePenIcon />
+            <MenuText title="New thread…" sub="Archives this one" />
+          </DropdownMenuItem>
+        </>
+      )}
+    </>
+  );
+}
+
+function MenuText({ title, sub }: { title: string; sub: string }) {
+  return (
+    <span className="flex min-w-0 flex-col">
+      <span>{title}</span>
+      <span className="text-muted-foreground text-[11px]">{sub}</span>
+    </span>
+  );
+}
+
 function ModeSwitcher({ harness }: { harness: ThreadHarness }) {
   if (harness.modeOptions.length === 0) return null;
   return (
@@ -282,22 +449,24 @@ function ModeSwitcher({ harness }: { harness: ThreadHarness }) {
 
 // Whether the open thread is pinned, and the toggle: the same one the sidebar
 // row carries, so a thread can be pinned from either place.
-function threadPin({ activeId, meta, onSetPinned }: Actions) {
+function threadPin({ activeId, meta, onSetPinned, agent }: Actions) {
   const pinned = !!meta?.pinned;
-  const toggle = activeId ? () => onSetPinned(activeId, !pinned) : null;
+  // An agent's thread is reached through the agent, never pinned.
+  const toggle = activeId && !agent ? () => onSetPinned(activeId, !pinned) : null;
   return { pinned, toggle };
 }
 
 // Restarting the harness on the setup as it is now, or taking back one that
-// waits on the running turn: the same toggle in either layout.
-function threadRestart({ harness }: Actions) {
-  if (!harness.canRestart) return null;
+// waits on the running turn: the same toggle in either layout. An agent's
+// thread asks first; one it archived is not restarted from here at all.
+function threadRestart({ harness, agent, archived, onRestartAgent }: Actions) {
+  if (!harness.canRestart || archived) return null;
   const { restartPending: pending, restarting } = harness;
   return {
     pending,
     restarting,
     label: pending ? "Cancel restart" : restarting ? "Restarting thread" : "Restart thread",
-    run: pending ? harness.cancelRestart : harness.restartThread,
+    run: pending ? harness.cancelRestart : agent ? onRestartAgent : harness.restartThread,
   };
 }
 
@@ -307,6 +476,21 @@ function DesktopActions({ actions }: { actions: Actions }) {
   const restart = threadRestart(actions);
   return (
     <>
+      {/* An agent's thread restarts after every prompt change, so there it is
+          a word, not an icon to decode. */}
+      {restart && actions.agent && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={restart.run}
+          disabled={restart.restarting}
+          className={cn("h-8 shrink-0 gap-1.5 px-2 text-[12.5px]", restart.pending && "bg-accent")}
+        >
+          {restart.restarting ? <Spinner /> : <RotateCwIcon />}
+          {restart.pending ? "Cancel restart" : restart.restarting ? "Restarting…" : "Restart"}
+        </Button>
+      )}
+
       {pin.toggle && (
         <IconButton
           label={pin.pinned ? "Unpin thread" : "Pin thread"}
@@ -334,7 +518,7 @@ function DesktopActions({ actions }: { actions: Actions }) {
         </IconButton>
       )}
 
-      {restart && (
+      {restart && !actions.agent && (
         <IconButton
           label={restart.label}
           onClick={restart.run}
@@ -355,6 +539,19 @@ function DesktopActions({ actions }: { actions: Actions }) {
         {/* A live agent-count badge: work is happening off-transcript. */}
         <JobsBadge className="-top-0.5 -right-0.5" />
       </IconButton>
+
+      {actions.agent && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" aria-label="Agent actions" className="size-8 shrink-0">
+              <EllipsisIcon />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-52">
+            <AgentMenuItems actions={actions} />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
     </>
   );
 }
@@ -394,6 +591,12 @@ function PhoneActions({ actions }: { actions: Actions }) {
           onFind();
         }}
       >
+        {actions.agent && (
+          <>
+            <AgentMenuItems actions={actions} />
+            <DropdownMenuSeparator />
+          </>
+        )}
         <DropdownMenuItem
           onSelect={() => {
             finding.current = true;
@@ -422,14 +625,15 @@ function PhoneActions({ actions }: { actions: Actions }) {
             {link.copied ? "Thread link copied" : "Copy thread link"}
           </DropdownMenuItem>
         )}
-        {(pin.toggle || restart) && <DropdownMenuSeparator />}
+        {/* An agent's restart sits with its other items above. */}
+        {(pin.toggle || (restart && !actions.agent)) && <DropdownMenuSeparator />}
         {pin.toggle && (
           <DropdownMenuItem onSelect={pin.toggle}>
             {pin.pinned ? <PinOffIcon /> : <PinIcon />}
             {pin.pinned ? "Unpin thread" : "Pin thread"}
           </DropdownMenuItem>
         )}
-        {restart && (
+        {restart && !actions.agent && (
           <DropdownMenuItem onSelect={restart.run} disabled={restart.restarting}>
             {restart.restarting ? <Spinner /> : <RotateCwIcon />}
             {restart.restarting ? "Restarting thread…" : restart.label}

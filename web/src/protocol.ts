@@ -98,7 +98,7 @@ export interface Item {
       /api/threads/{id}/items/{itemId}/content. */
   truncated?: boolean;
   // notice
-  noticeKind?: "compaction" | "account" | "model" | "notify" | "restart";
+  noticeKind?: "compaction" | "account" | "model" | "notify" | "restart" | "started";
   /** For a model notice: the model and effort the thread switched to. */
   model?: string;
   effort?: string;
@@ -112,6 +112,17 @@ export interface Item {
   trigger?: string;
   preTokens?: number;
   postTokens?: number;
+  /** For a compaction notice on an agent's thread: the compaction's number
+      in the agent's log (1 for the first), for the Inspect link. */
+  epoch?: number;
+  /** For a restart notice on an agent's thread: the prompt revision the
+      restart moved it onto, for the View change link. Absent when the
+      restart kept the same prompt. For a started notice: the revision the
+      agent's thread started on. */
+  promptRev?: number;
+  /** For a started notice: the compaction instructions revision the thread
+      started on; absent for a harness that never reads them. */
+  compactRev?: number;
   // artefact: title is its name
   artefactId?: string;
   mediaType?: string;
@@ -384,7 +395,8 @@ export type CardKind =
   | "create_skill"
   | "remove_skill"
   | "add_sign_in"
-  | "add_account";
+  | "add_account"
+  | "prompt_edit";
 
 export type CardScope = "project" | "everywhere";
 
@@ -457,6 +469,19 @@ export interface Card {
   cli?: CardCli;
   // add_account
   account?: { cli: string; cliName?: string; name: string };
+  // prompt_edit: an agent's proposed change to its own prompt or compaction
+  // instructions. before is the current revision's body, after the proposal;
+  // fromRev is the revision number it changes (r<fromRev> or c<fromRev>).
+  promptEdit?: {
+    agentId: string;
+    agentName: string;
+    kind: AgentTextKind;
+    fromRev: number;
+    before: string;
+    after: string;
+    /** The user's words that asked for it, as the agent quoted them. */
+    reason: string;
+  };
 }
 
 export type CardResult = "pending" | "saved" | "declined" | "cancelled";
@@ -476,6 +501,8 @@ export interface CardOutcome {
   live?: "now" | "next_turn" | "next_session" | "after_sign_in";
   /** A server saved everywhere that this project's own server of the same name stands in for here. */
   shadowed?: boolean;
+  /** prompt_edit: the revision it saved (r<n> or c<n>). */
+  revision?: number;
 }
 
 /** resolve_card's edits: only what the user changed. Values are never echoed back. */
@@ -487,6 +514,8 @@ export interface CardEdits {
   destination?: string;
   cli?: Partial<CardCli>;
   name?: string;
+  /** prompt_edit: the whole text to save instead of the agent's proposal. */
+  body?: string;
 }
 
 export interface Usage {
@@ -885,6 +914,117 @@ export interface ThreadMeta {
    * means not pinned.
    */
   pinned?: boolean;
+  /** The agent this thread runs for. Agent threads are listed under their
+      agent, never in the sidebar's thread list. */
+  agentId?: string;
+}
+
+/** Which of an agent's two versioned texts: its system prompt, or the
+    instructions its harness gives the compactor. */
+export type AgentTextKind = "prompt" | "compact";
+
+/**
+ * A long-running thread with a saved brief, as the sidebar and the agent page
+ * see it: pushed whole in `agents` frames, archived agents left out.
+ */
+export interface Agent {
+  id: string;
+  projectId: string;
+  name: string;
+  harness: string;
+  /** The provider instance (account) its threads run on; "" for the harness's default. */
+  instance?: string;
+  model?: string;
+  effort?: string;
+  mode?: string;
+  /** The folder its threads are scoped to; absent means the whole project. */
+  folderId?: string;
+  /** "local" (the main checkout) or "managed" (a new worktree per thread). */
+  workspace: string;
+  /** Compact at this many context tokens; 0 or absent is the harness default. */
+  compactAt?: number;
+  /** The first message, offered again on every new thread. */
+  kickoff?: string;
+  /** The live thread; absent when the agent has none. */
+  threadId?: string;
+  /** Current revision numbers: r<promptRev>, c<compactRev>. */
+  promptRev: number;
+  compactRev: number;
+  /** The prompt revision the live thread's process runs on; below promptRev
+      while a restart onto the newer one waits. */
+  livePromptRev?: number;
+  /** The live thread has a restart waiting for its turn to end: a saved
+      prompt (or, on Codex, compaction instructions) to bring in, or a
+      restart asked for by hand. */
+  restartPending?: boolean;
+  /** Moves whenever a row of the live log is added or updated, including a
+      summary or attachments that land after the row, at the turn's end. */
+  logVersion?: number;
+  /** Compactions in the live thread so far: its current epoch. */
+  epoch: number;
+  /** Debug: write every model request whole to disk. */
+  rawLog?: boolean;
+  createdAt: number;
+}
+
+/** One saved version of an agent's prompt or compaction instructions. */
+export interface AgentRevision {
+  id: number;
+  kind: AgentTextKind;
+  /** r<n> for a prompt, c<n> for compaction instructions. */
+  n: number;
+  body: string;
+  author: "user" | "agent";
+  /** Why: free text from the user, or the user's quoted words for an agent's edit. */
+  reason?: string;
+  createdAt: number;
+}
+
+/** One thing a harness put in front of the model at the start of an epoch. */
+export interface CompactionAttachment {
+  /** "file" (re-read), "skill", "instructions" (CLAUDE.md), "skills" (the listing), "task", or the harness's own name. */
+  kind: string;
+  name: string;
+  chars: number;
+  /** Only on agent_compaction, never in the list. */
+  body?: string;
+}
+
+/** One row of an agent's log: epoch 0 is the first request, then one per compaction. */
+export interface CompactionRow {
+  id: number;
+  threadId: string;
+  epoch: number;
+  trigger: "start" | "auto" | "manual";
+  preTokens?: number;
+  postTokens?: number;
+  durationMs?: number;
+  promptRev: number;
+  compactRev: number;
+  /** Sizes, so a collapsed row can say what it holds without the bodies. */
+  summaryChars?: number;
+  instructionsChars?: number;
+  attachments: CompactionAttachment[];
+  /** Seq of the compaction notice in the thread; "Before" jumps there. */
+  boundarySeq?: number;
+  createdAt: number;
+}
+
+/** A row opened: the bodies the list leaves out. For epoch 0, summary is the
+    first message and system lists the composed system prompt's parts. */
+export interface CompactionDetail extends CompactionRow {
+  summary?: string;
+  instructions?: string;
+  system?: { kind: "omniplex" | "preamble" | "prompt"; name: string; chars: number; body: string }[];
+}
+
+/** An agent thread that New thread archived, listed under the live log. */
+export interface ArchivedAgentThread {
+  threadId: string;
+  title: string;
+  createdAt: number;
+  closedAt?: number;
+  compactions: number;
 }
 
 /**
@@ -1351,6 +1491,7 @@ export interface ServerFrame {
     | "harnesses"
     | "projects"
     | "quotas"
+    | "agents"
     | "composer_items_changed"
     | "turn_status"
     | "snapshot"
@@ -1370,6 +1511,8 @@ export interface ServerFrame {
   projects?: Project[];
   /** Every provider instance's cached usage limits; the whole list, always. */
   quotas?: QuotaStatus[];
+  /** Every unarchived agent; the whole list, always (welcome and agents frames). */
+  agents?: Agent[];
   cwd?: string;
   access?: Access;
   threadId?: string;

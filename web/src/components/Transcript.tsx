@@ -41,6 +41,7 @@ import { MergedCard } from "./transcript/MergedCard";
 import { QueuedPrompts } from "./transcript/QueuedPrompts";
 import { RestartStatus } from "./transcript/RestartStatus";
 import type { ScrollPosition } from "./transcript/scrollAnchor";
+import { seqTarget, settleSeqJump, useSeqJump } from "./transcript/seqJump";
 import { transcriptState, type TranscriptState } from "./transcript/transcriptState";
 import { TranscriptRow } from "./transcript/TranscriptRow";
 import { TurnStatusLine } from "./transcript/TurnStatusLine";
@@ -224,6 +225,9 @@ function ScrollToBottom({ onClick }: { onClick: () => void }) {
  * The paint is redone on every redraw while the jump stands, because a
  * re-rendered message has new text nodes and the old ranges are dead with
  * them. Text streaming in between redraws can still lose it until the next.
+ *
+ * `revealItem` is the same jump with nothing to paint, for an item already in
+ * the window: it is scrolled to and flashed.
  */
 function useFindJump(
   scrollerRef: { current: HTMLDivElement | null },
@@ -260,6 +264,13 @@ function useFindJump(
     [itemsBefore, loadTo],
   );
 
+  const revealItem = useCallback(async (id: string) => {
+    const mine = ++seq.current;
+    if (!(await findPaint.load()) || mine !== seq.current) return;
+    query.current = "";
+    setReveal({ id });
+  }, []);
+
   const onClear = useCallback(() => {
     seq.current++;
     jumped.current = null;
@@ -290,7 +301,35 @@ function useFindJump(
     if (!painted) paint.flash(el);
   }, [reveal, state, scrollerRef, release]);
 
-  return { reveal, onJump, onClear };
+  return { reveal, onJump, onClear, revealItem };
+}
+
+/**
+ * Opening this thread at an event seq (seqJump.ts): pages older history in,
+ * a page at a time, until the window holds the item the seq lands on, then
+ * jumps to it as find does. Items carry no seq, so there is no index to fetch
+ * down to in one request; each page is the one scrolling up would ask for.
+ * A page that fails leaves the ask standing, and the next page to land, by
+ * scrolling or a retry, carries on with it.
+ */
+function useSeqJumpTo(
+  state: TranscriptState,
+  onLoadOlder: (() => void) | undefined,
+  revealItem: (id: string) => Promise<void>,
+) {
+  const jump = useSeqJump(state.threadId);
+  const before = state.itemsBefore ?? 0;
+  const target = jump ? seqTarget(state.items, before, jump.seq) : null;
+  useEffect(() => {
+    if (!jump) return;
+    if (target === "more" && onLoadOlder) {
+      onLoadOlder();
+      return;
+    }
+    settleSeqJump(jump);
+    if (target && target !== "more") void revealItem(target);
+    // On the cursor too: each page that lands is the next look.
+  }, [jump, target, before, onLoadOlder, revealItem]);
 }
 
 // Counts the times the timeline lost turns: a rewind cutting it back. Live
@@ -370,7 +409,8 @@ function TranscriptBody({
   useScrollMemory(scrollerRef, state.threadId, store, initialScroll, onScrollChange);
   const hasOlder = (state.itemsBefore ?? 0) > 0;
   const sentinelRef = useOlderPages(scrollerRef, contentRef, state, hasOlder, onLoadOlder);
-  const { reveal, onJump, onClear } = useFindJump(scrollerRef, state, find, release);
+  const { reveal, onJump, onClear, revealItem } = useFindJump(scrollerRef, state, find, release);
+  useSeqJumpTo(state, onLoadOlder, revealItem);
   const cuts = useTimelineCuts(state.turns);
 
   const {

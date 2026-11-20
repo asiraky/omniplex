@@ -14,7 +14,7 @@
 
 import { splitPinned } from "~/pinned";
 import { groupThreads, visibleByProject } from "~/projectGroups";
-import type { Project, ThreadMeta } from "~/protocol";
+import type { Agent, Project, ThreadMeta } from "~/protocol";
 import { sidebarThreads } from "~/threadTree";
 
 // The collapse keys of the two sections that are not projects: Pinned, and
@@ -23,6 +23,7 @@ import { sidebarThreads } from "~/threadTree";
 export const PINNED_KEY = "pinned";
 export const UNPINNED_KEY = "unpinned";
 export const ASSISTANT_KEY = "assistant";
+export const AGENTS_KEY = "agents";
 
 /** The part of the sidebar's view state that decides what is listed. */
 export interface SidebarView {
@@ -41,26 +42,47 @@ export interface SidebarSection {
   threads: ThreadMeta[];
   /** Rows name their project everywhere but under that project's own header. */
   showProject: boolean;
+  /**
+   * The agents listed in this section, above its threads: a project group's
+   * own, or every agent in the flat list's Agents section. Absent where a
+   * section has no agents to offer (Pinned, Assistant, the flat threads).
+   */
+  agents?: Agent[];
+  /** A project group's project, which its "New agent" + creates in. */
+  projectId?: string;
 }
 
 /**
  * The sections the list renders, top to bottom. Empty when the filter hides
- * every thread. A section never comes back empty: it leaves with its last row.
+ * every thread and agent. A section never comes back empty: it leaves with
+ * its last row.
+ *
+ * An agent's threads are the agent's, reached through its row, so they are
+ * never rows of their own here, and the keyboard's walk skips them too.
  */
 export function sidebarSections(
   threads: ThreadMeta[],
   projects: Project[],
   view: Pick<SidebarView, "hidden" | "grouped">,
+  agents: Agent[] = [],
 ): SidebarSection[] {
   // A delegated thread lives inside the thread that delegated it, which
-  // stands for it here, so it has no row while that thread is listed.
-  const shown = visibleByProject(sidebarThreads(threads), projects, view.hidden);
+  // stands for it here, so it has no row while that thread is listed. An
+  // agent's threads sit under its row instead, their delegates with them.
+  const shown = visibleByProject(
+    sidebarThreads(threads).filter((t) => !t.agentId),
+    projects,
+    view.hidden,
+  );
+  const shownAgents = visibleAgents(agents, projects, view.hidden);
   const { pinned, rest: unpinned } = splitPinned(shown);
   // Assistant chats belong to no project, so they get a section of their own
   // under Pinned however the rest is laid out.
   const assistant = unpinned.filter((t) => !t.projectId);
   const rest = unpinned.filter((t) => t.projectId);
-  const groups = view.grouped ? groupThreads(rest, projects) : [];
+  const groups = view.grouped
+    ? groupThreads(rest, projects, new Set(shownAgents.map((a) => a.projectId)))
+    : [];
 
   // Pinned threads come from every project, so their rows name theirs, the
   // way a flat list's do. Nothing pinned on screen is no section at all.
@@ -78,12 +100,43 @@ export function sidebarSections(
   if (groups.length > 1) {
     return [
       ...top,
-      ...groups.map((g) => ({ key: g.key, name: g.name, threads: g.threads, showProject: false })),
+      ...groups.map((g) => ({
+        key: g.key,
+        name: g.name,
+        threads: g.threads,
+        showProject: false,
+        // A group whose key is a cwd has no project to make an agent in.
+        ...(projects.some((p) => p.id === g.key) && {
+          projectId: g.key,
+          agents: shownAgents.filter((a) => a.projectId === g.key),
+        }),
+      })),
     ];
+  }
+  // Flat, the agents are one section of their own above the threads, and the
+  // threads then need a header to read as something else.
+  // Its + makes the next one where these are, when they are all in one place.
+  if (shownAgents.length > 0) {
+    const where = new Set(shownAgents.map((a) => a.projectId));
+    top.push({
+      key: AGENTS_KEY,
+      name: "Agents",
+      threads: [],
+      agents: shownAgents,
+      showProject: true,
+      ...(where.size === 1 && { projectId: shownAgents[0].projectId }),
+    });
   }
   if (rest.length === 0) return top;
   if (top.length === 0) return [{ key: null, name: "Threads", threads: rest, showProject: true }];
   return [...top, { key: UNPINNED_KEY, name: "Threads", threads: rest, showProject: true }];
+}
+
+/** The agents the project filter leaves showing. */
+export function visibleAgents(agents: Agent[], projects: Project[], hidden: Set<string>): Agent[] {
+  if (hidden.size === 0) return agents;
+  const live = new Set(projects.map((p) => p.id));
+  return agents.filter((a) => !(hidden.has(a.projectId) && live.has(a.projectId)));
 }
 
 /** The sections' rows in order, leaving out folded ones unless asked not to. */

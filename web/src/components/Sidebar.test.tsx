@@ -8,7 +8,7 @@ import { Sidebar } from "./Sidebar";
 import { readKeyContext } from "~/app/useKeybindings";
 import { useProjectView } from "~/app/useProjectView";
 import { render, viewport } from "~/test/harness";
-import type { Project, ThreadMeta } from "~/protocol";
+import type { Agent, Project, ThreadMeta } from "~/protocol";
 import { sidebarOrder } from "~/sidebarOrder";
 
 // The dialog loads after the first paint in the app; here it is on hand from
@@ -86,6 +86,13 @@ function renderSidebar(over: Partial<Props> = {}) {
     onDropFiles: vi.fn(),
     onReorder: vi.fn(),
     backDismiss: false,
+    agents: [] as Agent[],
+    activeAgentId: null as string | null,
+    pageOpen: false,
+    onOpenAgentRow: vi.fn(),
+    onOpenAgent: vi.fn(),
+    onAgentAction: vi.fn(),
+    onNewAgent: vi.fn(),
     ...over,
   };
   render(<WithView {...props} />);
@@ -129,6 +136,13 @@ function renderLive(threads: ThreadMeta[], over: Partial<Props> = {}) {
     onDropFiles: vi.fn(),
     onReorder: vi.fn(),
     backDismiss: false,
+    agents: [] as Agent[],
+    activeAgentId: null as string | null,
+    pageOpen: false,
+    onOpenAgentRow: vi.fn(),
+    onOpenAgent: vi.fn(),
+    onAgentAction: vi.fn(),
+    onNewAgent: vi.fn(),
     ...over,
   };
   let setOpen: (open: boolean) => void = () => {};
@@ -1124,5 +1138,100 @@ describe("delegated threads", () => {
     expect(screen.queryByRole("button", { name: /^Thread kid/ })).toBeNull();
     expect(screen.getByRole("button", { name: /^Thread orphan/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /^Thread a/ }).textContent).toContain("needs you");
+  });
+});
+
+describe("Sidebar: agents", () => {
+  const projects = [
+    { id: "p1", name: "repo", folders: [], createdAt: 2 },
+    { id: "p2", name: "other", folders: [], createdAt: 1 },
+  ] as unknown as Project[];
+  const agent = (id: string, over: Partial<Agent> = {}): Agent =>
+    ({
+      id,
+      projectId: "p1",
+      name: id,
+      harness: "claude",
+      workspace: "local",
+      promptRev: 3,
+      compactRev: 1,
+      epoch: 2,
+      createdAt: 0,
+      ...over,
+    }) as Agent;
+  const live = agent("backlog", { threadId: "t-live" });
+  const idle = agent("triage");
+  const threads = [
+    thread("a"),
+    thread("b", { projectId: "p2" }),
+    thread("t-live", { title: "backlog thread", agentId: "backlog" }),
+  ];
+
+  it("lists an agent's thread under the agent, never as a row, and counts them apart", () => {
+    renderSidebar({ threads, projects, agents: [live, idle] });
+    expect(screen.queryByRole("button", { name: /^backlog thread/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Agent backlog" })).toBeTruthy();
+    expect(screen.getByText("2 threads · 2 agents")).toBeTruthy();
+  });
+
+  it("opens the agent's own thread or, with none, its page", () => {
+    const props = renderSidebar({ threads, projects, agents: [live, idle] });
+    fireEvent.click(screen.getByRole("button", { name: "Agent backlog" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agent triage" }));
+    expect(props.onOpenAgentRow).toHaveBeenNthCalledWith(1, live);
+    expect(props.onOpenAgentRow).toHaveBeenNthCalledWith(2, idle);
+    expect(props.onSelect).not.toHaveBeenCalled();
+  });
+
+  it("says when the agent's thread is waiting on the user", () => {
+    renderSidebar({
+      threads: [thread("a"), thread("t-live", { agentId: "backlog", attention: "needs_permission" })],
+      projects,
+      agents: [live],
+    });
+    expect(screen.getByRole("button", { name: "Agent backlog, needs you" })).toBeTruthy();
+  });
+
+  it("stands for what the agent's thread delegated, which has no row", () => {
+    renderSidebar({
+      threads: [
+        thread("a"),
+        thread("t-live", { agentId: "backlog" }),
+        thread("kid", { parentId: "t-live", attention: "needs_answer" }),
+      ],
+      projects,
+      agents: [live],
+      activeId: "kid",
+    });
+    expect(screen.queryByRole("button", { name: /^Thread kid/ })).toBeNull();
+    const row = screen.getByRole("button", { name: "Agent backlog, needs you" });
+    expect(row.getAttribute("aria-current")).toBe("true");
+  });
+
+  it("makes a new agent in the project whose + was pressed", () => {
+    const props = renderSidebar({ threads, projects, agents: [live] });
+    fireEvent.click(screen.getByRole("button", { name: "New agent in other" }));
+    expect(props.onNewAgent).toHaveBeenCalledWith("p2");
+  });
+
+  it("offers a thread's restart only to an agent that has one", async () => {
+    const props = renderSidebar({ threads, projects, agents: [live, idle] });
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Agent triage" }));
+    expect(screen.queryByRole("menuitem", { name: /Restart thread/ })).toBeNull();
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Start thread/ }));
+    expect(props.onAgentAction).toHaveBeenCalledWith(idle, "newThread");
+  });
+
+  it("opens a page tab from the row's menu", async () => {
+    const props = renderSidebar({ threads, projects, agents: [live] });
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Agent backlog" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Compaction/ }));
+    expect(props.onOpenAgent).toHaveBeenCalledWith("backlog", "compact");
+  });
+
+  it("marks the agent on screen, not the thread under its page", () => {
+    renderSidebar({ threads, projects, agents: [live, idle], activeId: "a", activeAgentId: "triage", pageOpen: true });
+    expect(screen.getByRole("button", { name: "Agent triage" }).getAttribute("aria-current")).toBe("true");
+    expect(screen.getByRole("button", { name: /^Thread a/ }).getAttribute("aria-current")).toBeNull();
   });
 });

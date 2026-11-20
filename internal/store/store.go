@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -155,6 +156,9 @@ type ThreadMeta struct {
 	// marker, not lifecycle: nothing in the server reads it, it only syncs
 	// across devices.
 	Pinned bool `json:"pinned,omitempty"`
+	// AgentID is the agent the thread runs for, "" for an ordinary thread.
+	// Set when the thread is created and never changed.
+	AgentID string `json:"agentId,omitempty"`
 	// LastViewedSeq is the head the user had seen when they last looked at the
 	// thread, on any paired device. HeadSeq beyond it means something happened
 	// that nobody has read — the sidebar's unread signal. Stored, unlike
@@ -190,6 +194,8 @@ type Store struct {
 	db  *sql.DB
 	mu  sync.Mutex
 	mem *Store
+	// path is the database file, "" for the in-memory store.
+	path string
 }
 
 func Open(path string) (*Store, error) {
@@ -210,6 +216,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("open private store: %w", err)
 	}
+	s.path = path
 	return s, nil
 }
 
@@ -260,6 +267,7 @@ func migrate(db *sql.DB) (*Store, error) {
 		`ALTER TABLE threads ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE threads ADD COLUMN service_tier TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE threads ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(migration); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return nil, fmt.Errorf("migrate schema: %w", err)
@@ -347,6 +355,9 @@ func migrate(db *sql.DB) (*Store, error) {
 	if err := s.initPush(); err != nil {
 		return nil, fmt.Errorf("apply push schema: %w", err)
 	}
+	if err := s.initAgents(); err != nil {
+		return nil, fmt.Errorf("apply agents schema: %w", err)
+	}
 	return s, nil
 }
 
@@ -413,6 +424,10 @@ func renameSessionsToThreads(db *sql.DB, path string) error {
 	return tx.Commit()
 }
 
+// Dir is the folder the database file is in: where what belongs beside the
+// database (an agent's files, say) goes.
+func (s *Store) Dir() string { return filepath.Dir(s.path) }
+
 func (s *Store) Close() error {
 	if s.mem != nil {
 		s.mem.Close()
@@ -468,9 +483,9 @@ func (s *Store) createThread(ctx context.Context, m ThreadMeta, floor float64) e
 	// so a new thread always lands first however the user has arranged the
 	// rest — and the store mutex means two creates cannot claim the same one.
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO threads (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, service_tier, workspace_mode, base_ref, parent_id, provision_script, deprovision_script, pinned, position)
-		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT MIN(COALESCE(MIN(position), 1), ?) - 1 FROM threads))`,
-		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.FolderID, m.Branch, m.Model, m.Mode, m.Effort, m.ServiceTier, m.WorkspaceMode, m.BaseRef, m.ParentID, m.ProvisionScript, m.DeprovisionScript, m.Pinned, floor); err != nil {
+		`INSERT INTO threads (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, service_tier, workspace_mode, base_ref, parent_id, provision_script, deprovision_script, pinned, agent_id, position)
+		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT MIN(COALESCE(MIN(position), 1), ?) - 1 FROM threads))`,
+		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.FolderID, m.Branch, m.Model, m.Mode, m.Effort, m.ServiceTier, m.WorkspaceMode, m.BaseRef, m.ParentID, m.ProvisionScript, m.DeprovisionScript, m.Pinned, m.AgentID, floor); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -679,8 +694,8 @@ func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
 	var m ThreadMeta
 	var provisionResult []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, service_tier, workspace_mode, base_ref, parent_id, pinned, last_viewed_seq, position, provision_script, deprovision_script, provision_result FROM threads WHERE id = ?`, id).
-		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.ServiceTier, &m.WorkspaceMode, &m.BaseRef, &m.ParentID, &m.Pinned, &m.LastViewedSeq, &m.Position, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, service_tier, workspace_mode, base_ref, parent_id, pinned, agent_id, last_viewed_seq, position, provision_script, deprovision_script, provision_result FROM threads WHERE id = ?`, id).
+		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.ServiceTier, &m.WorkspaceMode, &m.BaseRef, &m.ParentID, &m.Pinned, &m.AgentID, &m.LastViewedSeq, &m.Position, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
 	m.ProvisionResult = json.RawMessage(provisionResult)
 	m.Private = ephemeral.Is(m.ID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -724,7 +739,7 @@ func (s *Store) ListThreads(ctx context.Context) ([]ThreadMeta, error) {
 
 func (s *Store) listThreads(ctx context.Context) ([]ThreadMeta, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, service_tier, workspace_mode, base_ref, parent_id, pinned, last_viewed_seq, position
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, service_tier, workspace_mode, base_ref, parent_id, pinned, agent_id, last_viewed_seq, position
 		 FROM threads ORDER BY position ASC, created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
@@ -734,7 +749,7 @@ func (s *Store) listThreads(ctx context.Context) ([]ThreadMeta, error) {
 	out := []ThreadMeta{}
 	for rows.Next() {
 		var m ThreadMeta
-		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.ServiceTier, &m.WorkspaceMode, &m.BaseRef, &m.ParentID, &m.Pinned, &m.LastViewedSeq, &m.Position); err != nil {
+		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.ServiceTier, &m.WorkspaceMode, &m.BaseRef, &m.ParentID, &m.Pinned, &m.AgentID, &m.LastViewedSeq, &m.Position); err != nil {
 			return nil, err
 		}
 		m.Private = ephemeral.Is(m.ID)
@@ -769,6 +784,7 @@ func (s *Store) DeleteThread(ctx context.Context, id string) error {
 		`DELETE FROM events WHERE thread_id = ?`,
 		`DELETE FROM snapshots WHERE thread_id = ?`,
 		`DELETE FROM commands WHERE thread_id = ?`,
+		`DELETE FROM compactions WHERE thread_id = ?`,
 		`DELETE FROM threads WHERE id = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {

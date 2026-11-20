@@ -32,6 +32,16 @@ func (m *Manager) RestartThread(ctx context.Context, threadID string) (pending b
 	return a.Restart(ctx)
 }
 
+// restartLive is RestartThread for a thread whose process is running; see
+// Actor.restartLive.
+func (m *Manager) restartLive(ctx context.Context, threadID string) (pending bool, err error) {
+	a, err := m.View(ctx, threadID)
+	if err != nil {
+		return false, err
+	}
+	return a.restartLive(ctx)
+}
+
 // CancelRestart takes back a restart that is waiting for the thread to settle.
 // With none waiting it does nothing.
 func (m *Manager) CancelRestart(ctx context.Context, threadID string) error {
@@ -44,7 +54,18 @@ func (m *Manager) CancelRestart(ctx context.Context, threadID string) error {
 
 // Restart is RestartThread for this actor.
 func (a *Actor) Restart(ctx context.Context) (pending bool, err error) {
-	v, err := a.call(ctx, command{kind: cmdRestart})
+	return a.restartCmd(ctx, false)
+}
+
+// restartLive is Restart for a thread whose process is running. With none
+// running it starts nothing and is ErrNotReady: an agent thread's next start
+// restarts onto the agent's revisions by itself (agentRevisionsBehind).
+func (a *Actor) restartLive(ctx context.Context) (pending bool, err error) {
+	return a.restartCmd(ctx, true)
+}
+
+func (a *Actor) restartCmd(ctx context.Context, liveOnly bool) (pending bool, err error) {
+	v, err := a.call(ctx, command{kind: cmdRestart, liveOnly: liveOnly})
 	if err != nil {
 		return false, err
 	}
@@ -180,7 +201,7 @@ func (a *Actor) restart(ctx context.Context) error {
 // a restart that was waiting. A failure goes to the server log too.
 func (a *Actor) noteRestart(err error) {
 	if err == nil {
-		a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{}))
+		a.append(proto.Emit(proto.ThreadRestarted, proto.ThreadRestartedPayload{PromptRev: a.promptMovedTo}))
 		return
 	}
 	a.logf("restart %s: %v", a.ID, err)

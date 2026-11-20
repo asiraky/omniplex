@@ -2,6 +2,8 @@ import { RotateCwIcon } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
+import { useAgentNav } from "~/lib/agentNav";
+import { cn } from "~/lib/utils";
 
 /**
  * A restart the thread owes: waiting on the running turn to end, with the way
@@ -19,7 +21,12 @@ export function RestartStatus({
   restarting: boolean;
   onCancel?: () => void;
 }) {
+  const agent = useAgentNav().current;
   if (!pending && !restarting) return null;
+  // An agent's restart is nearly always a saved prompt waiting to take over,
+  // which is worth naming: it is why the thread will restart at all.
+  const savedRev =
+    agent && agent.livePromptRev !== undefined && agent.livePromptRev < agent.promptRev ? agent.promptRev : undefined;
   return (
     <div
       role="status"
@@ -31,8 +38,12 @@ export function RestartStatus({
       ) : (
         <Spinner className="size-3.5 shrink-0" aria-hidden />
       )}
-      <span className="min-w-0 flex-1 truncate">
-        {pending ? "Restarting when this turn ends" : "Restarting the thread…"}
+      <span className={cn("min-w-0 flex-1", savedRev === undefined ? "truncate" : "text-pretty")}>
+        {pending
+          ? savedRev !== undefined
+            ? `Prompt r${savedRev} is saved. The thread restarts when this turn ends.`
+            : "Restarting when this turn ends"
+          : "Restarting the thread…"}
       </span>
       {pending && onCancel && (
         <Button

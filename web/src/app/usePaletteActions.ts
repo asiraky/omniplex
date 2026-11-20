@@ -89,13 +89,18 @@ export function usePaletteActions({
   const thread = (a: Omit<PaletteAction, "group">) => actions.push({ ...a, group: "Thread" });
   const app = (a: Omit<PaletteAction, "group">) => actions.push({ ...a, group: "App" });
 
+  // An agent's thread is the agent's: it is never pinned, renamed or deleted,
+  // only archived by starting the agent a new one.
+  const agentThread = !!meta?.agentId;
   if (threadOpen && meta) {
-    thread({
-      id: "pin",
-      label: meta.pinned ? "Unpin thread" : "Pin thread",
-      keywords: ["pin", "top"],
-      run: () => onSetPinned(meta.id, !meta.pinned),
-    });
+    if (!agentThread) {
+      thread({
+        id: "pin",
+        label: meta.pinned ? "Unpin thread" : "Pin thread",
+        keywords: ["pin", "top"],
+        run: () => onSetPinned(meta.id, !meta.pinned),
+      });
+    }
     // As the row's menu has it: a thread whose log is empty has nothing to be
     // unread about.
     if (unread(meta)) {
@@ -135,7 +140,9 @@ export function usePaletteActions({
         keywords: ["url", "share", "clipboard"],
         run: () => onCopyLink(meta.id),
       });
-      thread({ id: "delete", label: "Delete thread…", keywords: ["remove", "finish"], run: () => onDelete(meta) });
+      if (!agentThread) {
+        thread({ id: "delete", label: "Delete thread…", keywords: ["remove", "finish"], run: () => onDelete(meta) });
+      }
     }
     thread({
       id: "panel",

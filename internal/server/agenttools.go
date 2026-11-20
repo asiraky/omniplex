@@ -23,6 +23,7 @@ import (
 	"github.com/asiraky/omniplex/internal/artefact"
 	"github.com/asiraky/omniplex/internal/mcp"
 	"github.com/asiraky/omniplex/internal/skills"
+	"github.com/asiraky/omniplex/internal/store"
 	"github.com/asiraky/omniplex/internal/thread"
 )
 
@@ -52,10 +53,12 @@ func badArgs(format string, a ...any) error {
 
 func newID() string { return uuid.NewString() }
 
-// toolThread is the thread a token names, and its project.
+// toolThread is the thread a token names, its project, and the agent it
+// belongs to, if any.
 type toolThread struct {
 	id, harness, title     string
 	projectID, projectName string
+	agentID                string
 }
 
 func (s *Server) handleAgentTool(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +90,7 @@ func (s *Server) handleAgentTool(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such thread")
 		return
 	}
-	t := toolThread{id: meta.ID, harness: meta.Harness, title: meta.Title, projectID: meta.ProjectID}
+	t := toolThread{id: meta.ID, harness: meta.Harness, title: meta.Title, projectID: meta.ProjectID, agentID: meta.AgentID}
 	if t.projectID != "" {
 		if p, err := s.store.Project(ctx, t.projectID); err == nil {
 			t.projectName = p.Name
@@ -126,6 +129,8 @@ func (s *Server) handleAgentTool(w http.ResponseWriter, r *http.Request) {
 		text, err = s.notify(ctx, t, body)
 	case cardAddServer, cardRemoveServer, cardInstallSkill, cardCreateSkill, cardRemoveSkill, cardAddSignIn, cardAddAccount:
 		card, text, err = s.propose(ctx, t, name, body)
+	case "propose_prompt_edit":
+		card, text, err = s.propose(ctx, t, cardPromptEdit, body)
 	default:
 		writeError(w, http.StatusNotFound, "no tool named "+name)
 		return
@@ -430,6 +435,8 @@ func (s *Server) propose(ctx context.Context, t toolThread, kind string, body []
 		prompt, err = s.proposeAddSignIn(ctx, c, &card, body)
 	case cardAddAccount:
 		prompt, err = s.proposeAddAccount(ctx, c, &card, body)
+	case cardPromptEdit:
+		prompt, err = s.proposePromptEdit(ctx, t, c, &card, body)
 	}
 	if err != nil {
 		c.discard()
@@ -809,6 +816,88 @@ func (s *Server) proposeAddAccount(ctx context.Context, c *heldCard, card *cardJ
 	c.accountCLI, c.accountCLIName, c.accountName = cli.ID, cli.Name, a.Name
 	card.Account = &cardAccount{CLI: cli.ID, CLIName: cli.Name, Name: a.Name}
 	return "Add the account " + a.Name + " to " + cli.Name, nil
+}
+
+// proposePromptEdit is an agent proposing a change to its own prompt or
+// compaction instructions. The card is the gate: the preamble tells the agent
+// when to call it, but nothing is written without the user's tap. Only an
+// agent's thread may call it, whatever the MCP server listed.
+func (s *Server) proposePromptEdit(ctx context.Context, t toolThread, c *heldCard, card *cardJSON, body []byte) (string, error) {
+	if t.agentID == "" {
+		return "", &toolError{code: http.StatusForbidden, msg: "this thread is not an agent's, so it has no prompt of its own to edit"}
+	}
+	var a struct {
+		Kind    string `json:"kind"`
+		Find    string `json:"find"`
+		Replace string `json:"replace"`
+		Reason  string `json:"reason"`
+	}
+	if err := decodeArgs(body, &a); err != nil {
+		return "", err
+	}
+	if a.Kind != store.RevisionPrompt && a.Kind != store.RevisionCompact {
+		return "", badArgs("kind is prompt or compact, not %q", a.Kind)
+	}
+	if a.Reason = strings.TrimSpace(a.Reason); a.Reason == "" {
+		return "", badArgs("give the reason: the user's words that asked for this, quoted")
+	}
+	ag, err := s.mgr.Agent(ctx, t.agentID)
+	if err != nil {
+		return "", err
+	}
+	cur, err := s.store.LatestAgentRevision(ctx, ag.ID, a.Kind)
+	if err != nil {
+		return "", err
+	}
+	after, err := editAgentText(cur.Body, a.Find, a.Replace, a.Kind)
+	if err != nil {
+		return "", err
+	}
+	if a.Kind == store.RevisionCompact {
+		if err := s.mgr.CheckAgentCompact(ctx, ag.ID, after); err != nil {
+			return "", badArgs("%v", err)
+		}
+	}
+	c.agentID, c.editKind, c.fromRev = ag.ID, a.Kind, cur.N
+	c.find, c.replace, c.reason, c.after = a.Find, a.Replace, a.Reason, after
+	card.PromptEdit = &promptEditCard{AgentID: ag.ID, AgentName: ag.Name, Kind: a.Kind, FromRev: cur.N, Before: cur.Body, After: after, Reason: a.Reason}
+	return "Change " + ag.Name + "'s " + agentTextNoun(a.Kind), nil
+}
+
+// editAgentText applies an agent's edit to the current text: replace stands
+// in for the one place find occurs, or with no find is appended as a new
+// paragraph.
+func editAgentText(body, find, replace, kind string) (string, error) {
+	noun := agentTextNoun(kind)
+	if find == "" {
+		if strings.TrimSpace(replace) == "" {
+			return "", badArgs("give the text to append in replace")
+		}
+		if strings.TrimSpace(body) == "" {
+			return replace, nil
+		}
+		return strings.TrimRight(body, "\n") + "\n\n" + replace, nil
+	}
+	switch n := strings.Count(body, find); n {
+	case 0:
+		return "", badArgs("find text not in the current %s; copy it exactly, or omit find to append", noun)
+	case 1:
+	default:
+		return "", badArgs("find text occurs %d times in the current %s; give a longer find that occurs once", n, noun)
+	}
+	after := strings.Replace(body, find, replace, 1)
+	if after == body {
+		return "", badArgs("replace is the same as find, so nothing would change")
+	}
+	return after, nil
+}
+
+// agentTextNoun is what an agent's text of a kind is called.
+func agentTextNoun(kind string) string {
+	if kind == store.RevisionCompact {
+		return "compaction instructions"
+	}
+	return "system prompt"
 }
 
 // harnessList is the harnesses here, or those of them named in only.

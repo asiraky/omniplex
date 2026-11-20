@@ -50,6 +50,7 @@ const (
 	fixtureProjects = 4
 	sidebarThreads  = 120
 	fixtureTurns    = 60
+	fixtureAgents   = 6
 	fixtureThread   = "fixture-thread"
 )
 
@@ -59,9 +60,10 @@ type sizes struct{ decoded, wire int }
 
 // The ceilings sit about 15% over what the fixture measured when they were
 // set, noted beside each. Raising one is a decision: say in the PR why the
-// payload has to be bigger.
+// payload has to be bigger. Measure with the Go in go.mod, which CI runs:
+// newer Go's flate compresses the welcome frame about 4% smaller.
 var (
-	welcomeBudget  = sizes{decoded: 78_000, wire: 11_000}  // 67.9 KB, 9.6 KB
+	welcomeBudget  = sizes{decoded: 84_500, wire: 12_700}  // 73.5 KB, 11.0 KB
 	snapshotBudget = sizes{decoded: 211_000, wire: 52_000} // 183.6 KB, 45.2 KB
 	pageBudget     = sizes{decoded: 189_000, wire: 49_000} // 164.0 KB, 42.6 KB
 )
@@ -262,6 +264,53 @@ func seed(ctx context.Context, st *store.Store) error {
 			CreatedAt:        epoch + int64(i)*60_000, UpdatedAt: epoch + int64(i)*60_000,
 		}); err != nil {
 			return err
+		}
+	}
+
+	// Agents ride the welcome frame whole, each with a live thread a few
+	// compactions in and a prompt revision or two past its first.
+	for i := range fixtureAgents {
+		p := i % fixtureProjects
+		ag, err := st.CreateAgent(ctx, store.Agent{
+			ProjectID: fmt.Sprintf("project-%d", p), Name: sentence(r, 2+r.IntN(2)), Harness: "claude", Instance: "claude",
+			Model: "claude-opus-5-5", Effort: "high", Mode: "default", FolderID: fmt.Sprintf("project-%d-main", p),
+			Workspace: "local", CompactAt: 160_000, Kickoff: sentence(r, 12),
+		}, sentence(r, 200), sentence(r, 60), "")
+		if err != nil {
+			return err
+		}
+		if _, err := st.AddAgentRevision(ctx, ag.ID, store.RevisionPrompt, sentence(r, 220), store.AuthorAgent, sentence(r, 8), 0); err != nil {
+			return err
+		}
+		threadID := fmt.Sprintf("agent-thread-%d", i)
+		if err := st.CreateThread(ctx, store.ThreadMeta{
+			ID: threadID, Cwd: filepath.Join(home, fmt.Sprintf("project-%d", p)), Harness: "claude", ProviderInstance: "claude",
+			Title: ag.Name, ProjectID: ag.ProjectID, FolderID: ag.FolderID, AgentID: ag.ID, WorkspaceMode: "local",
+			Model: "claude-opus-5-5", Mode: "default", Effort: "high", Phase: "idle", CreatedAt: epoch, UpdatedAt: epoch,
+		}); err != nil {
+			return err
+		}
+		for e := range 4 {
+			trigger := "auto"
+			if e == 0 {
+				trigger = "start"
+			}
+			if _, err := st.AddCompaction(ctx, store.Compaction{AgentID: ag.ID, ThreadID: threadID, Trigger: trigger, PreTokens: 160_000, PromptRev: 2, CompactRev: 1}); err != nil {
+				return err
+			}
+		}
+		if err := st.SetAgentThread(ctx, ag.ID, threadID); err != nil {
+			return err
+		}
+		if err := st.SetAgentLiveRevs(ctx, ag.ID, 2, 1); err != nil {
+			return err
+		}
+		// Half wait on a restart onto a newer revision, which the frame
+		// carries; the rest leave it out.
+		if i%2 == 0 {
+			if _, err := st.SetThreadRestartPending(ctx, threadID, true); err != nil {
+				return err
+			}
 		}
 	}
 

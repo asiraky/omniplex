@@ -7,6 +7,7 @@ import { checkBuild } from "./boot";
 import type { ThreadSearchResult } from "./lib/threadFind";
 import type {
   Access,
+  Agent,
   AuthFlowEvent,
   Event,
   HarnessMeta,
@@ -53,6 +54,8 @@ export interface ClientEvents {
   onHarnesses(harnesses: HarnessMeta[]): void;
   onComposerItemsChanged(threadId: string): void;
   onProjects(projects: Project[]): void;
+  /** The live agents, whole, on welcome and whenever one changes. */
+  onAgents?(agents: Agent[]): void;
   onQuotas(quotas: QuotaStatus[]): void;
   onState(threadId: string, state: ThreadState): void;
   /** The attached thread's transient turn status; null clears it. */
@@ -715,6 +718,7 @@ export class Client {
         this.events.onThreads(f.threads ?? []);
         this.events.onHarnesses(f.harnesses ?? []);
         this.events.onProjects(f.projects ?? []);
+        this.events.onAgents?.(f.agents ?? []);
         this.events.onQuotas(f.quotas ?? []);
         if (f.access) {
           this.events.onAccess(f.access);
@@ -737,6 +741,12 @@ export class Client {
       // a project deleted on the phone leaves the laptop's picker too.
       case "projects":
         this.events.onProjects(f.projects ?? []);
+        break;
+
+      // An agent was created, saved, archived or moved to a new thread. The
+      // list travels whole, like projects; absent means none are left.
+      case "agents":
+        this.events.onAgents?.(f.agents ?? []);
         break;
 
       // Usage limits changed somewhere: a live rate-limit push from a

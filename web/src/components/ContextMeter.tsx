@@ -31,11 +31,26 @@ const SEGMENT = [
  * the thread's cost accounting so the two can never be confused (the mistake
  * that let a summed-per-turn total read as a full window in the first place).
  */
-export function ContextMeter({ usage, model }: { usage: Usage; model?: string }) {
+export function ContextMeter({
+  usage,
+  model,
+  compactAt,
+  bare = false,
+}: {
+  usage: Usage;
+  model?: string;
+  /** An agent's own compaction point. It replaces the window as what the
+      meter measures against, because it is the number the user chose. */
+  compactAt?: number;
+  /** The ring alone, with the agent's count left to the popover: a phone's
+      toolbar has no room for both the count and the model's name. */
+  bare?: boolean;
+}) {
+  const counted = !!compactAt && !bare;
   const { open, setOpen, trigger, content } = useHoverPopover();
 
   const used = usage.contextUsed ?? 0;
-  const win = usage.contextWindow ?? 0;
+  const win = compactAt ?? usage.contextWindow ?? 0;
   const hasWindow = win > 0;
   const hasPct = hasWindow || usage.contextPct !== undefined;
   // Measured against the compaction window, computed from the raw tokens rather
@@ -52,11 +67,11 @@ export function ContextMeter({ usage, model }: { usage: Usage; model?: string })
   // The bar is drawn against the model's full window when that is larger than
   // the compaction window, so the compaction point can sit as an interior
   // marker rather than pinned to the right edge.
-  const limit = usage.contextLimit && usage.contextLimit > win ? usage.contextLimit : win;
+  const limit = !compactAt && usage.contextLimit && usage.contextLimit > win ? usage.contextLimit : win;
   // The threshold marker: the reported auto-compaction trigger if there is one,
   // otherwise the compaction window when it sits below the model's full window.
   const threshold =
-    usage.autoCompactThreshold && usage.autoCompactThreshold > 0
+    !compactAt && usage.autoCompactThreshold && usage.autoCompactThreshold > 0
       ? usage.autoCompactThreshold
       : limit > win && win > 0
         ? win
@@ -79,7 +94,8 @@ export function ContextMeter({ usage, model }: { usage: Usage; model?: string })
         {...trigger}
         aria-label={hasPct ? `Context ${fmtPct(pct)} used` : "Context usage unavailable"}
         className={cn(
-          "flex size-8 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          counted ? "px-1.5" : "w-8",
           ringTone,
         )}
       >
@@ -97,6 +113,13 @@ export function ContextMeter({ usage, model }: { usage: Usage; model?: string })
             strokeDashoffset={c * (1 - ringPct / 100)}
           />
         </svg>
+        {/* An agent's compaction point is the user's own number, so the
+            meter says it out loud rather than behind a tap. */}
+        {counted && (
+          <span className="font-mono text-[11px] tabular-nums">
+            {fmtTokens(used)} / {fmtTokens(compactAt)}
+          </span>
+        )}
       </PopoverTrigger>
 
       <PopoverContent
@@ -172,7 +195,11 @@ export function ContextMeter({ usage, model }: { usage: Usage; model?: string })
 
         <div className="mt-2.5 border-t pt-2.5 text-[11px] leading-relaxed">
           <p className={cn(over ? "text-destructive" : "text-muted-foreground")}>
-            {!hasWindow
+            {compactAt
+              ? over
+                ? `Past the agent's compaction point by ${fmtTokens(used - compactAt)} — compaction is imminent.`
+                : `Compacts at ${fmtTokens(compactAt)}, as set on the agent.`
+              : !hasWindow
               ? "Context window unavailable."
               : autoCompactOff
               ? over

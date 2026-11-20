@@ -11,6 +11,8 @@ export function ProjectGroup({
   folded,
   leaving,
   onToggle,
+  action,
+  noun = "thread",
   children,
 }: {
   name: string;
@@ -21,6 +23,10 @@ export function ProjectGroup({
   /** The group's last thread is leaving, and taking the group with it. */
   leaving: boolean;
   onToggle: () => void;
+  /** A control at the header's end, beside the fold (the flat Agents section's +). */
+  action?: ReactNode;
+  /** What the count counts, for the header's label. */
+  noun?: string;
   children: ReactNode;
 }) {
   return (
@@ -34,12 +40,13 @@ export function ProjectGroup({
         {/* Sticky, so the project you are scrolling through keeps saying
            which one it is. Opaque rather than translucent: rows sliding
            under a blurred header read as a rendering fault on a phone. */}
+        <div className="bg-sidebar sticky top-0 z-10 flex min-w-0 items-center">
         <button
           type="button"
           onClick={onToggle}
           aria-expanded={!folded}
-          aria-label={`${name}, ${count} thread${count === 1 ? "" : "s"}${newCount > 0 ? `, ${newCount} new` : ""}`}
-          className="bg-sidebar text-muted-foreground hover:text-foreground focus-visible:ring-ring sticky top-0 z-10 flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 outline-none focus-visible:ring-2"
+          aria-label={`${name}, ${count} ${noun}${count === 1 ? "" : "s"}${newCount > 0 ? `, ${newCount} new` : ""}`}
+          className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex w-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 outline-none focus-visible:ring-2"
         >
           <ChevronRightIcon
             aria-hidden
@@ -68,6 +75,8 @@ export function ProjectGroup({
             {count}
           </span>
         </button>
+        {action}
+        </div>
 
         {/* Folded groups render nothing at all. A collapsed group that
            still costs a row of chrome is the thing #116 deleted; the

@@ -63,8 +63,8 @@ export function useThreadSelection({
   onLeave: () => void;
   /** A hydrated thread that turned out to be gone before any list had it. */
   onForget: (id: string) => void;
-  /** A tapped notification is opening a thread: clear whatever covers the thread view. */
-  onOpenLink: () => void;
+  /** A tapped notification or Back is opening a thread: clear whatever covers the thread view. */
+  onOpenLink: (id: string) => void;
 }) {
   const { clientRef, activeRef, threads, threadsLoaded, threadStore, dropResume } = wire;
   // The boot thread (useWire) is already attached, so the restore below
@@ -92,8 +92,9 @@ export function useThreadSelection({
   const pendingLink = useRef<string | null>(wire.link);
   // Open is the desktop default. On a phone the sidebar *is* the landing
   // screen: with nothing selected there is nothing behind it to look at, so
-  // it starts open unless we are about to restore straight into a thread.
-  const [sidebarOpen, setSidebarOpen] = useState(() => isDesktop || !hadLastThread);
+  // it starts open unless we are about to restore straight into a thread, or
+  // the page loaded at a screen of its own (an agent's page) that is.
+  const [sidebarOpen, setSidebarOpen] = useState(() => isDesktop || (!hadLastThread && !onOwnPage()));
   // Crossing the breakpoint resets it, but only on an actual crossing. On
   // mount this must leave the initial choice above alone.
   const [wasDesktop, setWasDesktop] = useState(isDesktop);
@@ -191,7 +192,7 @@ export function useThreadSelection({
     dropResume();
     clientRef.current?.detach();
     // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: letting go detaches the socket, and only the thread list arriving can say the thread is gone
-    if (!isDesktop) setSidebarOpen(true);
+    if (!isDesktop && !onOwnPage()) setSidebarOpen(true);
     // Its entry no longer names it, so Back and a reload don't go looking.
     if (threadIdFromPath(window.location.pathname)) writeRestoredUrl(null);
   }, [activeRef, clientRef, dropResume, isDesktop, threadStore]);
@@ -252,7 +253,7 @@ export function useThreadSelection({
     writeRestoredUrl(null);
     // Nothing to restore into, so the phone lands on the sidebar after all.
     // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: the phone's sidebar reopens only once the first thread list shows nothing to restore
-    if (!isDesktop) setSidebarOpen(true);
+    if (!isDesktop && !onOwnPage()) setSidebarOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadsLoaded, threads]);
 
@@ -262,7 +263,7 @@ export function useThreadSelection({
   // "Attaching…"; until then it waits in pendingLink.
   const openLink = useCallback(
     (id: string) => {
-      onOpenLink();
+      onOpenLink(id);
       select(id);
     },
     [onOpenLink, select],
@@ -303,7 +304,7 @@ export function useThreadSelection({
         }
         if (openable(threads, id)) {
           // Like a tapped notification: whatever covers the thread view goes.
-          onOpenLink();
+          onOpenLink(id);
           dropResume();
           select(id, { history: false });
           return;
@@ -380,8 +381,17 @@ export function useThreadSelection({
  */
 function writeRestoredUrl(id: string | null) {
   const { pathname, search, hash } = window.location;
-  if (pathname !== "/" && !threadIdFromPath(pathname)) return;
+  if (onOwnPage(pathname)) return;
   navigate((id ? threadPath(id) : "/") + search + hash, { replace: true });
+}
+
+/**
+ * Whether the URL is a screen with a path of its own (/setup, an agent's
+ * page) rather than / or a thread. The thread restored under one stays out of
+ * sight, so a phone's sidebar has no reason to open over it.
+ */
+function onOwnPage(pathname = window.location.pathname): boolean {
+  return pathname !== "/" && !threadIdFromPath(pathname);
 }
 
 /** Whether the list has this thread and it can still be opened. */

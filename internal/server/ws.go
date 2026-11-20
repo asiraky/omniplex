@@ -93,6 +93,12 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 	quotaID, quotaCh := s.mgr.SubscribeQuota()
 	defer s.mgr.UnsubscribeQuota(quotaID)
 
+	// Agents are shared across devices like projects, and their list carries
+	// live state (thread, epoch, the prompt a restart is waiting to apply),
+	// so every change pushes the whole list.
+	agentsID, agentsCh := s.mgr.SubscribeAgents()
+	defer s.mgr.UnsubscribeAgents(agentsID)
+
 	go func() {
 		for {
 			select {
@@ -106,6 +112,8 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 				c.sendProjects()
 			case <-quotaCh:
 				c.send(serverFrame{Type: "quotas", Quotas: s.mgr.Quotas()})
+			case <-agentsCh:
+				c.sendAgents()
 			}
 		}
 	}()
@@ -132,6 +140,7 @@ func (c *conn) dispatch(f clientFrame) {
 	case "hello":
 		threads, _ := c.srv.mgr.List(c.ctx)
 		projects, _ := c.srv.mgr.Projects(c.ctx)
+		agents, _ := c.srv.mgr.Agents(c.ctx)
 		c.send(serverFrame{
 			Type:      "welcome",
 			ServerID:  c.srv.id,
@@ -139,6 +148,7 @@ func (c *conn) dispatch(f clientFrame) {
 			Threads:   threads,
 			Harnesses: c.srv.mgr.Harnesses(c.ctx),
 			Projects:  projects,
+			Agents:    agents,
 			Quotas:    c.srv.mgr.Quotas(),
 			Access:    c.srv.access(c.ctx),
 		})
@@ -349,7 +359,9 @@ func timeoutFor(command string) time.Duration {
 		return cardCommandTimeout
 	case "rewind_thread":
 		return rewindCommandTimeout
-	case "restart_thread":
+	// A new prompt restarts the agent's live thread; creating an agent or a
+	// new thread for one can start a harness and send it the first message.
+	case "restart_thread", "save_agent_revision", "create_agent", "agent_new_thread", "archive_agent":
 		return restartCommandTimeout
 	}
 	return commandTimeout
@@ -486,6 +498,9 @@ func ephemeralCommand(name string) bool {
 	case "set_elevenlabs_key":
 		return true
 	}
+	if agentReadCommand(name) {
+		return true
+	}
 	// Connections: reads of live state (a stored answer would be stale),
 	// saves that carry credentials (which must not sit in a claimed row), and
 	// writes that are idempotent or refuse a repeat on their own.
@@ -495,6 +510,9 @@ func ephemeralCommand(name string) bool {
 func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 	if connectionCommands[f.Command] {
 		return c.srv.connectionsCommand(ctx, f.Command, f.Args)
+	}
+	if agentCommands[f.Command] {
+		return c.srv.agentCommand(ctx, f.Command, f.Args)
 	}
 	switch f.Command {
 	case "create_thread":

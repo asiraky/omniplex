@@ -1,4 +1,4 @@
-import { BookOpenIcon, KeyRoundIcon, PlugIcon, UserPlusIcon, type LucideIcon } from "lucide-react";
+import { BookOpenIcon, BotIcon, KeyRoundIcon, PlugIcon, UserPlusIcon, type LucideIcon } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
 import { Marker, type Tone } from "~/components/ui/marker";
@@ -13,6 +13,7 @@ const ICON: Record<CardKind, LucideIcon> = {
   remove_skill: BookOpenIcon,
   add_sign_in: KeyRoundIcon,
   add_account: UserPlusIcon,
+  prompt_edit: BotIcon,
 };
 
 const TONE: Record<CardResult, Tone> = {
@@ -50,7 +51,7 @@ export function CardRow({
         <div className="min-w-0 flex-1 space-y-1">
           <p className="text-[13px] leading-snug text-pretty">{summary}</p>
           <span className="flex flex-wrap items-center gap-1.5">
-            <Marker tone={TONE[result] ?? "quiet"}>{resultText(card.kind, result)}</Marker>
+            <Marker tone={TONE[result] ?? "quiet"}>{resultText(card.kind, result, outcome, card)}</Marker>
             {result === "saved" && outcome?.live && <Marker>{LIVE_TEXT[outcome.live]}</Marker>}
             {result === "saved" && outcome?.shadowed && <Marker>{SHADOWED_TEXT}</Marker>}
           </span>

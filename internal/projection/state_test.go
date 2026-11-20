@@ -1976,7 +1976,7 @@ func TestRestartPendingAndItsNotice(t *testing.T) {
 	}
 
 	s.Apply(event(t, 3, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
-	s.Apply(event(t, 4, proto.ThreadRestarted, proto.ThreadRestartedPayload{}))
+	s.Apply(event(t, 4, proto.ThreadRestarted, proto.ThreadRestartedPayload{PromptRev: 3}))
 	s.Apply(event(t, 5, proto.ThreadRestartRequested, proto.ThreadRestartRequestedPayload{}))
 	s.Apply(event(t, 6, proto.ThreadRestarted, proto.ThreadRestartedPayload{Error: "no prompt snapshot"}))
 	if s.RestartPending {
@@ -1988,7 +1988,7 @@ func TestRestartPendingAndItsNotice(t *testing.T) {
 			notes = append(notes, it)
 		}
 	}
-	if len(notes) != 2 || notes[0].Text != "" || notes[1].Text != "no prompt snapshot" || notes[1].ReceivedAt != 6000 {
+	if len(notes) != 2 || notes[0].Text != "" || notes[0].PromptRev != 3 || notes[1].Text != "no prompt snapshot" || notes[1].PromptRev != 0 || notes[1].ReceivedAt != 6000 {
 		t.Fatalf("restart notices = %+v, want a clean one then a failed one", notes)
 	}
 }
@@ -2003,5 +2003,24 @@ func TestRestartDoesNotLiftALimitHold(t *testing.T) {
 	s.Apply(event(t, 4, proto.ThreadRestarted, proto.ThreadRestartedPayload{}))
 	if !s.QueueHeld() || !s.HeldByLimit(s.Queued[0]) {
 		t.Fatal("a restart lifted the limit's hold")
+	}
+}
+
+// A compaction notice on an agent's thread carries the epoch the host stamped
+// on it, which is what its Inspect link opens; one on any other thread has
+// none.
+func TestCompactionNoticeCarriesItsEpoch(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: "auto", PreTokens: 160000, Epoch: 3, CompactionID: 9}))
+	s.Apply(event(t, 2, proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: "manual"}))
+
+	if len(s.Items) != 2 {
+		t.Fatalf("items = %+v, want two notices", s.Items)
+	}
+	if s.Items[0].Epoch != 3 || s.Items[0].PreTokens != 160000 {
+		t.Fatalf("agent notice = %+v, want epoch 3", s.Items[0])
+	}
+	if s.Items[1].Epoch != 0 {
+		t.Fatalf("plain notice epoch = %d, want none", s.Items[1].Epoch)
 	}
 }

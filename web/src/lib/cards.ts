@@ -7,6 +7,7 @@
 // touched is never sent.
 
 import type {
+  AgentTextKind,
   AuthBeginArgs,
   Card,
   CardCli,
@@ -27,6 +28,7 @@ export const CARD_LABEL: Record<CardKind, string> = {
   remove_skill: "remove skill",
   add_sign_in: "add sign-in",
   add_account: "add account",
+  prompt_edit: "prompt edit",
 };
 
 export const PROJECT_SCOPE = "This project";
@@ -67,6 +69,13 @@ export function cardSummary(card: Card): string {
       return `Add a sign-in for ${card.cli?.name ?? "a command-line tool"}`;
     case "add_account":
       return `Add the account ${card.account?.name ?? ""} to ${card.account?.cliName || card.account?.cli || "a sign-in"}`;
+    case "prompt_edit": {
+      const edit = card.promptEdit;
+      const what = edit?.kind === "compact" ? "its compaction instructions" : "its system prompt";
+      // An append reads as the rule it is; anything else is a change.
+      const verb = edit && edit.after.startsWith(edit.before) ? "add to" : "change";
+      return `${edit?.agentName || "The agent"} wants to ${verb} ${what}.`;
+    }
   }
 }
 
@@ -173,13 +182,102 @@ export function accountEdits(card: Card, name: string): CardEdits | undefined {
   return next && next !== (card.account?.name ?? "") ? { name: next } : undefined;
 }
 
+// ---- prompt_edit ----
+
+/** r<n> for a prompt revision, c<n> for compaction instructions. */
+export function revisionLabel(kind: AgentTextKind, n: number): string {
+  return `${kind === "compact" ? "c" : "r"}${n}`;
+}
+
+const lines = (text: string) => text.split("\n");
+
+/**
+ * The part of a proposal the user edits: the lines it changes, between what
+ * it leaves alone at either end. A 40-line prompt with one rule added is one
+ * line to edit, not 40 to scroll through on a phone.
+ *
+ * Blank lines at the edges of the change stay outside it. An appended rule
+ * arrives as a blank separator and the rule, and a separator in the box is
+ * one the user deletes without noticing, gluing the rule onto the line above.
+ */
+export function editableSpan(before: string, after: string): { head: string[]; middle: string; tail: string[] } {
+  const b = lines(after);
+  let { head, tail } = changedSpan(before, after);
+  while (head < b.length - tail && b[head].trim() === "") head++;
+  while (tail < b.length - head && b[b.length - 1 - tail].trim() === "") tail++;
+  return { head: b.slice(0, head), middle: b.slice(head, b.length - tail).join("\n"), tail: b.slice(b.length - tail) };
+}
+
+/** How many lines at each end the two texts share. */
+function changedSpan(before: string, after: string): { head: number; tail: number } {
+  const a = lines(before);
+  const b = lines(after);
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  return { head, tail };
+}
+
+/**
+ * What the edit box makes of a proposal. The box holds the lines that go in
+ * place of the ones the proposal changes, so its text always means the same
+ * thing: an append changes no lines, and its box holds what is added; a
+ * replace changes the lines its find text is on, and its box holds what they
+ * become.
+ *
+ * - proposal: the box is as it opened, so the proposal is approved as sent.
+ * - same: the prompt would stay as the current revision, which is nothing to
+ *   approve. An append whose box is emptied ends here.
+ * - edited: body is the whole text to send. removes is an emptied box on a
+ *   replace: the lines it changed are taken out, and nothing put in.
+ */
+export type PromptEditDraft =
+  | { status: "proposal" }
+  | { status: "same" }
+  | { status: "edited"; body: string; removes: boolean };
+
+export function promptEditDraft(card: Card, middle: string): PromptEditDraft {
+  const edit = card.promptEdit;
+  if (!edit) return { status: "proposal" };
+  const span = editableSpan(edit.before, edit.after);
+  if (middle === span.middle) return { status: "proposal" };
+  const { head, tail } = changedSpan(edit.before, edit.after);
+  const a = lines(edit.before);
+  // What the proposal replaces. Blank lines alone are an append's: it trims the
+  // prompt's trailing blank lines before its separator.
+  const replaced = a.slice(head, a.length - tail);
+  const appends = replaced.every((l) => l.trim() === "");
+  let body: string;
+  const cleared = middle.trim() === "";
+  if (cleared && appends) {
+    body = edit.before;
+  } else if (cleared) {
+    // The replaced lines go, and the blank lines that only set the change off
+    // go with them.
+    body = [...a.slice(0, head), ...a.slice(a.length - tail)].join("\n");
+  } else {
+    body = [...span.head, ...lines(middle), ...span.tail].join("\n");
+  }
+  if (body === edit.before) return { status: "same" };
+  if (body === edit.after) return { status: "proposal" };
+  return { status: "edited", body, removes: cleared };
+}
+
 // ---- what happened ----
 
 const REMOVES: CardKind[] = ["remove_mcp_server", "remove_skill"];
 const INSTALLS: CardKind[] = ["install_skill", "create_skill"];
 
 /** The marker on a card's row: what was done with it. */
-export function resultText(kind: CardKind, result: CardResult): string {
+export function resultText(kind: CardKind, result: CardResult, outcome?: CardOutcome, card?: Card): string {
+  if (kind === "prompt_edit") {
+    // The revision is what the user will look for on the agent page.
+    if (result === "saved" && outcome?.revision) {
+      return `Saved as ${revisionLabel(card?.promptEdit?.kind ?? "prompt", outcome.revision)}`;
+    }
+    if (result === "declined") return "Rejected — nothing saved";
+  }
   switch (result) {
     case "pending":
       return "Waiting for you";

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { SettingsSection } from "~/components/SettingsScreen";
-import { onMove, useBackDismiss } from "~/lib/history";
+import { parseAgentPage, agentPagePath, type AgentPage } from "~/lib/agentRoutes";
+import { isDraftEntry, navigate, onMove, useBackDismiss } from "~/lib/history";
 import type { ToolsTab } from "~/lib/toolsTab";
 
 export const SETUP_PATH = "/setup";
@@ -59,10 +60,30 @@ export function useScreens() {
     setSetup(false);
   }, []);
 
+  // An agent's page or the New agent form, in the main column beside the
+  // sidebar like the box terminal. Unlike it, each has a path of its own
+  // (lib/agentRoutes.ts), so a reload and Back and Forward land on it. The
+  // thread attached before stays attached underneath.
+  const [page, setPage] = useState<AgentPage | null>(currentPage);
+  // The entry the page was pushed over, when it was a place of its own rather
+  // than a draft the push took over: leaving the page for that same place is
+  // then a Back, not a second entry for it.
+  const pushedFrom = useRef<string | null>(null);
+  const pageRef = useRef(page);
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
+  useEffect(() => {
+    return onMove(() => {
+      pushedFrom.current = null;
+      setPage(currentPage());
+    });
+  }, []);
+
   // A full-page screen is up instead of the thread view, composer and all.
-  // The box terminal counts: it takes the thread view's place, if not the
-  // sidebar's.
-  const fullPage = showUsage || !!tools || setup || themePreview || boxTerminal;
+  // The box terminal and the agent pages count: they take the thread view's
+  // place, if not the sidebar's.
+  const fullPage = showUsage || !!tools || setup || themePreview || boxTerminal || !!page;
   // Whether a full-page screen or Settings hides the thread view, so the
   // server knows the open thread is not actually being watched.
   const covering = !!settings || fullPage;
@@ -81,10 +102,56 @@ export function useScreens() {
     setBoxTerminal(true);
   }, [uncover]);
   const closeBoxTerminal = useCallback(() => setBoxTerminal(false), []);
+
+  // Another tab or focus of the page already open replaces its entry, so Back
+  // leaves the page rather than stepping through its tabs. Anything else is a
+  // place of its own, unless the caller replaces: the New agent form gives
+  // way to the agent it made, and Back from there should not reopen the form.
+  const openPage = useCallback(
+    (next: AgentPage, { replace = false }: { replace?: boolean } = {}) => {
+      uncover();
+      const cur = pageRef.current;
+      const same =
+        !!cur &&
+        cur.kind === next.kind &&
+        (next.kind === "new" || (cur.kind === "agent" && cur.agentId === next.agentId));
+      if (!same && !replace) {
+        const { pathname, search } = window.location;
+        pushedFrom.current = cur || isDraftEntry() ? null : pathname + search;
+      }
+      pageRef.current = next;
+      setPage(next);
+      navigate(agentPagePath(next), { replace: same || replace });
+    },
+    [uncover],
+  );
+  // Put the page away, leaving the URL to whoever is going somewhere next.
+  const dropPage = useCallback(() => {
+    pageRef.current = null;
+    setPage(null);
+  }, []);
+  // Put the page away and go to `to`: Back, when that is the entry the page
+  // was opened over, so history keeps one entry per place.
+  // With replace, the page's entry becomes `to`: the form that made a thread
+  // is done, and Back from the thread should not bring it back.
+  const closePage = useCallback(
+    (to: string, { draft = false, replace = false }: { draft?: boolean; replace?: boolean } = {}) => {
+      const back = !replace && pushedFrom.current === to;
+      pushedFrom.current = null;
+      pageRef.current = null;
+      setPage(null);
+      if (back) window.history.back();
+      else navigate(to, { draft, replace });
+    },
+    [],
+  );
+
   // Choosing a thread or starting one is going somewhere: every screen gives
-  // way, the URL ones too, since the user asked for it.
+  // way, the URL ones too, since the user asked for it. An agent page's URL is
+  // the caller's to replace, since it is going somewhere with a path.
   const leaveAll = () => {
     uncover();
+    dropPage();
     if (setup) leaveSetup();
     if (themePreview) leaveThemePreview();
   };
@@ -99,6 +166,10 @@ export function useScreens() {
 
   return {
     fullPage,
+    page,
+    openPage,
+    dropPage,
+    closePage,
     boxTerminal,
     openBoxTerminal,
     closeBoxTerminal,
@@ -125,4 +196,8 @@ export function useScreens() {
     setup,
     leaveSetup,
   };
+}
+
+function currentPage(): AgentPage | null {
+  return parseAgentPage(window.location.pathname, window.location.search);
 }

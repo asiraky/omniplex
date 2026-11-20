@@ -9,6 +9,9 @@ import "context"
 // path round-trips to the harness and never writes the row the sidebar reads,
 // neither of which fits.
 func (m *Manager) SetThreadPinned(ctx context.Context, threadID string, pinned bool) error {
+	if err := m.refuseAgentThread(ctx, threadID, "pinned"); err != nil {
+		return err
+	}
 	if err := m.store.SetThreadPinned(ctx, threadID, pinned); err != nil {
 		return err
 	}

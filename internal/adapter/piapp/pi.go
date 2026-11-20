@@ -167,6 +167,13 @@ func agentDir(env map[string]string) string {
 	return filepath.Join(home, ".pi", "agent")
 }
 
+// CompactInstructions: never. This adapter hands pi no compaction
+// instructions, so pi compacts with its own prompt and an agent's are kept
+// but not used.
+func (a *Adapter) CompactInstructions() adapter.CompactInstructionsUse {
+	return adapter.CompactInstructionsUse{Reads: adapter.CompactReadsNever}
+}
+
 func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, o adapter.CreateOptions) (adapter.Session, error) {
 	if o.Mode != "" && o.Mode != "full-access" {
 		return nil, fmt.Errorf("pi does not have a %q permission mode; it always runs with full access", o.Mode)
@@ -200,6 +207,12 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	}
 	if o.Effort != "" {
 		args = append(args, "--thinking", o.Effort)
+	}
+	// An agent's brief is its whole job, so an agent thread hands it to pi.
+	// Pi rebuilds its system prompt on every run, so a restart picks up a new
+	// one. Plain pi threads keep pi's own prompt, as they always have.
+	if o.CompactInstructionsFile != "" && o.Instructions != "" {
+		args = append(args, "--append-system-prompt", o.Instructions)
 	}
 	// Read once at start: pi does not rescan, so a skill added mid-session
 	// arrives with the next one.
@@ -263,7 +276,8 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		dialogs:   map[string]dialog{},
 		editPaths: map[string]string{},
 
-		refTimeout: refLookupTimeout,
+		epochDetail: o.CompactInstructionsFile != "",
+		refTimeout:  refLookupTimeout,
 	}
 
 	go s.readLoop(stdout)
@@ -378,6 +392,11 @@ type session struct {
 	// prompt is the open turn's prompt, kept until the turn ends so its
 	// entry in pi's history can be found then (see refFor).
 	prompt *turnPrompt
+	// epochDetail is set on an agent's session, whose compaction log keeps
+	// what each compaction carried over. compactStarted is when the running
+	// compaction began; only the read loop touches it.
+	epochDetail    bool
+	compactStarted time.Time
 
 	// finMu orders a turn.finished held back for its HarnessRef lookup
 	// (pendingFin) against the next turn's turn.started: whichever comes
@@ -1015,6 +1034,7 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 		// loop, or after agent_end but before agent_settled), and manual
 		// compaction has no agent_settled to close a turn opened for it. One
 		// arriving with no turn open is dropped by the actor, as it should be.
+		s.compactStarted = time.Now()
 		s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{State: proto.TurnCompacting}))
 
 	case "compaction_end":
@@ -1022,11 +1042,17 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 			Reason  string `json:"reason"` // manual | threshold | overflow
 			Aborted bool   `json:"aborted"`
 			Result  *struct {
-				TokensBefore         int64 `json:"tokensBefore"`
-				EstimatedTokensAfter int64 `json:"estimatedTokensAfter"`
+				Summary              string `json:"summary"`
+				TokensBefore         int64  `json:"tokensBefore"`
+				EstimatedTokensAfter int64  `json:"estimatedTokensAfter"`
 			} `json:"result"`
 		}
 		_ = json.Unmarshal(raw, &p)
+		var took int64
+		if !s.compactStarted.IsZero() {
+			took = time.Since(s.compactStarted).Milliseconds()
+			s.compactStarted = time.Time{}
+		}
 		s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{}))
 		// A null result is an aborted or failed compaction: nothing changed,
 		// so there is no boundary to record.
@@ -1039,7 +1065,13 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 		}
 		s.emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{
 			Trigger: trigger, PreTokens: p.Result.TokensBefore, PostTokens: p.Result.EstimatedTokensAfter,
+			DurationMs: took,
 		}))
+		// Pi's summary is plain text in the event, so an agent's log gets it
+		// at once. Pi re-reads no files and attaches nothing beside it.
+		if s.epochDetail && p.Result.Summary != "" {
+			s.emit(proto.Emit(proto.CompactionDetail, proto.CompactionDetailPayload{Summary: p.Result.Summary}))
+		}
 
 	case "agent_settled":
 		// The turn boundary. agent_end is deliberately not it: pi may still

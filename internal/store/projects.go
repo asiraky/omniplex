@@ -330,8 +330,77 @@ func (s *Store) projects(ctx context.Context, where string, args ...any) ([]proj
 // behind them — so the threads go first, deliberately, and the project after.
 var ErrProjectInUse = errors.New("project still has threads")
 
-// DeleteProject forgets a project and its folders. Nothing on disk is
-// touched: the folders are the user's, not omniplex's.
+// ErrProjectHasAgents is returned when a project still has an agent that is
+// not archived. Its threads cannot be deleted one by one, so the agent is
+// archived first, and its threads then go with the project.
+var ErrProjectHasAgents = errors.New("project still has agents")
+
+// archivedAgentsOf selects the ids of a project's archived agents.
+const archivedAgentsOf = `SELECT id FROM agents WHERE project_id = ? AND archived_at != 0`
+
+// ArchivedAgentThreadIDs lists the threads of a project's archived agents,
+// which deleting the project deletes with it.
+func (s *Store) ArchivedAgentThreadIDs(ctx context.Context, projectID string) ([]string, error) {
+	return s.ids(ctx, `SELECT id FROM threads WHERE agent_id IN (`+archivedAgentsOf+`)`, projectID)
+}
+
+// ArchivedAgentIDs lists a project's archived agents.
+func (s *Store) ArchivedAgentIDs(ctx context.Context, projectID string) ([]string, error) {
+	return s.ids(ctx, archivedAgentsOf, projectID)
+}
+
+// CheckProjectDeletable is DeleteProject's refusal, for a caller with work
+// to do on disk before the delete that must not start on a project the
+// delete would refuse. DeleteProject checks again.
+func (s *Store) CheckProjectDeletable(ctx context.Context, id string) error {
+	return projectDeletable(ctx, s.db, id)
+}
+
+// projectDeletable refuses a project with an agent not archived, or a
+// thread that is not an archived agent's.
+func projectDeletable(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, id string) error {
+	var agents int
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE project_id = ? AND archived_at = 0`, id).Scan(&agents); err != nil {
+		return err
+	}
+	if agents > 0 {
+		return fmt.Errorf("%w: archive its %s first", ErrProjectHasAgents, plural(agents, "agent"))
+	}
+	var threads int
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE project_id = ? AND agent_id NOT IN (`+archivedAgentsOf+`)`, id, id).Scan(&threads); err != nil {
+		return err
+	}
+	if threads > 0 {
+		return fmt.Errorf("%w: delete its %s first", ErrProjectInUse, plural(threads, "thread"))
+	}
+	return nil
+}
+
+func (s *Store) ids(ctx context.Context, q string, args ...any) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// DeleteProject forgets a project and its folders, and its archived agents
+// with everything of theirs: their threads and those threads' logs, their
+// revisions and compaction logs. Nothing on disk is touched: the folders are
+// the user's, not omniplex's, and the agents' threads were closed, their
+// workspaces released, when they were archived. A project with a thread of
+// its own, or an agent not archived, is refused.
 func (s *Store) DeleteProject(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -341,14 +410,10 @@ func (s *Store) DeleteProject(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 
-	// Counted inside the transaction, so a thread created between the check
-	// and the delete cannot be orphaned by it.
-	var threads int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE project_id = ?`, id).Scan(&threads); err != nil {
+	// Counted inside the transaction, so a thread or agent created between
+	// the check and the delete cannot be orphaned by it.
+	if err := projectDeletable(ctx, tx, id); err != nil {
 		return err
-	}
-	if threads > 0 {
-		return fmt.Errorf("%w: delete its %s first", ErrProjectInUse, plural(threads, "thread"))
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
 	if err != nil {
@@ -357,8 +422,21 @@ func (s *Store) DeleteProject(ctx context.Context, id string) error {
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
 		return ErrNotFound
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM folders WHERE project_id = ?`, id); err != nil {
-		return err
+	agentThreads := `SELECT id FROM threads WHERE agent_id IN (` + archivedAgentsOf + `)`
+	for _, q := range []string{
+		`DELETE FROM folders WHERE project_id = ?`,
+		`DELETE FROM scheduled_prompts WHERE thread_id IN (` + agentThreads + `)`,
+		`DELETE FROM events WHERE thread_id IN (` + agentThreads + `)`,
+		`DELETE FROM snapshots WHERE thread_id IN (` + agentThreads + `)`,
+		`DELETE FROM commands WHERE thread_id IN (` + agentThreads + `)`,
+		`DELETE FROM threads WHERE agent_id IN (` + archivedAgentsOf + `)`,
+		`DELETE FROM compactions WHERE agent_id IN (` + archivedAgentsOf + `)`,
+		`DELETE FROM agent_revisions WHERE agent_id IN (` + archivedAgentsOf + `)`,
+		`DELETE FROM agents WHERE project_id = ? AND archived_at != 0`,
+	} {
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

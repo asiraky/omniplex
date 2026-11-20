@@ -299,6 +299,9 @@ type sidecarConfig struct {
 	// Ephemeral turns off the SDK's session file (persistSession: false):
 	// for a private thread whose transcript cannot be kept in memory.
 	Ephemeral bool `json:"ephemeral,omitempty"`
+	// Settings is the SDK's inline settings option, which Claude Code layers
+	// over the user's own (see compactSettings).
+	Settings json.RawMessage `json:"settings,omitempty"`
 }
 
 // sdkPlugin is the SDK's local plugin option: a folder holding
@@ -385,6 +388,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		Instructions:                    o.Instructions,
 		Ephemeral:                       noTranscript,
 		PromptSuggestions:               o.SuggestPrompts,
+		Settings:                        compactSettings(o.CompactInstructionsFile),
 	}
 	servers, secrets, err := sidecarMCP(o.MCPServers)
 	if err != nil {
@@ -410,6 +414,11 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if kv := mcpToolTimeout(o.MCPServers, o.Env); kv != "" {
 		extra = append(extra, kv)
 	}
+	agentEnv, err := agentEnv(o)
+	if err != nil {
+		return nil, err
+	}
+	extra = append(extra, agentEnv...)
 	taskEnv := o.Env
 	if o.Ephemeral {
 		penv, err := privateEnv(o.Cwd)
@@ -449,6 +458,14 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		steers:  map[string]bool{},
 		done:    make(chan struct{}),
 		lastGen: 1,
+		// Only an agent's thread keeps a compaction log, so only it pays
+		// for reading the transcript.
+		epochDetail: o.CompactInstructionsFile != "",
+		// A resumed agent reads both again: the process that ran before may
+		// have stopped short of reading them. Filing a detail twice is
+		// harmless, since it fills the same rows with the same text.
+		startDetail: o.CompactInstructionsFile != "",
+		compacted:   o.CompactInstructionsFile != "" && o.Resume,
 	}
 	conv.apply(&cfg)
 	if _, err := s.startBridge(cfg, conv.id, 1, true); err != nil {
@@ -716,6 +733,17 @@ type session struct {
 	// null status that ends it clears the line and a null that only reports
 	// a permission-mode change leaves a live retry alone.
 	compacting bool
+	// epochDetail says the session reports what each epoch started from
+	// (compaction.go). startDetail is the first epoch's, still to be read at
+	// the next result. compacted is a compaction's, still to be read at the
+	// epoch's first answer or the next result, whichever comes first;
+	// epochOpen says it was read at the answer and is read again at the
+	// result. epochRead is closed when the last read has gone out.
+	epochDetail bool
+	startDetail bool
+	compacted   bool
+	epochOpen   bool
+	epochRead   chan struct{}
 	// todos holds the ids of the main agent's TodoWrite calls, which go out
 	// as plan.updated rather than tool calls. The id is remembered from the
 	// stream until the tool result arrives, so neither the start nor the
@@ -1366,6 +1394,9 @@ func (s *session) handleSDKMessage(msg map[string]json.RawMessage) {
 	case "stream_event":
 		s.handleStreamEvent(msg)
 	case "assistant":
+		if str(msg["parent_tool_use_id"]) == "" {
+			s.reportEpochs(false)
+		}
 		s.handleAssistant(msg)
 	case "user":
 		s.handleUser(msg)
@@ -1534,17 +1565,26 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 				Trigger    string `json:"trigger"`
 				PreTokens  int64  `json:"pre_tokens"`
 				PostTokens int64  `json:"post_tokens"`
+				DurationMs int64  `json:"duration_ms"`
 			} `json:"compact_metadata"`
 		}
 		remarshal(msg, &b)
 		// The boundary ends the compaction and clears the line itself.
 		s.mu.Lock()
 		s.compacting = false
+		// A compaction's detail is filed on the latest compaction row, so
+		// the last epoch's must be out before this one's row is made.
+		read := s.epochRead
+		s.compacted, s.epochOpen = s.epochDetail, false
 		s.mu.Unlock()
+		if read != nil {
+			<-read
+		}
 		s.emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{
 			Trigger:    b.Meta.Trigger,
 			PreTokens:  b.Meta.PreTokens,
 			PostTokens: b.Meta.PostTokens,
+			DurationMs: b.Meta.DurationMs,
 		}))
 	}
 }
@@ -2114,6 +2154,7 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	// A rewound conversation exists once a turn has gone into it; from here
 	// it resumes by its own id.
 	s.settleRewind()
+	s.reportEpochs(true)
 
 	// A result for a turn that was never started — no prompt, and no output
 	// that would have opened one — has nothing to finish. Emitting it anyway

@@ -10,7 +10,7 @@ import type { Wire } from "./useWire";
 
 const threads = [{ id: "t1", projectId: "p1", phase: "idle" }] as ThreadMeta[];
 
-function setup({ loaded = false, list = threads } = {}) {
+function setup({ loaded = false, list = threads, isDesktop = true } = {}) {
   const client = { attach: vi.fn(), detach: vi.fn() };
   const wire = {
     clientRef: { current: client },
@@ -27,7 +27,7 @@ function setup({ loaded = false, list = threads } = {}) {
   const hook = renderHook((w: Wire) =>
     useThreadSelection({
       wire: w,
-      isDesktop: true,
+      isDesktop,
       onLeave: vi.fn(),
       onForget: vi.fn(),
       onOpenLink: vi.fn(),
@@ -234,5 +234,30 @@ describe("history", () => {
     expect(result.current.activeId).toBeNull();
     expect(window.location.pathname).toBe("/");
     expect(localStorage.getItem("omniplex.lastThread")).toBeNull();
+  });
+});
+
+describe("under an agent page", () => {
+  it("restores the last thread beneath it without taking over its URL", () => {
+    window.history.replaceState(null, "", "/agents/a1/log");
+    localStorage.setItem("omniplex.lastThread", "t1");
+    const { result, land } = setup();
+    land();
+    expect(result.current.activeId).toBe("t1");
+    expect(window.location.pathname).toBe("/agents/a1/log");
+  });
+
+  it("keeps a phone's sidebar shut over it, with or without a thread to restore", () => {
+    window.history.replaceState(null, "", "/agents/a1/prompt");
+    const { result, land } = setup({ isDesktop: false, list: [] });
+    expect(result.current.sidebarOpen).toBe(false);
+    land([]);
+    expect(result.current.sidebarOpen).toBe(false);
+  });
+
+  it("opens a phone's sidebar at / with nothing to restore, as before", () => {
+    const { result, land } = setup({ isDesktop: false, list: [] });
+    land([]);
+    expect(result.current.sidebarOpen).toBe(true);
   });
 });

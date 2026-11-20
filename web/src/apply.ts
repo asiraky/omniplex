@@ -908,6 +908,8 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           it.trigger = p.trigger;
           it.preTokens = p.preTokens;
           it.postTokens = p.postTokens;
+          // On an agent's thread, its row in the agent's log, for Inspect.
+          if (p.epoch) it.epoch = p.epoch;
         }),
       };
 
@@ -945,6 +947,21 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           it.receivedAt ??= ev.timestamp;
           it.noticeKind = "restart";
           it.text = p.error ?? "";
+          if (p.promptRev) it.promptRev = p.promptRev;
+        }),
+      };
+
+    case "thread.agent_started":
+      // An agent's thread's first line: the revisions it started on. One per
+      // thread, so the id is fixed. Mirrors internal/projection/state.go.
+      return {
+        ...s,
+        items: upsert(s, "agent:started", (it) => {
+          it.kind = "notice";
+          it.receivedAt ??= ev.timestamp;
+          it.noticeKind = "started";
+          it.promptRev = p.promptRev;
+          if (p.compactRev) it.compactRev = p.compactRev;
         }),
       };
 

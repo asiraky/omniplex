@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -157,6 +158,11 @@ type Manager struct {
 	// edited or removed on the phone stayed on the laptop's screen until it
 	// reconnected, and a removed one could still be picked in new-thread.
 	projectSub map[string]chan struct{}
+	// agentSub wakes on any change to an agent as the agents frame shows
+	// it, its live thread, epoch and live prompt revision included.
+	agentSub map[string]chan struct{}
+	// agentLocks holds a *sync.Mutex per agent id (lockAgent).
+	agentLocks sync.Map
 
 	// The per-instance usage-limit cache and its broadcast. Cached in memory
 	// only: quota is a live property of the account, and a stale snapshot
@@ -255,6 +261,7 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		listSub:         map[string]chan struct{}{},
 		harnessSub:      map[string]chan struct{}{},
 		projectSub:      map[string]chan struct{}{},
+		agentSub:        map[string]chan struct{}{},
 		quotas:          map[string]*QuotaStatus{},
 		quotaGeneration: map[string]uint64{},
 		quotaSub:        map[string]chan struct{}{},
@@ -1062,6 +1069,9 @@ type CreateProjectOptions struct {
 	// ParentID is the thread that delegated this one; empty for a thread the
 	// user started.
 	ParentID string
+	// AgentID makes the thread an agent's: its system prompt and compaction
+	// come from the agent (see harnessExtras). Set by the agent paths only.
+	AgentID string
 }
 
 // folder finds one folder of a project. An empty id means the project's only
@@ -1229,7 +1239,7 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 		}
 	}
 
-	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Title: normaliseTitle(o.Title), Phase: "creating", ProjectID: p.ID, FolderID: f.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, ServiceTier: o.ServiceTier, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(f.Path, provision), DeprovisionScript: relHook(f.Path, deprovision), Pinned: o.Pinned, ParentID: o.ParentID}
+	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Title: normaliseTitle(o.Title), Phase: "creating", ProjectID: p.ID, FolderID: f.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, ServiceTier: o.ServiceTier, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(f.Path, provision), DeprovisionScript: relHook(f.Path, deprovision), Pinned: o.Pinned, ParentID: o.ParentID, AgentID: o.AgentID}
 	if err := m.store.CreateThread(ctx, meta); err != nil {
 		return nil, err
 	}
@@ -1288,20 +1298,88 @@ func (m *Manager) SaveFolder(ctx context.Context, projectID string, f project.Fo
 	return m.store.Project(ctx, projectID)
 }
 
-// DeleteProject removes a project from the registry. It is a registry
-// operation and nothing more: the checkout, its worktrees and its
-// .omniplex/project.json are all left exactly as they are, so a project added
+// DeleteProject removes a project from the registry. For the project itself
+// it is a registry operation and nothing more: the checkout and its
+// .omniplex/project.json are left exactly as they are, so a project added
 // with the wrong path can be dropped without putting anything on disk at risk.
 //
 // A project that still owns threads is refused rather than cascaded. Those
 // threads have transcripts and, often, worktrees behind them; deleting them
 // as a side effect of tidying the project list is not something anybody asked
-// for. The store enforces this, in the same transaction as the delete.
+// for. So is one with an agent not yet archived: the agent is archived first.
+// An archived agent goes with its project, its threads, revisions, log and
+// files with it. Its threads were closed when it was archived, and their
+// workspaces released; one whose teardown failed has its worktree removed the
+// way ForceDelete does. The store enforces the refusals, in the same
+// transaction as the delete.
 func (m *Manager) DeleteProject(ctx context.Context, id string) error {
+	m.lifecycle.Lock()
+	defer m.lifecycle.Unlock()
+	if err := m.store.CheckProjectDeletable(ctx, id); err != nil {
+		return err
+	}
+	agentIDs, err := m.store.ArchivedAgentIDs(ctx, id)
+	if err != nil {
+		return err
+	}
+	threadIDs, err := m.store.ArchivedAgentThreadIDs(ctx, id)
+	if err != nil {
+		return err
+	}
+	metas := make([]store.ThreadMeta, 0, len(threadIDs))
+	for _, tid := range threadIDs {
+		meta, err := m.store.Thread(ctx, tid)
+		if err != nil {
+			return err
+		}
+		switch meta.Phase {
+		case "closed", "cleanup_failed":
+		case "cleaning":
+			return fmt.Errorf("an archived agent's thread %q is still being cleaned up; try again once it is", meta.Title)
+		default:
+			return fmt.Errorf("an archived agent's thread %q is still open; close it first", meta.Title)
+		}
+		metas = append(metas, meta)
+	}
+	for _, meta := range metas {
+		if meta.Phase != "cleanup_failed" || meta.WorkspaceMode != "managed" {
+			continue
+		}
+		f, err := m.threadFolder(ctx, meta)
+		if err != nil {
+			return err
+		}
+		if holder, shared := m.otherThreadIn(ctx, meta.ID, meta.Cwd); shared {
+			return fmt.Errorf("%s is still used by %q", filepath.Base(meta.Cwd), holder)
+		}
+		if err := m.removeGitWorktree(ctx, meta, f, nil, true); err != nil {
+			return err
+		}
+	}
+	for _, meta := range metas {
+		if live, ok := m.Peek(meta.ID); ok {
+			live.Dispose("deleting project")
+		}
+	}
 	if err := m.store.DeleteProject(ctx, id); err != nil {
 		return err
 	}
+	for _, meta := range metas {
+		m.purgeAttachments(meta.ID)
+	}
+	for _, aid := range agentIDs {
+		if err := os.RemoveAll(agentDir(m.store, aid)); err != nil {
+			m.logf("files of agent %s: %v", aid, err)
+		}
+		m.agentLocks.Delete(aid)
+	}
 	m.notifyProjects()
+	if len(metas) > 0 {
+		m.notifyList()
+	}
+	if len(agentIDs) > 0 {
+		m.notifyAgents()
+	}
 	return nil
 }
 
@@ -1538,6 +1616,7 @@ func (m *Manager) adopt(a *Actor) {
 	}
 	a.onExit = m.forgetFn(a.ID, a)
 	a.onPhase = m.notifyList
+	a.onAgents = m.notifyAgents
 	a.imagePath = m.imagePath
 	a.toolImage = m.toolImage
 	a.cardLive = m.liveCard
@@ -1687,6 +1766,11 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 	if err != nil {
 		return err
 	}
+	// An agent's threads, archived ones included, are its log: compactions
+	// point into them.
+	if meta.AgentID != "" {
+		return agentThreadRefusal("deleted")
+	}
 	if removeWorktree {
 		if meta.WorkspaceMode == "local" {
 			return errors.New("the main checkout is not omniplex's to remove")
@@ -1800,7 +1884,9 @@ func (m *Manager) cleaningThreadIn(ctx context.Context, cwd string) (string, boo
 
 // ForceDelete skips the project deprovision hook after it has failed. It only
 // removes the exact recorded Git worktree, prunes Git metadata, then purges the
-// transcript. The project root is never removed.
+// transcript. The project root is never removed. An agent's thread keeps its
+// transcript and is closed instead: it is the agent's log, and compactions
+// point into it.
 func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()
@@ -1825,6 +1911,9 @@ func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 		if err := m.removeGitWorktree(ctx, meta, f, nil, true); err != nil {
 			return err
 		}
+	}
+	if meta.AgentID != "" {
+		return m.closeLocked(ctx, id, "workspace force-removed")
 	}
 	if live, ok := m.Peek(id); ok {
 		live.Dispose("force deleted")

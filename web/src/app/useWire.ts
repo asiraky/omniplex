@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Client, wsURL, type ConnectionStatus } from "~/client";
+import { agentApi } from "~/lib/agentApi";
 import type {
   Access,
+  Agent,
   Event,
   HarnessMeta,
   Project,
@@ -87,6 +89,9 @@ export function useWire() {
   const [threadsLoaded, setThreadsLoaded] = useState(false);
   const [harnesses, setHarnesses] = useState<HarnessMeta[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  // The live agents. Archived ones never arrive; their threads are reached
+  // only from an agent's Log tab.
+  const [agents, setAgents] = useState<Agent[]>([]);
   // Every provider instance's cached usage limits, pushed by the server on
   // welcome and whenever a live push or refresh changes one.
   const [quotas, setQuotas] = useState<QuotaStatus[]>([]);
@@ -123,6 +128,7 @@ export function useWire() {
         if (id === activeRef.current) setComposerRevision((revision) => revision + 1);
       },
       onProjects: setProjects,
+      onAgents: setAgents,
       onQuotas: setQuotas,
       // State only lands for the thread currently attached; the client
       // discards anything else.
@@ -187,6 +193,15 @@ export function useWire() {
     if (resume && attached) setResume(null);
   }, [resume, attached]);
 
+  // Read through the ref at call time, so one api outlives reconnects.
+  const [agentsApi] = useState(() =>
+    agentApi((name, args) => {
+      const client = clientRef.current;
+      if (!client) return Promise.reject(new Error("Not connected."));
+      return client.command(name, args);
+    }),
+  );
+
   const attachedId = useThread(threadStore, threadIdOf);
   const turnStatus = heldStatus && heldStatus.threadId === attachedId ? heldStatus.status : null;
 
@@ -206,6 +221,8 @@ export function useWire() {
     setHarnesses,
     projects,
     setProjects,
+    agents,
+    agentApi: agentsApi,
     quotas,
     access,
     setAccess,

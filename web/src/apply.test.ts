@@ -92,6 +92,13 @@ describe("applyEvent turn lifecycle", () => {
     expect(it.turnId).toBeUndefined();
   });
 
+  it("carries an agent thread's compaction epoch onto the notice, and none for other threads", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "context.compacted", { trigger: "auto", preTokens: 9, postTokens: 1, epoch: 46 }));
+    s = applyEvent(s, ev(2, "context.compacted", { trigger: "manual" }));
+    expect(s.items.map((it) => it.epoch)).toEqual([46, undefined]);
+  });
+
   it("carries unclamped context occupancy through usage.updated", () => {
     let s = emptyState("s1");
     s = applyEvent(
@@ -1277,6 +1284,18 @@ describe("thread restart", () => {
     s = applyEvent(s, ev(2, "thread.restarted", {}, 5000));
     expect(s.restartPending).toBe(false);
     expect(s.items).toEqual([{ id: "restart:2", kind: "notice", noticeKind: "restart", text: "", receivedAt: 5000 }]);
+  });
+
+  it("keeps the prompt revision an agent's thread came back up on", () => {
+    const s = applyEvent(emptyState("s1"), ev(2, "thread.restarted", { promptRev: 8 }, 5000));
+    expect(s.items[0].promptRev).toBe(8);
+  });
+
+  it("opens an agent's thread on the revisions it started on", () => {
+    const s = applyEvent(emptyState("s1"), ev(2, "thread.agent_started", { promptRev: 3, compactRev: 2 }, 5000));
+    expect(s.items).toEqual([
+      { id: "agent:started", kind: "notice", noticeKind: "started", promptRev: 3, compactRev: 2, receivedAt: 5000 },
+    ]);
   });
 
   it("keeps a failed restart's reason on its note", () => {

@@ -190,10 +190,10 @@ describe("spawn batches", () => {
     expect(new Set(rows.map((r) => (r.kind === "item" ? r.item.id : r.id))).size).toBe(rows.length);
   });
 
-  it("puts the recap before the turn's decided cards and artefacts", () => {
+  it("puts the recap before the turn's artefacts, and a card raised before the answer above it", () => {
     const c: Item = { id: `card:r${n++}`, kind: "card", status: "saved", turnId: "turn1", card: { kind: "add_mcp_server" } };
     const rows = buildRows([prompt("go"), spawn(), c, artefact("a", 1), msg("Answer.")], [turn("turn1")], "idle");
-    expect(shape(rows)).toEqual(["message:user", "jobs(1)", "message:agent", "recap(1)", "card:tool", "artefacts(a@1)"]);
+    expect(shape(rows)).toEqual(["message:user", "jobs(1)", "card:tool", "message:agent", "recap(1)", "artefacts(a@1)"]);
   });
 
   it("shows no recap for a finished turn with no answer", () => {
@@ -304,11 +304,30 @@ describe("buildRows with cards", () => {
     return { id: `card:r${n++}`, kind: "card", status, turnId: "turn1", card: { kind: "add_mcp_server" }, ...over };
   }
 
-  it("keeps a finished turn's card out of the fold, under the answer", () => {
+  it("keeps a finished turn's card out of the fold, where it was raised, above the reply that follows it", () => {
     const c = card();
     const rows = buildRows([prompt("add linear"), tool(), c, tool(), msg("Added.")], [turn("turn1")], "idle");
-    expect(shape(rows)).toEqual(["message:user", "fold(2)", "message:agent", "card:tool"]);
+    expect(shape(rows)).toEqual(["message:user", "fold(1)", "card:tool", "fold(1)", "message:agent"]);
+    expect(rows[2]).toEqual({ kind: "item", item: c });
+    const second = rows[3];
+    expect(second.kind === "fold" && second.continued).toBe(true);
+  });
+
+  it("keeps a card raised after the turn's last text under it", () => {
+    const c = card("saved", { card: { kind: "prompt_edit" } });
+    const rows = buildRows(
+      [prompt("remember this"), msg("I have proposed the edit."), c, tool()],
+      [turn("turn1")],
+      "idle",
+    );
+    expect(shape(rows)).toEqual(["message:user", "fold(1)", "message:agent", "card:tool"]);
     expect(rows[3]).toEqual({ kind: "item", item: c });
+  });
+
+  it("keeps a card where it was raised when the turn wrote no text", () => {
+    const c = card();
+    const rows = buildRows([prompt("add linear"), tool(), c, tool()], [turn("turn1")], "idle");
+    expect(shape(rows)).toEqual(["message:user", "fold(1)", "card:tool", "fold(1)"]);
   });
 
   it("keeps a card still waiting after its turn stopped", () => {

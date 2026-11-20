@@ -6,6 +6,7 @@ import type { PendingElicitation } from "~/protocol";
 import { useCardResolve, type ResolveCard } from "./CardFrame";
 import { McpCard } from "./McpCard";
 import { AccountCard, RemoveCard, SignInCard } from "./OtherCards";
+import { PromptEditCard } from "./PromptEditCard";
 import { CreateCard, InstallCard } from "./SkillCards";
 
 /**
@@ -42,6 +43,8 @@ export default function PendingCard({
       return <SignInCard card={card} ctl={ctl} />;
     case "add_account":
       return <AccountCard card={card} ctl={ctl} />;
+    case "prompt_edit":
+      return <PromptEditCard card={card} ctl={ctl} />;
     default:
       return null;
   }

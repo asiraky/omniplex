@@ -107,6 +107,7 @@ func (a *Actor) setting(call func(context.Context) error, changed proto.ThreadCo
 			reply <- cmdResult{err: errHarnessRestarted}
 		default:
 			a.append(proto.Emit(proto.ThreadConfigChanged, changed))
+			a.writeThroughToAgent(changed)
 			reply <- cmdResult{}
 		}
 	})

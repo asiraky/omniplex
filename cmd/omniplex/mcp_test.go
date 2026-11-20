@@ -335,3 +335,51 @@ func TestMCPCancelledCallDropsItsRequest(t *testing.T) {
 		t.Fatalf("a cancelled call was answered: %+v", rest)
 	}
 }
+
+func TestMCPOffersPromptEditOnlyToAnAgentsThread(t *testing.T) {
+	for _, agent := range []string{"", "ag-1"} {
+		t.Run("agent="+agent, func(t *testing.T) {
+			got := make(chan string, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got <- r.URL.Path
+				json.NewEncoder(w).Encode(map[string]string{"text": "Saved as revision r2."})
+			}))
+			defer srv.Close()
+			t.Setenv("OMNIPLEX_AGENT_ID", agent)
+			c := startMCP(t, srv.URL)
+
+			c.send(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+			var list struct {
+				Result struct {
+					Tools []struct{ Name string } `json:"tools"`
+				} `json:"result"`
+			}
+			select {
+			case line := <-c.lines:
+				if err := json.Unmarshal([]byte(line), &list); err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("no reply")
+			}
+			listed := false
+			for _, tool := range list.Result.Tools {
+				listed = listed || tool.Name == "propose_prompt_edit"
+			}
+			if listed != (agent != "") {
+				t.Fatalf("listed = %v for agent %q", listed, agent)
+			}
+
+			c.send(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"propose_prompt_edit","arguments":{"kind":"prompt","replace":"x","reason":"y"}}}`)
+			r := c.next()
+			if agent == "" {
+				if r.Error == nil {
+					t.Fatalf("a plain thread's call answered %+v", r)
+				}
+			} else if r.Error != nil || r.text() != "Saved as revision r2." || <-got != "/api/agent/tools/propose_prompt_edit" {
+				t.Fatalf("an agent's call answered %+v", r)
+			}
+			c.close()
+		})
+	}
+}

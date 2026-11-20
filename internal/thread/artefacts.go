@@ -3,6 +3,8 @@ package thread
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"mime"
 	"os"
 	"path/filepath"
@@ -49,6 +51,22 @@ type extras struct {
 	instructions string
 	// ephemeral is a private thread's: the harness keeps nothing on disk.
 	ephemeral bool
+	// agent is set for an agent's thread: what its harness is told about
+	// compaction and memory, and the revisions it starts on.
+	agent *agentExtras
+	// err is setup the thread cannot start without. Its process is not
+	// started: one would run on less than the thread was promised.
+	err error
+}
+
+// agentExtras is the part of a session's setup an agent decides.
+type agentExtras struct {
+	id          string
+	promptRev   int
+	compactRev  int
+	compactFile string
+	compactAt   int64
+	rawDir      string
 }
 
 // options fills in everything a session gets from omniplex rather than from
@@ -62,6 +80,12 @@ func (x extras) options(o adapter.CreateOptions) adapter.CreateOptions {
 	}
 	o.SuggestPrompts = x.suggestPrompts
 	o.Ephemeral = x.ephemeral
+	if ag := x.agent; ag != nil {
+		o.CompactInstructionsFile, o.CompactAt, o.RawRequestLogDir = ag.compactFile, ag.compactAt, ag.rawDir
+		// An agent's durable memory is its prompt, which the user owns; a
+		// harness keeping notes of its own beside it would be a second one.
+		o.NoMemory = true
+	}
 	return o
 }
 
@@ -102,6 +126,17 @@ func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, met
 	}
 	if ToolServers != nil {
 		x.mcp = ToolServers(meta.ID, home)
+		// An agent's thread is offered propose_prompt_edit; the server still
+		// refuses it to any other thread.
+		if meta.AgentID != "" {
+			for i := range x.mcp {
+				x.mcp[i].Env = maps.Clone(x.mcp[i].Env)
+				if x.mcp[i].Env == nil {
+					x.mcp[i].Env = map[string]string{}
+				}
+				x.mcp[i].Env["OMNIPLEX_AGENT_ID"] = meta.AgentID
+			}
+		}
 	}
 	x.mcp = append(x.mcp, userMCPServers(ctx, ad, meta.ProjectID)...)
 	cfg, err := userconfig.Load()
@@ -111,7 +146,56 @@ func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, met
 		x.instructions = cfg.AssistantPromptOrDefault()
 	}
 	x.ephemeral = ephemeral.Is(meta.ID)
+	if meta.AgentID != "" {
+		agentSetup(ctx, st, meta, &x, logf)
+	}
 	return x
+}
+
+// agentSetup composes an agent thread's system prompt, Omniplex's own then
+// the agent preamble then the agent's latest prompt, and readies the
+// compaction instructions file its harness reads. An agent that cannot be
+// read leaves the thread starting as a plain project thread, which is
+// better than not starting it at all. A file that cannot be written fails
+// the start: the harness would compact on whatever the file held before, or
+// on its default, and the log would record instructions it never read.
+func agentSetup(ctx context.Context, st *store.Store, meta store.ThreadMeta, x *extras, logf func(string, ...any)) {
+	// An agent that is gone leaves its thread a plain one. One that cannot be
+	// read fails the start: a thread that came up without its standing rules
+	// would look like the agent and not be it.
+	ag, err := st.Agent(ctx, meta.AgentID)
+	if errors.Is(err, store.ErrNotFound) {
+		logf("agent %s of %s: %v", meta.AgentID, meta.ID, err)
+		return
+	}
+	if err != nil {
+		x.err = fmt.Errorf("reading agent %s: %w", meta.AgentID, err)
+		return
+	}
+	prompt, err := st.LatestAgentRevision(ctx, ag.ID, store.RevisionPrompt)
+	if err != nil {
+		x.err = fmt.Errorf("reading agent %s's prompt: %w", ag.ID, err)
+		return
+	}
+	compact, err := st.LatestAgentRevision(ctx, ag.ID, store.RevisionCompact)
+	if err != nil {
+		x.err = fmt.Errorf("reading agent %s's compaction instructions: %w", ag.ID, err)
+		return
+	}
+	x.instructions = composeAgentInstructions(prompt.Body)
+	setup := &agentExtras{id: ag.ID, promptRev: prompt.N, compactRev: compact.N, compactAt: ag.CompactAt}
+	if setup.compactFile, err = writeCompactFile(st, ag.ID, compact.Body); err != nil {
+		x.err = fmt.Errorf("writing agent %s's compaction instructions for its harness: %w", ag.ID, err)
+		return
+	}
+	if ag.RawLog {
+		setup.rawDir = filepath.Join(agentDir(st, ag.ID), "raw")
+		if err := os.MkdirAll(setup.rawDir, 0o700); err != nil {
+			logf("raw request log of agent %s: %v", ag.ID, err)
+			setup.rawDir = ""
+		}
+	}
+	x.agent = setup
 }
 
 // projectSkills readies a project home's private skills folder for a session
