@@ -2,12 +2,14 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { parseAttachedFiles, type Artefact } from "~/lib/artefacts";
 import { SPEAK_ROOT_ATTR } from "~/lib/speechAttrs";
+import { splitMentions } from "~/lib/threadMentions";
 import { cn } from "~/lib/utils";
 import type { Item } from "~/protocol";
 
 import { PromptFiles, PromptImages, type OpenArtefact } from "./Attachments";
 import { FIND_TEXT_ATTR, useRevealOpen } from "./findReveal";
 import { MessageMeta } from "./MessageMeta";
+import { ThreadPill } from "./ThreadPill";
 
 // A user message longer than this many lines collapses behind a fade until the
 // reader opens it. The clamp is a real height, not a character count: a single
@@ -38,7 +40,13 @@ export function UserMessage({
   artefacts: Artefact[];
   onOpenArtefact?: OpenArtefact;
 }) {
-  const { text, files } = useMemo(() => parseAttachedFiles(item.text ?? ""), [item.text]);
+  // The threads it names come back out of the text as pills: the ones the
+  // composer appended under the bubble, any among the words in place.
+  const { text, files, parts, mentions } = useMemo(() => {
+    const attached = parseAttachedFiles(item.text ?? "");
+    return { ...attached, ...splitMentions(attached.text) };
+  }, [item.text]);
+  const shown = parts.length > 0;
   // Unclamped when find in thread jumps here, or the match could sit under
   // the fade.
   const [expanded, setExpanded] = useRevealOpen((id) => id === item.id);
@@ -90,7 +98,7 @@ export function UserMessage({
       )}
       {/* An attachment-only message has no bubble to draw: an empty one reads
           as a message that failed to arrive. */}
-      {(text || (!item.images?.length && files.length === 0)) && (
+      {(shown || (!item.images?.length && files.length === 0 && mentions.length === 0)) && (
         <div
           ref={bodyRef}
           {...{ [SPEAK_ROOT_ATTR]: "", [FIND_TEXT_ATTR]: "" }}
@@ -110,7 +118,16 @@ export function UserMessage({
             clamped && "overflow-hidden",
           )}
         >
-          {text}
+          {parts.map((p, i) =>
+            p.kind === "text" ? p.text : <ThreadPill key={i} mention={p} className="mx-0.5 border-current/25" />,
+          )}
+        </div>
+      )}
+      {mentions.length > 0 && (
+        <div className="mt-1.5 flex max-w-[85%] flex-wrap justify-end gap-1.5">
+          {mentions.map((m, i) => (
+            <ThreadPill key={`${m.id}:${i}`} mention={m} className="bg-card text-foreground" />
+          ))}
         </div>
       )}
       {overflowing && (
@@ -124,7 +141,7 @@ export function UserMessage({
         </button>
       )}
       {/* Read-aloud reads the bubble; an attachment-only message has none. */}
-      <MessageMeta item={item} speakRef={text ? bodyRef : undefined} rawMarkdown editable />
+      <MessageMeta item={item} speakRef={shown ? bodyRef : undefined} rawMarkdown editable />
     </div>
   );
 }

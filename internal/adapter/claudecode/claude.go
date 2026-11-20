@@ -104,13 +104,16 @@ func (a *Adapter) Meta() adapter.HarnessMeta {
 // PermissionModes are the Agent SDK's PermissionMode values, verbatim: the id
 // is what the sidecar passes as `permissionMode`. The SDK spells the manual
 // mode `default` (the CLI alias `manual` is CLI-only), and it is what omniplex sends.
+// Listed least permissive first: delegation judges a mode with no Level by
+// the levelled modes either side of it (see modeRank), so dontAsk, which
+// only narrows, sits by plan.
 func (a *Adapter) PermissionModes() []adapter.PermissionModeMeta {
 	return []adapter.PermissionModeMeta{
 		{ID: "default", Label: "Manual", Description: "Ask before every edit, command, and network call", Default: true, Level: adapter.LevelAsk},
 		{ID: "plan", Label: "Plan", Description: "Read and analyze only; no changes"},
+		{ID: "dontAsk", Label: "Pre-approved only", Description: "Never prompt; deny anything not already allowed"},
 		{ID: "acceptEdits", Label: "Accept edits", Description: "Auto-accept file edits; still ask for commands", Level: adapter.LevelEdits},
 		{ID: "auto", Label: "Auto", Description: "A classifier approves routine actions; ask on risk"},
-		{ID: "dontAsk", Label: "Pre-approved only", Description: "Never prompt; deny anything not already allowed"},
 		{ID: "bypassPermissions", Label: "Bypass", Description: "Skip all permission checks", Level: adapter.LevelAll},
 	}
 }

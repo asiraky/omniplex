@@ -13,8 +13,15 @@ import {
   replaceComposerTrigger,
   type ComposerTrigger,
 } from "~/lib/composerItems";
+import {
+  MENTION_TRIGGER,
+  mentionCut,
+  mentionedThread,
+  mentionItems,
+  type ThreadMention,
+} from "~/lib/threadMentions";
 import { typeInto } from "~/lib/typeInto";
-import type { ComposerItem } from "~/protocol";
+import type { ComposerItem, ThreadMeta } from "~/protocol";
 import { useLatest } from "~/useLatest";
 
 import type { ComposerCatalogue } from "./useComposerItems";
@@ -50,6 +57,8 @@ export function useComposerMenu({
   sendDisabled,
   runClientAction,
   onRunComposerAction,
+  mentionable,
+  onMention,
 }: {
   draft: string;
   draftRef: RefObject<string>;
@@ -60,6 +69,10 @@ export function useComposerMenu({
   sendDisabled: boolean;
   runClientAction: (action: string) => void;
   onRunComposerAction?: (action: string, args: string, invocation: string) => Promise<void>;
+  /** The threads an `@` can name. Omitted or empty, `@` is ordinary text. */
+  mentionable?: ThreadMeta[];
+  /** A thread was picked from the `@` menu. */
+  onMention?: (mention: ThreadMention) => void;
 }) {
   const [cursor, setCursor] = useState(draft.length);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -88,9 +101,13 @@ export function useComposerMenu({
     [textareaRef],
   );
 
+  // `@` is only a trigger while there is a thread to name. It is kept out of
+  // `items`, which the send path matches a submitted message against.
+  const mentions = !!onMention && (mentionable?.length ?? 0) > 0;
+  const triggerItems = useMemo(() => (mentions ? [...items, MENTION_TRIGGER] : items), [items, mentions]);
   const trigger = useMemo(
-    () => detectComposerTrigger(draft, cursor, items),
-    [draft, cursor, items],
+    () => detectComposerTrigger(draft, cursor, triggerItems),
+    [draft, cursor, triggerItems],
   );
 
   // Provider catalogues can change while a thread is open. Refresh at the
@@ -100,21 +117,28 @@ export function useComposerMenu({
   // re-run this: it is once per trigger opening, not once per keystroke.
   const triggerQuery = useLatest(trigger?.query);
   const { reload } = catalogue;
+  // An `@` names a thread from the list already here, so it asks for nothing.
   useEffect(() => {
-    if (triggerQuery.current === "") reload();
+    if (triggerQuery.current === "" && trigger?.trigger !== MENTION_TRIGGER.trigger) reload();
   }, [reload, trigger?.trigger, triggerQuery]);
   const triggerKey = trigger
     ? `${trigger.start}:${trigger.end}:${trigger.trigger}:${trigger.query}`
     : "";
   const matches = useMemo(
-    () => (trigger ? rankComposerItems(items, trigger) : []),
-    [items, trigger],
+    () =>
+      !trigger
+        ? []
+        : trigger.trigger === MENTION_TRIGGER.trigger && mentions
+          ? mentionItems(mentionable ?? [], trigger.query)
+          : rankComposerItems(items, trigger),
+    [items, trigger, mentions, mentionable],
   );
   // Mid-prompt, a token with nothing to offer is prose — `/tmp` — and a menu
   // saying so would only be in the way of it.
+  // Nor is an `@` that names no thread: it is an address, or a handle.
   const open = Boolean(
     trigger &&
-    (trigger.leading || matches.length > 0) &&
+    ((trigger.leading && trigger.trigger !== MENTION_TRIGGER.trigger) || matches.length > 0) &&
     triggerKey !== dismissedTrigger &&
     !disabled &&
     focused,
@@ -150,6 +174,17 @@ export function useComposerMenu({
   const choose = useCallback(
     (item: ComposerItem) => {
       if (!trigger) return;
+      const mentioned = mentionedThread(item);
+      if (mentioned) {
+        // The typed `@query` goes; the thread becomes a chip beside the
+        // attachments, and the caret stays where the token was.
+        const cut = { ...trigger, ...mentionCut(draft, trigger.start, trigger.end) };
+        const next = typeOverTrigger(draft, cut, "", { takeFocus: true });
+        setDismissedTrigger(triggerKey);
+        onMention?.({ id: mentioned, title: item.name });
+        if (!next.typed) focusAt(next.cursor);
+        return;
+      }
       if (item.behavior === "client-action" && item.action) {
         typeOverTrigger(draft, trigger, "", { takeFocus: true });
         setDismissedTrigger(triggerKey);
@@ -180,6 +215,7 @@ export function useComposerMenu({
       draft,
       draftRef,
       focusAt,
+      onMention,
       onRunComposerAction,
       typeOverTrigger,
       runClientAction,

@@ -164,6 +164,17 @@ func resolveBaseRef(ctx context.Context, root, base string) (baseResolution, err
 		return res, nil
 	}
 
+	// A full commit id is a fixed point, not a branch: nothing to fetch or
+	// freshen. It is how a delegated thread's worktree starts at its parent's
+	// commit. One the clone does not have falls through to be looked for as a
+	// branch, and so lands on the default branch with a note.
+	if isCommitID(base) {
+		if sha, ok := gitCapture(ctx, root, "rev-parse", "--verify", "--quiet", base+"^{commit}"); ok {
+			res.Ref = sha
+			return res, nil
+		}
+	}
+
 	names := remotes(ctx, root)
 
 	if hasLocalBranch(ctx, root, base) {
@@ -205,6 +216,19 @@ func resolveBaseRef(ctx context.Context, root, base string) (baseResolution, err
 	}
 
 	return fallbackBase(ctx, root, res)
+}
+
+// isCommitID reports whether s is a full 40-hex SHA-1 commit id.
+func isCommitID(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // refreshTimeout picks the fetch bound for a ref: short when a copy is already

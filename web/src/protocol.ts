@@ -874,6 +874,8 @@ export interface ThreadMeta {
   projectId?: string;
   /** The folder the thread is scoped to; absent means the whole project. */
   folderId?: string;
+  /** The thread that delegated this one; absent for a thread the user started. */
+  parentId?: string;
   branch?: string;
   model?: string;
   mode?: string;

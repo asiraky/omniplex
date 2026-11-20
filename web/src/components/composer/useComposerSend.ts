@@ -2,9 +2,12 @@ import { useEffect, useRef, type RefObject } from "react";
 
 import { overPromptLimit, sendPayload, type Attachment } from "~/lib/attachments";
 import { submittedComposerAction } from "~/lib/composerItems";
+import { withMentions, type ThreadMention } from "~/lib/threadMentions";
 import type { ComposerItem, Delivery } from "~/protocol";
 
 import type { ComposerAttachments } from "../Composer";
+
+const NO_MENTIONS: readonly ThreadMention[] = [];
 
 /**
  * Whether the message can go, and sending it: as a prompt, or as the client or
@@ -15,6 +18,8 @@ export function useComposerSend({
   draftRef,
   changeDraft,
   attachments,
+  mentions = NO_MENTIONS,
+  onMentionsSent,
   disabled,
   sendDisabled,
   waiting,
@@ -29,6 +34,10 @@ export function useComposerSend({
   draftRef: RefObject<string>;
   changeDraft: (next: string) => void;
   attachments: Attachment[];
+  /** Threads staged to go with the message, as links at its end. */
+  mentions?: readonly ThreadMention[];
+  /** The staged threads went with a prompt: the composer lets them go. */
+  onMentionsSent?: () => void;
   disabled: boolean;
   sendDisabled: boolean;
   /** A message from this thread is held for its uploads. Another would
@@ -43,12 +52,16 @@ export function useComposerSend({
 }) {
   // A file still on its way up counts: the message is held until it lands,
   // so on a slow connection hitting send does not wait on the upload too.
-  const sendableAttachments = attachments.filter((a) => a.status !== "error").length;
+  // A thread named on its own is a message too: "look at this one".
+  const sendableAttachments = attachments.filter((a) => a.status !== "error").length + mentions.length;
   // A scheduled prompt keeps its text and images, not files. And it takes the
   // images there are when it is scheduled: unlike a send, it does not wait for
   // one still going up, which would quietly be left out.
+  // Nor the threads named beside it, which live in this composer only.
   const scheduleBlock = attachments.some((a) => a.kind === "file" && a.status !== "error")
     ? "Not with files attached"
+    : mentions.length > 0
+      ? "Not with threads mentioned"
     : attachments.some((a) => a.status === "uploading")
       ? "Once the uploads finish"
       : undefined;
@@ -118,8 +131,9 @@ export function useComposerSend({
       }
       return;
     }
-    onSend(t, sendPayload(attachments), delivery);
+    onSend(withMentions(t, mentions), sendPayload(attachments), delivery);
     changeDraft("");
+    if (mentions.length > 0) onMentionsSent?.();
     then?.();
   };
 

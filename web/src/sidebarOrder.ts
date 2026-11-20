@@ -15,6 +15,7 @@
 import { splitPinned } from "~/pinned";
 import { groupThreads, visibleByProject } from "~/projectGroups";
 import type { Project, ThreadMeta } from "~/protocol";
+import { sidebarThreads } from "~/threadTree";
 
 // The collapse keys of the two sections that are not projects: Pinned, and
 // the rest of the list under it when that is flat. Project keys are uuids or
@@ -51,7 +52,9 @@ export function sidebarSections(
   projects: Project[],
   view: Pick<SidebarView, "hidden" | "grouped">,
 ): SidebarSection[] {
-  const shown = visibleByProject(threads, projects, view.hidden);
+  // A delegated thread lives inside the thread that delegated it, which
+  // stands for it here, so it has no row while that thread is listed.
+  const shown = visibleByProject(sidebarThreads(threads), projects, view.hidden);
   const { pinned, rest: unpinned } = splitPinned(shown);
   // Assistant chats belong to no project, so they get a section of their own
   // under Pinned however the rest is laid out.

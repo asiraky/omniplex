@@ -10,7 +10,7 @@ import { stubExecCommand } from "~/test/execCommand";
 import { render, wrap } from "~/test/harness";
 import { Composer, type ComposerHandle, type ComposerStash } from "./Composer";
 import type { Attachment } from "~/lib/attachments";
-import type { HarnessMeta } from "~/protocol";
+import type { HarnessMeta, ThreadMeta } from "~/protocol";
 import type { ComposerCatalogue } from "./composer/useComposerItems";
 
 const png = (name = "shot.png") => new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
@@ -160,6 +160,35 @@ describe("attaching images", () => {
     const { onAttachFiles } = mount({ disabled: true, disabledPlaceholder: "Reconnecting" });
     fireEvent.change(fileInput(), { target: { files: [png()] } });
     expect(onAttachFiles).not.toHaveBeenCalled();
+  });
+});
+
+describe("sending with threads mentioned", () => {
+  const mentions = [{ id: "t1", title: "Plan [v2]" }];
+
+  it("appends each mentioned thread as a link and reports them sent", () => {
+    const onMentionsSent = vi.fn();
+    const { onSend } = mount({ draft: "read this", mentions, onMentionsSent });
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith(
+      "read this\n\n[@Plan \\[v2\\]](omniplex-thread://t1)",
+      { imageIds: [], files: [] },
+      undefined,
+    );
+    expect(onMentionsSent).toHaveBeenCalled();
+  });
+
+  it("sends a mention with no text", () => {
+    const { onSend } = mount({ mentions });
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith("[@Plan \\[v2\\]](omniplex-thread://t1)", { imageIds: [], files: [] }, undefined);
+  });
+
+  it("drops a chip when its remove button is pressed", () => {
+    const onRemoveMention = vi.fn();
+    mount({ mentions, onRemoveMention });
+    fireEvent.click(screen.getByRole("button", { name: "Remove thread Plan [v2]" }));
+    expect(onRemoveMention).toHaveBeenCalledWith("t1");
   });
 });
 
@@ -621,6 +650,26 @@ describe("typing a pick in where undo can take it back", () => {
     expect(edit).toHaveBeenCalledWith("insertText", false, "/review ");
     expect(onDraftChange.mock.calls).toEqual([["/review "]]);
     expect(box()).toHaveProperty("value", "/review ");
+  });
+
+  it("turns a picked thread into a chip and takes its token out of the draft", async () => {
+    exec.absent();
+    const onAddMention = vi.fn();
+    const threads = [
+      { id: "t-plan", title: "planner", projectId: "p1" },
+      { id: "t-other", title: "other", projectId: "p1" },
+    ] as ThreadMeta[];
+    const { onDraftChange } = renderControlled("ask @pla now", { mentionable: threads, onAddMention });
+    const el = box() as HTMLTextAreaElement;
+    el.setSelectionRange(8, 8);
+    fireEvent.focus(el);
+    fireEvent.select(el);
+    expect(await screen.findByText("@planner")).toBeTruthy();
+    expect(screen.queryByText("@other")).toBeNull();
+    fireEvent.click(screen.getByText("@planner"));
+
+    expect(onAddMention).toHaveBeenCalledWith({ id: "t-plan", title: "planner" });
+    expect(onDraftChange.mock.calls.at(-1)).toEqual(["ask now"]);
   });
 
   it("writes the pick into the draft when the browser cannot type it", async () => {

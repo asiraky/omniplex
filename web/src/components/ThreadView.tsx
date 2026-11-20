@@ -25,9 +25,11 @@ import { ReadAloudContext } from "~/lib/readAloud";
 import { quoteInto, ReplyContext } from "~/lib/reply";
 import { RewindContext, rewindTarget, type RewindTarget } from "~/lib/rewind";
 import type { ThreadFindControls } from "~/lib/threadFind";
+import { mentionCandidates, OpenThreadContext } from "~/lib/threadMentions";
 import { threadTitle } from "~/lib/threadTitle";
 import { toast } from "~/lib/toast";
 import { phaseTakesMessages } from "~/threadStatus";
+import { delegatedCounts, threadTree } from "~/threadTree";
 import { useLatest } from "~/useLatest";
 import type {
   HarnessMeta,
@@ -98,6 +100,7 @@ export function ThreadView({
   turnStatus,
   onSendAndNewThread,
   find,
+  onOpenThread,
 }: {
   activeId: string | null;
   meta: ThreadMeta | undefined;
@@ -129,6 +132,8 @@ export function ThreadView({
   onSendAndNewThread?: (preset: DraftPreset) => void;
   /** The find bar, opened from the header menu, the palette or Ctrl/⌘+F. */
   find: FindBar;
+  /** Opens another thread: a delegated one, or one a message names. */
+  onOpenThread: (id: string) => void;
 }) {
   const { layoutRef, overlayRef } = useOverlayHeight(activeId);
   const stateTitle = useThread(useThreadStore(), titleOf);
@@ -254,6 +259,11 @@ export function ThreadView({
     (kind: PromptKind) => (kind === "permission" ? permissionRef : questionRef).current?.focus(),
     [],
   );
+  // What this thread delegated, for the jobs strip, as two numbers; and the
+  // threads an `@` in its composer can name.
+  const tree = useMemo(() => threadTree(threads), [threads]);
+  const delegated = useMemo(() => delegatedCounts(tree, activeId), [tree, activeId]);
+  const mentionable = useMemo(() => mentionCandidates(threads, meta), [threads, meta]);
 
   return (
     <div ref={layoutRef} className="relative flex min-h-0 flex-1 flex-col">
@@ -267,44 +277,46 @@ export function ThreadView({
           <ReplyContext.Provider value={writable ? reply : null}>
             <RewindContext.Provider value={writable && rewinds ? openRewind : null}>
               <PromptFocusContext.Provider value={focusPrompt}>
-                <Transcript
-                  key={activeId}
-                  onLoadOlder={commands.loadOlderItems}
-                  initialScroll={initialScroll}
-                  onScrollChange={scroll.record}
-                  onContinue={onContinue}
-                  onLogin={onProviderLogin}
-                  providerName={provider?.displayName}
-                  providerReady={provider?.availability.state === "ready"}
-                  onRetryTurn={harness.retryTurn}
-                  switchTargets={harness.switchTargets}
-                  onSwitchAccount={onSwitchAccount}
-                  onCancelContinuation={onCancelContinuation}
-                  onRetryProvision={onRetryProvision}
-                  onCleanup={onCleanup}
-                  onForceDelete={onForceDeleteThread}
-                  onOpenDiff={panel.openDiff}
-                  onOpenJobs={panel.openJobs}
-                  onOpenArtefact={panel.openArtefact}
-                  pr={pr}
-                  onFinish={onFinishThread}
-                  recents={recents.items}
-                  recentsSeeded={recents.seeded}
-                  onPickRecent={recents.pick}
-                  onDequeue={commands.dequeue}
-                  onEditQueued={commands.editQueued}
-                  onSendQueued={commands.sendQueued}
-                  onResumeQueue={commands.resumeQueue}
-                  onQueuedEditLost={commands.keepLostEdit}
-                  steers={steers}
-                  onCardSignIn={setSignIn}
-                  describeSettings={describe}
-                  turnStatus={turnStatus}
-                  restartPending={harness.restartPending}
-                  restarting={harness.restarting}
-                  onCancelRestart={harness.cancelRestart}
-                  find={findControls}
-                />
+                <OpenThreadContext.Provider value={onOpenThread}>
+                  <Transcript
+                    key={activeId}
+                    onLoadOlder={commands.loadOlderItems}
+                    initialScroll={initialScroll}
+                    onScrollChange={scroll.record}
+                    onContinue={onContinue}
+                    onLogin={onProviderLogin}
+                    providerName={provider?.displayName}
+                    providerReady={provider?.availability.state === "ready"}
+                    onRetryTurn={harness.retryTurn}
+                    switchTargets={harness.switchTargets}
+                    onSwitchAccount={onSwitchAccount}
+                    onCancelContinuation={onCancelContinuation}
+                    onRetryProvision={onRetryProvision}
+                    onCleanup={onCleanup}
+                    onForceDelete={onForceDeleteThread}
+                    onOpenDiff={panel.openDiff}
+                    onOpenJobs={panel.openJobs}
+                    onOpenArtefact={panel.openArtefact}
+                    pr={pr}
+                    onFinish={onFinishThread}
+                    recents={recents.items}
+                    recentsSeeded={recents.seeded}
+                    onPickRecent={recents.pick}
+                    onDequeue={commands.dequeue}
+                    onEditQueued={commands.editQueued}
+                    onSendQueued={commands.sendQueued}
+                    onResumeQueue={commands.resumeQueue}
+                    onQueuedEditLost={commands.keepLostEdit}
+                    steers={steers}
+                    onCardSignIn={setSignIn}
+                    describeSettings={describe}
+                    turnStatus={turnStatus}
+                    restartPending={harness.restartPending}
+                    restarting={harness.restarting}
+                    onCancelRestart={harness.cancelRestart}
+                    find={findControls}
+                  />
+                </OpenThreadContext.Provider>
               </PromptFocusContext.Provider>
             </RewindContext.Provider>
           </ReplyContext.Provider>
@@ -372,6 +384,9 @@ export function ThreadView({
           onSendAndNewThread={onSendAndNewThread}
           permissionRef={permissionRef}
           questionRef={questionRef}
+          delegatedLive={delegated.live}
+          delegatedNeedsYou={delegated.needsYou}
+          mentionable={mentionable}
         />
       </div>
     </div>
@@ -426,6 +441,9 @@ function ComposerDock({
   onSendAndNewThread,
   permissionRef,
   questionRef,
+  delegatedLive,
+  delegatedNeedsYou,
+  mentionable,
 }: {
   activeId: string | null;
   meta: ThreadMeta | undefined;
@@ -441,6 +459,11 @@ function ComposerDock({
   /** The permission and question prompts' focus handles, for the transcript. */
   permissionRef: RefObject<PromptHandle | null>;
   questionRef: RefObject<PromptHandle | null>;
+  /** Threads this one delegated, still working and waiting on the user. */
+  delegatedLive: number;
+  delegatedNeedsYou: number;
+  /** The threads an `@` in the composer can name. */
+  mentionable: ThreadMeta[];
 }) {
   const state = useThread(useThreadStore(), dockFields, shallow);
   // Paired with the state's own thread id, not activeId: for a render after a
@@ -505,7 +528,11 @@ function ComposerDock({
         </Suspense>
       )}
 
-      <JobsStrip onOpen={() => panel.openJobs()} />
+      <JobsStrip
+        onOpen={() => panel.openJobs()}
+        delegatedLive={delegatedLive}
+        delegatedNeedsYou={delegatedNeedsYou}
+      />
 
       <ScheduledPrompts
         schedules={state.scheduledPrompts ?? []}
@@ -532,7 +559,10 @@ function ComposerDock({
         threadId={activeId}
         draftStore={store.draftStore}
         outbox={store.outbox}
-        staged={!!activeId && (store.attachments[activeId]?.length ?? 0) > 0}
+        staged={
+          !!activeId &&
+          ((store.attachments[activeId]?.length ?? 0) > 0 || (store.mentions[activeId]?.length ?? 0) > 0)
+        }
         onEdit={(text) => {
           if (!activeId) return;
           store.setDraft(activeId, text);
@@ -553,6 +583,7 @@ function ComposerDock({
         workspace={workspace}
         dictate={dictate}
         onSendAndNewThread={onSendAndNewThread}
+        mentionable={mentionable}
       />
     </>
   );
@@ -574,6 +605,7 @@ function ThreadComposer({
   workspace,
   dictate,
   onSendAndNewThread,
+  mentionable,
 }: {
   activeId: string | null;
   meta: ThreadMeta | undefined;
@@ -586,6 +618,7 @@ function ThreadComposer({
   workspace: ReturnType<typeof workspaceStatus>;
   dictate: boolean;
   onSendAndNewThread?: (preset: DraftPreset) => void;
+  mentionable: ThreadMeta[];
 }) {
   const catalogue = useComposerItems(commands.loadComposerItems);
   // Subscribed here rather than read from the app, so a keystroke rerenders
@@ -648,6 +681,11 @@ function ThreadComposer({
       onAttachFiles={(files) => activeId && store.attachFiles(activeId, files)}
       onRemoveAttachment={(key) => activeId && store.removeAttachment(activeId, key)}
       onRetryAttachment={(key) => activeId && store.retryUpload(activeId, key)}
+      mentionable={mentionable}
+      mentions={activeId ? store.mentions[activeId] : undefined}
+      onAddMention={(m) => activeId && store.addMention(activeId, m)}
+      onRemoveMention={(id) => activeId && store.removeMention(activeId, id)}
+      onMentionsSent={() => activeId && store.clearMentions(activeId)}
       waiting={waiting}
       harnesses={harnesses}
       harness={state.harness}

@@ -1,6 +1,7 @@
 import {
   CheckIcon,
   CopyIcon,
+  CornerLeftUpIcon,
   EllipsisIcon,
   HatGlassesIcon,
   LinkIcon,
@@ -82,6 +83,8 @@ export function ThreadHeader({
   onShowMcp,
   onFind,
   onClose,
+  parent,
+  onOpenThread,
 }: {
   sidebarOpen: boolean;
   onShowSidebar: () => void;
@@ -99,6 +102,9 @@ export function ThreadHeader({
   onFind: () => void;
   /** Asks to close an assistant chat, which deletes it. */
   onClose?: (meta: ThreadMeta) => void;
+  /** The listed thread that delegated this one: the title offers the way back. */
+  parent?: ThreadMeta;
+  onOpenThread?: (id: string) => void;
 }) {
   // The thread the title field is open on: switching threads closes it rather
   // than opening the next thread's name for editing.
@@ -130,6 +136,7 @@ export function ThreadHeader({
               onEdit={() => setRenamingId(activeId)}
               onDone={() => setRenamingId(null)}
               onRename={onRename}
+              delegatedBy={parent && onOpenThread ? { parent, open: () => onOpenThread(parent.id) } : undefined}
             />
             {meta?.private && (
               <span
@@ -187,6 +194,7 @@ function HeaderTitle({
   onEdit,
   onDone,
   onRename,
+  delegatedBy,
 }: {
   threadId: string | null;
   title: string;
@@ -194,6 +202,8 @@ function HeaderTitle({
   onEdit: () => void;
   onDone: () => void;
   onRename: (threadId: string, title: string) => void;
+  /** The thread that delegated this one, and opening it. */
+  delegatedBy?: { parent: ThreadMeta; open: () => void };
 }) {
   if (editing && threadId) {
     return (
@@ -206,7 +216,7 @@ function HeaderTitle({
       />
     );
   }
-  return (
+  const row = (
     <div className="group/title flex min-w-0 flex-1 items-center gap-0.5">
       <p className="min-w-0 truncate text-[13px] font-medium">{title || "Untitled thread"}</p>
       {threadId && (
@@ -223,6 +233,25 @@ function HeaderTitle({
           <PencilIcon className="size-3" strokeWidth={1.75} />
         </IconButton>
       )}
+    </div>
+  );
+  if (!delegatedBy) return row;
+  const parentTitle = delegatedBy.parent.title || "Untitled";
+  // A delegated thread has no sidebar row of its own, so the way back to the
+  // thread that started it sits under the title, a line of its own.
+  return (
+    <div className="flex min-w-0 flex-1 flex-col">
+      {row}
+      <button
+        type="button"
+        onClick={delegatedBy.open}
+        className="text-muted-foreground hover:text-foreground focus-visible:ring-ring -mt-0.5 flex min-h-7 max-w-full items-center gap-1 self-start rounded-sm text-left text-[12px] outline-none focus-visible:ring-2"
+      >
+        <CornerLeftUpIcon aria-hidden className="size-3 shrink-0" />
+        <span className="min-w-0 truncate">
+          Delegated by <span className="font-medium">{parentTitle}</span>
+        </span>
+      </button>
     </div>
   );
 }

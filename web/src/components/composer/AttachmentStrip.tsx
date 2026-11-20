@@ -1,9 +1,10 @@
-import { RotateCwIcon, XIcon } from "lucide-react";
+import { MessagesSquareIcon, RotateCwIcon, XIcon } from "lucide-react";
 import { useId } from "react";
 
 import { ArtefactTile } from "~/components/artefacts/ArtefactTile";
 import { Spinner } from "~/components/ui/spinner";
 import type { Attachment } from "~/lib/attachments";
+import type { ThreadMention } from "~/lib/threadMentions";
 import { cn } from "~/lib/utils";
 
 /**
@@ -21,15 +22,23 @@ export function AttachmentStrip({
   tooMuch,
   onRemove,
   onRetry,
+  mentions = [],
+  onRemoveMention,
 }: {
   attachments: Attachment[];
   tooMuch: boolean;
   onRemove?: (key: string) => void;
   onRetry?: (key: string) => void;
+  /** Threads named with `@`, going as links at the end of the message. */
+  mentions?: readonly ThreadMention[];
+  onRemoveMention?: (id: string) => void;
 }) {
-  if (attachments.length === 0) return null;
+  if (attachments.length === 0 && mentions.length === 0) return null;
   return (
-    <div className="flex flex-wrap gap-2 px-3 pt-3">
+    <div className="flex flex-wrap items-center gap-2 px-3 pt-3">
+      {mentions.map((m) => (
+        <ThreadChip key={m.id} mention={m} onRemove={onRemoveMention} />
+      ))}
       {attachments.map((a) => (
         <div key={a.key} className={cn("relative", a.kind === "file" && "max-w-60 min-w-0")}>
           {a.kind === "file" ? (
@@ -179,5 +188,37 @@ function FileChip({
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * A thread named with `@`: its title on a pill, and the X that takes it back
+ * out. The pill is 32px tall and the X's hit area 44px square on touch, so a
+ * thumb removes it without aiming; the title truncates rather than pushing
+ * the strip wider than a phone.
+ */
+function ThreadChip({
+  mention: m,
+  onRemove,
+}: {
+  mention: ThreadMention;
+  onRemove?: (id: string) => void;
+}) {
+  const title = m.title || "Untitled";
+  return (
+    <span className="bg-muted/60 flex h-8 max-w-60 min-w-0 items-center gap-1.5 rounded-full border pr-1 pl-2.5 text-[12px]">
+      <MessagesSquareIcon aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
+      <span className="min-w-0 truncate" title={title}>
+        {title}
+      </span>
+      <button
+        type="button"
+        onClick={() => onRemove?.(m.id)}
+        aria-label={`Remove thread ${title}`}
+        className="text-muted-foreground hover:text-foreground hover:bg-background hit-44 relative grid size-6 shrink-0 place-items-center rounded-full"
+      >
+        <XIcon className="size-3.5" />
+      </button>
+    </span>
   );
 }

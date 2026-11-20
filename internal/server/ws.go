@@ -687,6 +687,11 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
+		// Stop stops what the thread delegated too, all the way down, whether
+		// or not the thread itself is still running.
+		if _, err := c.srv.stopDescendants(ctx, a.ThreadID); err != nil {
+			return nil, err
+		}
 		actor, ok := c.srv.mgr.Peek(a.ThreadID)
 		if !ok {
 			return map[string]any{"status": "idle"}, nil

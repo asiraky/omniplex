@@ -37,6 +37,8 @@ async function openFromTerminal(cwd: string) {
         pr={null}
         onAddToChat={() => {}}
         onAddComment={() => {}}
+        threads={[]}
+        onOpenThread={() => {}}
       />
     </ThreadStoreContext.Provider>,
   );

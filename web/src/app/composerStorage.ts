@@ -11,6 +11,7 @@
 
 import { uuid } from "~/client";
 import { attachmentUrl, type Attachment } from "~/lib/attachments";
+import type { ThreadMention } from "~/lib/threadMentions";
 import type { Delivery } from "~/protocol";
 
 import type { DraftStore } from "./draftStore";
@@ -21,6 +22,7 @@ const DRAFT_PREFIX = "omniplex.draft.v1:";
 const ATTACHMENTS_PREFIX = "omniplex.attachments.v1:";
 const OUTBOX_PREFIX = "omniplex.outbox.v1:";
 const STASH_PREFIX = "omniplex.stash.v1:";
+const MENTIONS_PREFIX = "omniplex.mentions.v1:";
 const TAB_KEY = "omniplex.tab.v1";
 
 /** Long enough to skip the writes between keystrokes, short enough that a
@@ -245,6 +247,36 @@ export function saveAttachments(
   }
   for (const threadId of Object.keys(prev)) {
     if (!(threadId in next)) remove(ATTACHMENTS_PREFIX + threadId);
+  }
+}
+
+// Mentions: the threads named with `@`, kept like the files beside them.
+
+export function loadMentions(): Record<string, ThreadMention[]> {
+  const all: Record<string, ThreadMention[]> = {};
+  for (const [key, threadId] of keysUnder(MENTIONS_PREFIX)) {
+    const raw = parse(read(key));
+    if (!Array.isArray(raw)) continue;
+    const list = raw.flatMap((v): ThreadMention[] =>
+      isRecord(v) && typeof v.id === "string" && typeof v.title === "string" ? [{ id: v.id, title: v.title }] : [],
+    );
+    if (list.length) all[threadId] = list;
+  }
+  return all;
+}
+
+/** Writes the threads whose list changed, by reference. */
+export function saveMentions(
+  prev: Record<string, ThreadMention[]>,
+  next: Record<string, ThreadMention[]>,
+) {
+  for (const [threadId, list] of Object.entries(next)) {
+    if (prev[threadId] === list) continue;
+    if (list.length) write(MENTIONS_PREFIX + threadId, JSON.stringify(list));
+    else remove(MENTIONS_PREFIX + threadId);
+  }
+  for (const threadId of Object.keys(prev)) {
+    if (!(threadId in next)) remove(MENTIONS_PREFIX + threadId);
   }
 }
 

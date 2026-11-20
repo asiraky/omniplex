@@ -121,6 +121,13 @@ export function App() {
   );
 
   const meta = useMemo(() => threads.find((s) => s.id === activeId), [threads, activeId]);
+  // The thread that delegated the open one, while it is still listed: the
+  // header offers the way back to it.
+  const parentId = meta?.parentId;
+  const parent = useMemo(
+    () => (parentId && parentId !== activeId ? threads.find((s) => s.id === parentId) : undefined),
+    [threads, parentId, activeId],
+  );
   const harness = useThreadHarness(wire, activeId, meta);
   const recents = useRecentSkills({
     activeId,
@@ -476,6 +483,8 @@ export function App() {
             onShowMcp={() => screens.setTools({ tab: "mcp" })}
             onFind={find.show}
             onClose={deletion.deleteFlow.ask}
+            parent={parent}
+            onOpenThread={select}
           />
 
           {attached ? (
@@ -503,6 +512,7 @@ export function App() {
               // Not on a phone: the cursor there would raise the keyboard over the new draft.
               onSendAndNewThread={(preset) => startNew({ ...preset, focus: isDesktop })}
               find={find}
+              onOpenThread={select}
             />
           ) : nav.creating?.assistant ? (
             <Suspense fallback={null}>
@@ -587,6 +597,8 @@ export function App() {
               pr={pr}
               onAddToChat={addToChat}
               onAddComment={appendToChat}
+              threads={threads}
+              onOpenThread={select}
             />
           </div>
         )}

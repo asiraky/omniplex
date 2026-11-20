@@ -1111,3 +1111,18 @@ describe("Sidebar", () => {
     });
   });
 });
+
+describe("delegated threads", () => {
+  it("keeps a child off the list while its parent is listed, and flags the parent when the child needs you", () => {
+    renderSidebar({
+      threads: [
+        thread("a"),
+        thread("kid", { parentId: "a", attention: "needs_permission" }),
+        thread("orphan", { parentId: "gone" }),
+      ],
+    });
+    expect(screen.queryByRole("button", { name: /^Thread kid/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Thread orphan/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Thread a/ }).textContent).toContain("needs you");
+  });
+});

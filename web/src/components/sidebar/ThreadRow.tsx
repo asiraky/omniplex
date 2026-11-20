@@ -111,7 +111,14 @@ function TitleLine({
   );
 }
 
-type Badge = "new" | "failed";
+/** `child`: a thread this one delegated is waiting on the user. */
+type Badge = "new" | "failed" | "child";
+
+const BADGE_LABEL: Record<Badge, string> = {
+  new: "New since you last looked",
+  failed: "Workspace failed",
+  child: "A delegated thread needs you",
+};
 
 /** The one loud thing a row can carry. Lowercase on purpose: it is a tag, not
     a heading. */
@@ -119,16 +126,20 @@ function StatusBadge({ badge }: { badge: Badge }) {
   return (
     <span
       role="status"
-      aria-label={badge === "new" ? "New since you last looked" : "Workspace failed"}
+      aria-label={BADGE_LABEL[badge]}
       className={cn(
-        "rounded-full px-1.5 font-sans text-[10px] leading-[15px] font-semibold",
+        "rounded-full px-1.5 font-sans text-[10px] leading-[15px] font-semibold whitespace-nowrap",
         // Dark mode's accents are light, so the 10px label goes dark on them
         // to stay readable.
-        badge === "new" ? "bg-primary text-primary-foreground" : "bg-destructive text-white",
+        badge === "new"
+          ? "bg-primary text-primary-foreground"
+          : badge === "child"
+            ? "bg-attention text-white"
+            : "bg-destructive text-white",
         "dark:text-background",
       )}
     >
-      {badge}
+      {badge === "child" ? "needs you" : badge}
     </span>
   );
 }
@@ -388,6 +399,8 @@ export const ThreadRow = memo(function ThreadRow({
   s,
   showProject,
   active,
+  childActive = false,
+  childNeedsYou = false,
   leaving,
   going,
   reordering,
@@ -406,6 +419,11 @@ export const ThreadRow = memo(function ThreadRow({
   s: ThreadMeta;
   showProject: boolean;
   active: boolean;
+  /** The open thread is one this thread delegated, which has no row of its
+      own: this row stands for it. */
+  childActive?: boolean;
+  /** A thread this one delegated is waiting on the user. */
+  childNeedsYou?: boolean;
   /** Already out of the list, and folding away. */
   leaving: boolean;
   /** Being deleted, and still in the list. */
@@ -435,11 +453,20 @@ export const ThreadRow = memo(function ThreadRow({
   const renameChosen = useRef(false);
   const status = rowStatus(s);
   // The active row is being read, so it has nothing new to announce.
+  // A delegated thread waiting on the user is louder than this one being
+  // unread, and stays up while this thread is open: the wait is elsewhere.
   const badge: Badge | null =
-    status === "failed" ? "failed" : status === "new" && !active ? "new" : null;
+    status === "failed"
+      ? "failed"
+      : childNeedsYou
+        ? "child"
+        : status === "new" && !active
+          ? "new"
+          : null;
+  const selected = active || childActive;
   // Only a badged row is loud. Everything else — read, idle, or busy with
   // work nobody has to watch — recedes, so the badges stand out by contrast.
-  const recede = !active && badge === null;
+  const recede = !selected && badge === null;
   // Files dragged from the OS, never a row: a reorder is pointer events, and
   // the drop handlers answer only a drag that carries files. A thread whose
   // composer would refuse them refuses them here too, and so does a row in
@@ -485,7 +512,7 @@ export const ThreadRow = memo(function ThreadRow({
               // by the scroller instead of ever reaching the ellipsis.
               "group relative min-w-0 rounded-lg transition-colors",
               leaving && "overflow-hidden",
-              active
+              selected
                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
                 : "hover:bg-sidebar-accent/60",
               // Receded rows come back to full strength under the pointer

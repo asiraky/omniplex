@@ -28,48 +28,51 @@ import (
 //go:embed authbridge.mjs
 var bridgeScript []byte
 
-var (
-	bridgeOnce sync.Once
-	bridgeAt   string
-)
+var bridgeScriptPath = extractor("pi-authbridge", bridgeScript)
 
-// bridgeScriptPath extracts the embedded script once per content version and
-// returns its path. The hash is in the filename so an upgraded omniplex never
-// runs a stale extraction.
-func bridgeScriptPath() (string, error) {
-	bridgeOnce.Do(func() {
-		sum := sha256.Sum256(bridgeScript)
-		name := "pi-authbridge-" + hex.EncodeToString(sum[:8]) + ".mjs"
+// extractor returns a func that writes an embedded script to disk once per
+// content version and returns its path. The hash is in the filename so an
+// upgraded omniplex never runs a stale extraction.
+func extractor(prefix string, script []byte) func() (string, error) {
+	var (
+		once sync.Once
+		at   string
+	)
+	return func() (string, error) {
+		once.Do(func() {
+			sum := sha256.Sum256(script)
+			name := prefix + "-" + hex.EncodeToString(sum[:8]) + ".mjs"
 
-		base, err := os.UserCacheDir()
-		if err != nil {
-			return
-		}
-		dir := filepath.Join(base, "omniplex", "bin")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return
-		}
-		path := filepath.Join(dir, name)
+			base, err := os.UserCacheDir()
+			if err != nil {
+				return
+			}
+			dir := filepath.Join(base, "omniplex", "bin")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return
+			}
+			path := filepath.Join(dir, name)
 
-		if info, err := os.Stat(path); err == nil && info.Size() == int64(len(bridgeScript)) {
-			bridgeAt = path
-			return
+			if info, err := os.Stat(path); err == nil && info.Size() == int64(len(script)) {
+				at = path
+				return
+			}
+			// Write to a temp name and rename, so a torn write is never executed.
+			tmp := path + ".tmp"
+			if err := os.WriteFile(tmp, script, 0o644); err != nil {
+				return
+			}
+			if err := os.Rename(tmp, path); err != nil {
+				_ = os.Remove(tmp)
+				return
+			}
+			at = path
+		})
+		if at == "" {
+			return "", fmt.Errorf("could not extract the %s script", prefix)
 		}
-		// Write to a temp name and rename, so a torn write is never executed.
-		tmp := path + ".tmp"
-		if err := os.WriteFile(tmp, bridgeScript, 0o644); err != nil {
-			return
-		}
-		if err := os.Rename(tmp, path); err != nil {
-			_ = os.Remove(tmp)
-			return
-		}
-		bridgeAt = path
-	})
-	if bridgeAt == "" {
-		return "", errors.New("could not extract the pi auth bridge script")
+		return at, nil
 	}
-	return bridgeAt, nil
 }
 
 // packageRootMarker is where an npm install of pi keeps the importable package.

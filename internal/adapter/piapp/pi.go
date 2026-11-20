@@ -209,6 +209,12 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	for _, p := range o.Plugins {
 		args = append(args, "--skill", adapter.PluginSkills(p))
 	}
+	// Pi has no MCP client: an extension of ours bridges the stdio servers.
+	mcpArgs, mcpEnv, err := mcpLaunch(o.MCPServers)
+	if err != nil {
+		host.Logf("pi: %v; the session starts without its MCP tools", err)
+	}
+	args = append(args, mcpArgs...)
 
 	bin, ok := a.findPi()
 	if !ok {
@@ -219,7 +225,10 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: a per-account PI_CODING_AGENT_DIR isolates
 	// auth.json and settings.
-	cmd.Env = withBinDir(bin, adapter.HarnessEnv(o.Env, agentDirEnv))
+	cmd.Env = withBinDir(bin, adapter.HarnessEnv(o.Env, agentDirEnv, mcpBridgeEnv))
+	if mcpEnv != "" {
+		cmd.Env = append(cmd.Env, mcpEnv)
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -1648,8 +1657,15 @@ func toolKind(name string) string {
 
 // toolTitle picks the one argument worth putting in a row title: the command
 // for a shell, the path for file tools, the pattern for search. Falling back
-// to the bare tool name beats dumping raw JSON at a human.
+// to the bare tool name beats dumping raw JSON at a human. A bridged MCP tool
+// (mcp__server__tool, see mcpbridge.mjs) is titled server/tool, as Codex
+// titles its MCP calls: its arguments are not a shell or a path.
 func toolTitle(name string, args json.RawMessage) string {
+	if rest, ok := strings.CutPrefix(name, "mcp__"); ok {
+		if server, tool, ok := strings.Cut(rest, "__"); ok && server != "" && tool != "" {
+			return server + "/" + tool
+		}
+	}
 	var a struct {
 		Command string `json:"command"`
 		Path    string `json:"path"`

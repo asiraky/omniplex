@@ -20,11 +20,15 @@ function renderHeader({
   activeId = "a",
   onFind = () => {},
   harness = {},
+  parent,
+  onOpenThread,
 }: {
   isDesktop: boolean;
   activeId?: string | null;
   onFind?: () => void;
   harness?: Partial<ThreadHarness>;
+  parent?: ThreadMeta;
+  onOpenThread?: (id: string) => void;
 }) {
   const link = { copied: false, copy: vi.fn() };
   render(
@@ -44,6 +48,8 @@ function renderHeader({
         panel={{ open: false, toggle: () => {}, show: () => {} } as unknown as PanelControls}
         onShowMcp={() => {}}
         onFind={onFind}
+        parent={parent}
+        onOpenThread={onOpenThread}
       />
     </ThreadStoreContext.Provider>,
   );
@@ -169,5 +175,19 @@ describe("ThreadHeader: restart", () => {
   it("disables the desktop button while a restart is under way", () => {
     renderHeader({ isDesktop: true, harness: restartable({ restarting: true }) });
     expect((screen.getByRole("button", { name: "Restarting thread" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("ThreadHeader: delegated by", () => {
+  it("links back to the thread that delegated this one", () => {
+    const onOpenThread = vi.fn();
+    renderHeader({ isDesktop: false, parent: { id: "p", title: "Planner" } as ThreadMeta, onOpenThread });
+    fireEvent.click(screen.getByRole("button", { name: /Delegated by Planner/ }));
+    expect(onOpenThread).toHaveBeenCalledWith("p");
+  });
+
+  it("has no link when the parent is not listed", () => {
+    renderHeader({ isDesktop: true, onOpenThread: vi.fn() });
+    expect(screen.queryByRole("button", { name: /Delegated by/ })).toBeNull();
   });
 });

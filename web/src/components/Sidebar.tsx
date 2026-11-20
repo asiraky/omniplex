@@ -49,6 +49,7 @@ import { visibleByProject } from "~/projectGroups";
 import { newCount } from "~/threadStatus";
 import type { Project, ThreadMeta } from "~/protocol";
 import { sectionRows, sidebarSections, type SidebarSection } from "~/sidebarOrder";
+import { rowMarks, sidebarThreads, threadTree } from "~/threadTree";
 import { useIsDesktop } from "~/useMediaQuery";
 import { useShortcut, useShowShortcuts } from "~/useShortcuts";
 import { Wordmark } from "./Logo";
@@ -269,6 +270,10 @@ function ThreadList({
   // reorders, so the row still leaves from exactly where it stood. It is the
   // same cut the thread shortcuts walk.
   const sections = sidebarSections(rows, projects, projectView);
+  // Which rows hold the open thread, or one that needs the user, among the
+  // threads they delegated: two booleans per row, worked out once here.
+  const tree = useMemo(() => threadTree(rows), [rows]);
+  const marks = useMemo(() => rowMarks(tree, activeId), [tree, activeId]);
   // The digit each of the first nine open rows answers to, while ⌘ is held.
   const jumps = new Map<string, CommandId>();
   if (showJumpHints) {
@@ -296,10 +301,11 @@ function ThreadList({
   // so the way out of that is the message rather than something to go hunting
   // for in the header.
   if (sections.length === 0) {
+    const hidden = hiddenCount(rows);
     return (
       <div className="px-3 py-10 text-center">
         <p className="text-muted-foreground text-[13px]">
-          {rows.length} thread{rows.length === 1 ? "" : "s"} hidden by the filter.
+          {hidden} thread{hidden === 1 ? "" : "s"} hidden by the filter.
         </p>
         <Button
           variant="outline"
@@ -319,6 +325,8 @@ function ThreadList({
       s={s}
       showProject={showProject}
       active={s.id === activeId}
+      childActive={marks.childActive.has(s.id)}
+      childNeedsYou={marks.childNeedsYou.has(s.id)}
       leaving={exiting?.id === s.id}
       going={deleting?.id === s.id}
       reordering={reordering}
@@ -368,6 +376,11 @@ function ThreadList({
   const [first] = sections;
   if (first.key === null) return run(first.threads, first.showProject);
   return <>{sections.map((s) => s.key !== null && section({ ...s, key: s.key }))}</>;
+}
+
+/** The rows the filter is hiding: delegated threads were never rows. */
+function hiddenCount(rows: ThreadMeta[]) {
+  return sidebarThreads(rows).length;
 }
 
 /**
