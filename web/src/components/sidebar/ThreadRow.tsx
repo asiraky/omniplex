@@ -9,7 +9,7 @@ import {
   SparklesIcon,
   XIcon,
 } from "lucide-react";
-import { memo, useRef, useState } from "react";
+import { memo, useRef, useState, type ReactNode } from "react";
 
 import { HarnessBadge } from "~/components/HarnessBadge";
 import { TitleEditor } from "~/components/TitleEditor";
@@ -223,6 +223,54 @@ function DetailLine({
 }
 
 /**
+ * One of the row's corner controls. The button is a 32px square, which sets
+ * the rail's spacing and, on touch, the base the 44px hit area grows from.
+ * What a pointer lights up is the 24px box inside it, centred on the title
+ * line: the square is taller than that line, so a hover filling all of it
+ * hangs over the detail line and the provider logo under the X. All three
+ * controls light the same neutral box, not the row's own accent, and bring
+ * their glyph up; the colour it comes up to is the control's. Keyboard focus
+ * lights the same box and draws its ring around it rather than the square,
+ * for the same reason.
+ */
+function RowControl({
+  label,
+  tooltip,
+  onClick,
+  className,
+  children,
+}: {
+  label: string;
+  tooltip: string;
+  onClick: () => void;
+  /** Where in the rail, when it shows, and what the glyph turns to. */
+  className: string;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={label}
+          onClick={onClick}
+          className={cn(
+            "group/ctl hit-44 absolute top-0.5 size-8 shrink-0 hover:bg-transparent focus-visible:ring-0 md:size-8 dark:hover:bg-transparent mouse:opacity-0 mouse:group-hover:opacity-100 mouse:focus-visible:opacity-100",
+            className,
+          )}
+        >
+          <span className="group-hover/ctl:bg-foreground/[0.07] group-focus-visible/ctl:bg-foreground/[0.07] group-focus-visible/ctl:ring-ring/50 dark:group-hover/ctl:bg-foreground/10 dark:group-focus-visible/ctl:bg-foreground/10 flex size-6 items-center justify-center rounded-md transition-colors group-focus-visible/ctl:ring-2">
+            {children}
+          </span>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
  * The pin toggle, one control-width left of the X. From md up only, and with
  * a mouse on hover like the X and the pencil, pinned or not: the Pinned
  * section already says which threads are pinned, so the row needs no mark of
@@ -238,33 +286,26 @@ function PinControl({
 }) {
   const pinned = !!s.pinned;
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={`${pinned ? "Unpin" : "Pin"} thread ${s.title || "Untitled"}`}
-          onClick={() => onSetPinned(s.id, !pinned)}
-          // The same 32px square as the X, so the pair reads as one rail.
-          // The rail's squares touch, so on touch the hit area grows only
-          // in height: any wider and it would take taps meant for the X or
-          // the pencil.
-          className="group/pin text-muted-foreground hover:text-foreground hit-44 absolute top-0.5 right-8 hidden size-8 shrink-0 [--hit-w:0px] md:inline-flex md:size-8 mouse:opacity-0 mouse:group-hover:opacity-100 mouse:focus-visible:opacity-100"
-        >
-          {/* 14px, a step under the X. Filled when pinned; pointed at, a
-              pin turns into what the click will do. */}
-          {pinned ? (
-            <>
-              <PinIcon className="size-3.5 fill-current group-hover/pin:hidden" />
-              <PinOffIcon className="hidden size-3.5 group-hover/pin:block" />
-            </>
-          ) : (
-            <PinIcon className="size-3.5" />
-          )}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{pinned ? "Unpin" : "Pin"}</TooltipContent>
-    </Tooltip>
+    <RowControl
+      label={`${pinned ? "Unpin" : "Pin"} thread ${s.title || "Untitled"}`}
+      tooltip={pinned ? "Unpin" : "Pin"}
+      onClick={() => onSetPinned(s.id, !pinned)}
+      // The rail's squares touch, so on touch the hit area grows only in
+      // height: any wider and it would take taps meant for the X or the
+      // pencil.
+      className="text-muted-foreground hover:text-foreground focus-visible:text-foreground right-8 hidden [--hit-w:0px] md:inline-flex"
+    >
+      {/* Filled when pinned; pointed at or focused, a pin turns into what
+          the click will do. */}
+      {pinned ? (
+        <>
+          <PinIcon className="size-3.5 fill-current group-hover/ctl:hidden group-focus-visible/ctl:hidden" />
+          <PinOffIcon className="hidden size-3.5 group-hover/ctl:block group-focus-visible/ctl:block" />
+        </>
+      ) : (
+        <PinIcon className="size-3.5" />
+      )}
+    </RowControl>
   );
 }
 
@@ -277,23 +318,15 @@ function PinControl({
  */
 function RenameControl({ s, onRename }: { s: ThreadMeta; onRename: () => void }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={`Rename thread ${s.title || "Untitled"}`}
-          onClick={onRename}
-          // Left of the pin, and like it grown only in height on touch.
-          className="text-muted-foreground/70 hover:text-foreground hit-44 absolute top-0.5 right-16 hidden size-8 shrink-0 [--hit-w:0px] hover:bg-transparent md:inline-flex md:size-8 mouse:opacity-0 mouse:group-hover:opacity-100 mouse:focus-visible:opacity-100 dark:hover:bg-transparent"
-        >
-          {/* Smaller and fainter than the X beside it: renaming is the
-              quieter of the two, and the title it edits is 13px. */}
-          <PencilIcon className="size-3" strokeWidth={1.75} />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>Rename thread</TooltipContent>
-    </Tooltip>
+    <RowControl
+      label={`Rename thread ${s.title || "Untitled"}`}
+      tooltip="Rename thread"
+      onClick={onRename}
+      // Left of the pin, and like it grown only in height on touch.
+      className="text-muted-foreground hover:text-foreground focus-visible:text-foreground right-16 hidden [--hit-w:0px] md:inline-flex"
+    >
+      <PencilIcon className="size-3.5" />
+    </RowControl>
   );
 }
 
@@ -322,30 +355,21 @@ function DragHandle({ s, drag }: { s: ThreadMeta; drag: RowDrag | undefined }) {
 
 function DeleteControl({ s, onDelete }: { s: ThreadMeta; onDelete: (s: ThreadMeta) => void }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={`Delete thread ${s.title || "Untitled"}`}
-          onClick={() => onDelete(s)}
-          // Aligned to the provider logo's column below it: the logo
-          // (14px, full-bleed) is centred 17px from the row's edge,
-          // and the X's lucide glyph carries ~1.5px of optical padding
-          // inside its 16px box — right-px puts the visible strokes on
-          // that same centre line.
-          // The visible square stays 32px so it keeps that alignment
-          // at every size; on touch `hit-44` grows the hit area to 44px
-          // without moving anything, which a larger button could not do.
-          // From md up the pin sits flush against it, so there it grows
-          // only in height.
-          className="hover:text-destructive hit-44 absolute top-0.5 right-px size-8 shrink-0 md:size-8 md:[--hit-w:0px] mouse:opacity-0 mouse:group-hover:opacity-100 mouse:focus-visible:opacity-100"
-        >
-          <XIcon />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>Delete thread</TooltipContent>
-    </Tooltip>
+    <RowControl
+      label={`Delete thread ${s.title || "Untitled"}`}
+      tooltip="Delete thread"
+      onClick={() => onDelete(s)}
+      // Aligned to the provider logo's column below it: the logo (14px,
+      // full-bleed) is centred 17px from the row's edge, and right-px puts
+      // the 32px square, and the glyph centred in it, on that same line.
+      // From md up the pin sits flush against it, so there the touch hit
+      // area grows only in height. It rests at the row's own colour, not
+      // muted like the pin and pencil: on a phone it is always showing and
+      // the only control the row has.
+      className="hover:text-destructive focus-visible:text-destructive right-px md:[--hit-w:0px]"
+    >
+      <XIcon className="size-3.5" />
+    </RowControl>
   );
 }
 
