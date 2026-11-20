@@ -260,7 +260,7 @@ function RowControl({
             className,
           )}
         >
-          <span className="group-hover/ctl:bg-foreground/[0.07] group-focus-visible/ctl:bg-foreground/[0.07] group-focus-visible/ctl:ring-ring/50 dark:group-hover/ctl:bg-foreground/10 dark:group-focus-visible/ctl:bg-foreground/10 flex size-6 items-center justify-center rounded-md transition-colors group-focus-visible/ctl:ring-[3px]">
+          <span className="group-hover/ctl:bg-foreground/[0.07] group-focus-visible/ctl:bg-foreground/[0.07] group-focus-visible/ctl:ring-ring/50 dark:group-hover/ctl:bg-foreground/10 dark:group-focus-visible/ctl:bg-foreground/10 flex size-6 items-center justify-center rounded-md transition-colors group-focus-visible/ctl:ring-2">
             {children}
           </span>
         </Button>
