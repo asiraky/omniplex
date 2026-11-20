@@ -879,8 +879,6 @@ func (s *Server) waitOn(ctx context.Context, t toolThread, ids []string, timeout
 			for _, w := range got {
 				if !w.done {
 					s.orch.oweUnlessOwed(w.l.meta.ID, t.id, pendingTurn(w.l.d))
-				} else {
-					s.orch.unheld(w.l.meta.ID)
 				}
 			}
 			return "", true, nil
@@ -1012,9 +1010,11 @@ func (s *Server) approvalBelow(ctx context.Context, tree map[string][]store.Thre
 			}
 			seen[m.ID] = true
 			if m.Attention == projection.AttentionNeedsPermission {
-				if l, err := s.lookAt(ctx, m); err == nil {
+				l, err := s.lookAt(ctx, m)
+				if err == nil {
 					return l, true
 				}
+				s.logf("read %s, waiting on approval under %s: %v", m.ID, top.ID, err)
 			}
 			queue = append(queue, m.ID)
 		}
@@ -1653,7 +1653,10 @@ func (o *orchestrator) since(child string) int {
 // already is written to the store as owed to the caller from the start, and
 // a restart mid-wait leaves the result owed. Memory is left alone, where
 // owing it would change what the wait counts as its result. The end of the
-// wait settles the row: delivered, claimed, owed, or unheld.
+// wait settles the row: delivered, claimed or owed it, and the last wait on
+// a thread to let go drops a row memory has no owing for — one whose result
+// the wait took, or a wait that failed. A server stopping keeps the row: its
+// wait was cut short by the stop, and the result is owed after the restart.
 func (o *orchestrator) hold(parent string, ids []string, on bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -1661,6 +1664,9 @@ func (o *orchestrator) hold(parent string, ids []string, on bool) {
 		if !on {
 			if o.held[id]--; o.held[id] <= 0 {
 				delete(o.held, id)
+				if _, ok := o.owed[id]; !ok && !o.stopped() {
+					o.persistOwed(id)
+				}
 			}
 			continue
 		}
@@ -1671,16 +1677,6 @@ func (o *orchestrator) hold(parent string, ids []string, on bool) {
 		if err := o.s.store.SaveOwed(context.Background(), store.OwedResult{Child: id, Parent: parent}); err != nil {
 			o.s.logf("record result owed by %s: %v", id, err)
 		}
-	}
-}
-
-// unheld drops the row hold wrote for a thread whose result a wait had but
-// its caller left before taking: not owed, as before.
-func (o *orchestrator) unheld(child string) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if _, ok := o.owed[child]; !ok {
-		o.persistOwed(child)
 	}
 }
 
@@ -1969,8 +1965,13 @@ func (o *orchestrator) reach(ctx context.Context, parent string, b *wakeBatch) (
 	return actor, true
 }
 
-// forget drops a parent's batch b, unless another has taken its place.
+// forget drops a parent's batch b, unless another has taken its place. A
+// server stopping keeps it, in memory and in the store: what failed was the
+// stop taking the parent down, and the next start sends it.
 func (o *orchestrator) forget(parent string, b *wakeBatch) {
+	if o.stopped() {
+		return
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.batches[parent] == b {
@@ -1985,16 +1986,21 @@ func (o *orchestrator) forget(parent string, b *wakeBatch) {
 // again as a wake of this process's. Gone from it, it ran, or a stop dropped
 // it with the turn it waited behind, and what it held is done either way.
 // Getting the parent is what starts its harness and holds its queue, so
-// the queue is settled by the time the wake is looked for.
+// the queue is settled by the time the wake is looked for. A wake already
+// out of the queue as the last process left it — it ran, as most do — is
+// settled from the record, without starting a harness to look.
 func (o *orchestrator) settle(ctx context.Context, parent string, b *wakeBatch) bool {
-	actor, ok := o.reach(ctx, parent, b)
-	if !ok {
-		return false
-	}
 	o.mu.Lock()
 	qid := b.queueID
 	o.mu.Unlock()
-	taken := actor.DequeuePrompt(ctx, qid) == nil
+	taken := false
+	if o.stillQueued(ctx, parent, qid) {
+		actor, ok := o.reach(ctx, parent, b)
+		if !ok {
+			return false
+		}
+		taken = actor.DequeuePrompt(ctx, qid) == nil
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.batches[parent] != b {
@@ -2009,6 +2015,20 @@ func (o *orchestrator) settle(ctx context.Context, parent string, b *wakeBatch) 
 	}
 	o.persistWake(parent)
 	return true
+}
+
+// stillQueued reports whether parent's record still holds the prompt qid
+// in its queue, or cannot be read.
+func (o *orchestrator) stillQueued(ctx context.Context, parent, qid string) bool {
+	v, err := o.s.mgr.View(ctx, parent)
+	if err != nil {
+		return true
+	}
+	st, err := v.State(ctx)
+	if err != nil {
+		return true
+	}
+	return slices.ContainsFunc(st.Queued, func(q projection.QueuedPrompt) bool { return q.QueueID == qid })
 }
 
 // wakeText is the prompt that wakes a parent; some is false when every

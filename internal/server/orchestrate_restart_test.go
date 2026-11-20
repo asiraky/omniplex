@@ -272,3 +272,83 @@ func TestARestartDuringAWaitStillDeliversTheResult(t *testing.T) {
 		t.Fatalf("wake = %q, want child %s's continuation", w, child)
 	}
 }
+
+// A child that finished as the server went down, before its parent was
+// told, wakes the parent once on the next start.
+func TestARestartWakesForAResultThatLandedAsItWentDown(t *testing.T) {
+	r := newRestartRig(t)
+	parent, _ := r.parent()
+	wakeWindow = time.Hour // set before this boot's server reads it
+	child := r.delegate(parent, "quick")
+	eventually(t, "the wake is recorded", func() bool {
+		ws, err := r.st.PendingWakes(context.Background())
+		return err == nil && len(ws) == 1
+	})
+	r.down()
+
+	// What the store holds when the server stops between the child
+	// finishing and the scan that would have told its parent.
+	ctx := context.Background()
+	st, err := store.Open(r.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteWake(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveOwed(ctx, store.OwedResult{Child: child, Parent: parent}); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	wakeWindow = 100 * time.Millisecond
+	r.up(t)
+	if w := r.wokenOnce(parent); !strings.Contains(w, child) || !strings.Contains(w, "done: quick") {
+		t.Fatalf("wake = %q, want child %s's result", w, child)
+	}
+	eventually(t, "nothing is left owed", func() bool {
+		owed, err := r.st.OwedResults(ctx)
+		return err == nil && len(owed) == 0 && !r.srv.orch.busy(parent)
+	})
+}
+
+// A wake that ran before the server went down is settled on the next start
+// from the parent's record: its harness is not started to look, and it is
+// not woken again.
+func TestARestartLeavesAWakeThatRanAlone(t *testing.T) {
+	r := newRestartRig(t)
+	parent, _ := r.parent()
+	ctx := context.Background()
+	a, err := r.mgr.Get(ctx, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Prompt(ctx, "HOLD parent", nil); err != nil {
+		t.Fatal(err)
+	}
+	r.running("HOLD parent")
+	r.delegate(parent, "quick")
+	eventually(t, "the wake waits in the parent's queue", func() bool {
+		s, err := a.State(ctx)
+		return err == nil && len(s.Queued) == 1
+	})
+	r.h.release(t, "HOLD parent")
+	eventually(t, "the wake runs", func() bool { return len(r.wakes(parent)) == 1 })
+	eventually(t, "the parent is idle", func() bool {
+		s, err := a.State(ctx)
+		return err == nil && len(s.Queued) == 0 && s.Phase == "idle"
+	})
+
+	r.restart()
+	eventually(t, "the wake is settled", func() bool {
+		ws, err := r.st.PendingWakes(ctx)
+		return err == nil && len(ws) == 0
+	})
+	time.Sleep(3 * wakeWindow)
+	r.h.mu.Lock()
+	started := r.h.sessions[parent]
+	r.h.mu.Unlock()
+	if started != 0 || len(r.wakes(parent)) != 0 {
+		t.Fatalf("parent's harness started %d times and woken %q after the restart, want neither", started, r.wakes(parent))
+	}
+}

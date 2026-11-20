@@ -31,13 +31,14 @@ import (
 type orchAdapter struct {
 	id string
 
-	mu      sync.Mutex
-	prompts map[string][]string // by thread
-	held    map[string]func()   // by prompt
+	mu       sync.Mutex
+	prompts  map[string][]string // by thread
+	held     map[string]func()   // by prompt
+	sessions map[string]int      // harness starts, by thread
 }
 
 func newOrchAdapter(id string) *orchAdapter {
-	return &orchAdapter{id: id, prompts: map[string][]string{}, held: map[string]func(){}}
+	return &orchAdapter{id: id, prompts: map[string][]string{}, held: map[string]func(){}, sessions: map[string]int{}}
 }
 
 func (a *orchAdapter) ID() string { return a.id }
@@ -61,6 +62,9 @@ func (*orchAdapter) Probe(context.Context, map[string]string) adapter.Availabili
 	return adapter.Ready(nil)
 }
 func (a *orchAdapter) CreateSession(_ context.Context, hs adapter.HostServices, o adapter.CreateOptions) (adapter.Session, error) {
+	a.mu.Lock()
+	a.sessions[o.ThreadID]++
+	a.mu.Unlock()
 	return &orchSession{owner: a, hs: hs, thread: o.ThreadID, events: make(chan proto.Emission, 64)}, nil
 }
 
