@@ -539,6 +539,42 @@ func TestAWaitEndsWhenAChildNeedsTheUser(t *testing.T) {
 	})
 }
 
+func TestAWaitEndsWhenAThreadFurtherDownNeedsApproval(t *testing.T) {
+	r := newOrchRig(t)
+	top, _ := r.parent()
+	mid := r.delegate(top, "HOLD mid")
+	r.running("HOLD mid")
+
+	ctx, leave := context.WithCancel(context.Background())
+	defer leave()
+	res := r.start(ctx, top, "thread_wait", map[string]any{"ids": []string{mid}, "timeout_seconds": 600})
+	// The wait is under way before the approval exists, so it is the
+	// approval that ends it.
+	select {
+	case got := <-res:
+		t.Fatalf("thread_wait returned before anything needed the user: %q", got.text)
+	case <-time.After(3 * wakeWindow):
+	}
+	bottom := r.delegate(mid, "PERM deploy")
+
+	select {
+	case got := <-res:
+		if got.code != http.StatusOK {
+			t.Fatalf("thread_wait = %d %s", got.code, got.err)
+		}
+		for _, want := range []string{mid, "needs approval", bottom, "rm -rf build"} {
+			if !strings.Contains(got.text, want) {
+				t.Fatalf("thread_wait = %q, want %q in it", got.text, want)
+			}
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("thread_wait ran on while a thread two levels down waited on the user")
+	}
+	if d := r.digest(bottom); len(d.Approvals) != 1 {
+		t.Fatalf("approvals = %+v, want the request still the user's", d.Approvals)
+	}
+}
+
 func TestAParentAnswersAChildsQuestion(t *testing.T) {
 	r := newOrchRig(t)
 	parent, _ := r.parent()

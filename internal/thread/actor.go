@@ -1098,6 +1098,10 @@ func (a *Actor) run() {
 	// before starting this goroutine, so this is the first read.
 	a.mu.Lock()
 	a.attention = a.state.Attention()
+	if a.attention == projection.AttentionNeedsPrompt && a.recovery != nil {
+		// As noteAttention: the continuation it is owed is on its way.
+		a.attention = projection.AttentionWorking
+	}
 	a.turnFailed = a.state.LastTurnFailed()
 	a.mu.Unlock()
 	for {
@@ -2122,9 +2126,12 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 // An idle thread the loop is about to start a queued prompt on is working,
 // not waiting on anyone: a fresh worktree between its workspace coming ready
 // and its first turn, which can take seconds, would otherwise read as done.
+// So is one still owed the continuation of work a restart cut: the turn the
+// restart closed is not where it stopped, and a thread that delegated it
+// must not take that turn for its result.
 func (a *Actor) noteAttention() {
 	att, failed := a.state.Attention(), a.state.LastTurnFailed()
-	if att == projection.AttentionNeedsPrompt && a.startsNext() {
+	if att == projection.AttentionNeedsPrompt && (a.startsNext() || a.owedPhase() != "") {
 		att = projection.AttentionWorking
 	}
 	a.mu.Lock()

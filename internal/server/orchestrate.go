@@ -834,6 +834,9 @@ type waited struct {
 	l      look
 	status string // completed, failed, stopped, needs approval, needs answer, working
 	done   bool
+	// below is the thread under this one, delegated by it or by one it
+	// delegated, whose approval it waits on; nil when it needs none.
+	below *look
 }
 
 // waitOn waits until every thread has finished, one needs the user, or the
@@ -842,9 +845,9 @@ type waited struct {
 // waited, become so), so a later result still wakes it; so are all of them
 // when the caller leaves first, which gone reports.
 func (s *Server) waitOn(ctx context.Context, t toolThread, ids []string, timeout time.Duration) (string, bool, error) {
-	s.orch.hold(ids, true)
+	s.orch.hold(t.id, ids, true)
 	defer func() {
-		s.orch.hold(ids, false)
+		s.orch.hold(t.id, ids, false)
 		// A result that landed while the wait held it, and that the wait did
 		// not take, is the wake's again.
 		s.orch.poke()
@@ -876,6 +879,8 @@ func (s *Server) waitOn(ctx context.Context, t toolThread, ids []string, timeout
 			for _, w := range got {
 				if !w.done {
 					s.orch.oweUnlessOwed(w.l.meta.ID, t.id, pendingTurn(w.l.d))
+				} else {
+					s.orch.unheld(w.l.meta.ID)
 				}
 			}
 			return "", true, nil
@@ -902,6 +907,11 @@ func (s *Server) waitOn(ctx context.Context, t toolThread, ids []string, timeout
 			b.WriteString(".\n")
 			b.WriteString(inline(w.l.meta.ID, reply, &budget))
 			continue
+		case w.status == "needs approval" && w.below != nil:
+			fmt.Fprintf(&b, ": thread %s %q, delegated under it, needs the user's approval. Only the user can approve it; both wait until they do.", w.below.meta.ID, w.below.title())
+			for _, p := range w.below.d.Approvals {
+				fmt.Fprintf(&b, " Pending: %s.", cmp.Or(p.Title, p.ToolName))
+			}
 		case w.status == "needs approval":
 			b.WriteString(": only the user can approve it; it waits until they do.")
 			for _, p := range w.l.d.Approvals {
@@ -932,10 +942,13 @@ func pendingTurn(d thread.Digest) int {
 }
 
 // checkWait reads each thread; settled is every one finished or one
-// needing the user.
+// needing the user, itself or through a thread delegated under it waiting
+// on an approval: only the user can move that, so waiting on is waiting
+// for nothing.
 func (s *Server) checkWait(ctx context.Context, ids []string) ([]waited, bool, error) {
 	out := make([]waited, 0, len(ids))
 	all, user := true, false
+	var tree map[string][]store.ThreadMeta // by parent, read once
 	for _, id := range ids {
 		meta, err := s.store.Thread(ctx, id)
 		if err != nil {
@@ -955,11 +968,58 @@ func (s *Server) checkWait(ctx context.Context, ids []string) ([]waited, bool, e
 				w.status, user = "needs approval", true
 			case projection.AttentionNeedsAnswer:
 				w.status, user = "needs answer", true
+			default:
+				if tree == nil {
+					if tree, err = s.childrenByParent(ctx); err != nil {
+						return nil, false, err
+					}
+				}
+				if below, ok := s.approvalBelow(ctx, tree, meta); ok {
+					w.status, w.below, user = "needs approval", &below, true
+				}
 			}
 		}
 		out = append(out, w)
 	}
 	return out, all || user, nil
+}
+
+// childrenByParent is the thread list as a tree, with each thread's
+// attention as the list reports it.
+func (s *Server) childrenByParent(ctx context.Context) (map[string][]store.ThreadMeta, error) {
+	list, err := s.mgr.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tree := map[string][]store.ThreadMeta{}
+	for _, m := range list {
+		if m.ParentID != "" {
+			tree[m.ParentID] = append(tree[m.ParentID], m)
+		}
+	}
+	return tree, nil
+}
+
+// approvalBelow is the nearest thread under top, in its project, waiting on
+// the user's approval. A question below is not the user's alone: the thread
+// that delegated it answers or passes it up, and is woken for it.
+func (s *Server) approvalBelow(ctx context.Context, tree map[string][]store.ThreadMeta, top store.ThreadMeta) (look, bool) {
+	seen := map[string]bool{top.ID: true}
+	for queue := []string{top.ID}; len(queue) > 0; queue = queue[1:] {
+		for _, m := range tree[queue[0]] {
+			if seen[m.ID] || m.ProjectID != top.ProjectID {
+				continue
+			}
+			seen[m.ID] = true
+			if m.Attention == projection.AttentionNeedsPermission {
+				if l, err := s.lookAt(ctx, m); err == nil {
+					return l, true
+				}
+			}
+			queue = append(queue, m.ID)
+		}
+	}
+	return look{}, false
 }
 
 // inline is a reply as far as budget allows, the tail kept when it is cut,
@@ -1315,12 +1375,18 @@ type wakeBatch struct {
 	entries []wakeEntry
 	sent    int    // entries in what the parent holds
 	queueID string // the queued prompt, "" before it is sent
+	// restored is a wake the last process queued: since the restart the
+	// parent holds it for a human, ran it, or lost it to a stop. flush
+	// settles which before sending anything.
+	restored bool
 }
 
 // orchestrator owes parents their delegated threads' results and wakes them
 // with those, batched, and pushes the user a notification when a delegated
-// thread needs them. What is owed lives in memory only: a restart loses it,
-// and a parent then reads its threads with thread_list. That is accepted.
+// thread needs them. What is owed and the wakes on their way are written
+// through to the store as they change, and read back at start, so a restart
+// leaves a parent still owed its results and still due the wake it had not
+// had. The rest — waits, questions told, pushes — lives in memory only.
 type orchestrator struct {
 	s *Server
 	// send pushes a notification; nil turns pushes off. watched reports a
@@ -1367,6 +1433,10 @@ func newOrchestrator(s *Server) *orchestrator {
 // the thread list.
 func (o *orchestrator) start() {
 	o.stop, o.done = make(chan struct{}), make(chan struct{})
+	wakes := o.load()
+	for _, parent := range wakes {
+		go o.flush(parent)
+	}
 	sub, ping := o.s.mgr.SubscribeList()
 	go func() {
 		defer close(o.done)
@@ -1383,6 +1453,85 @@ func (o *orchestrator) start() {
 			}
 		}
 	}()
+}
+
+// load reads back what the last process left owed and on its way, and
+// returns the parents with a wake to send.
+func (o *orchestrator) load() []string {
+	if o.s.store == nil {
+		return nil
+	}
+	ctx := context.Background()
+	owedRows, err := o.s.store.OwedResults(ctx)
+	if err != nil {
+		o.s.logf("read delegated results owed: %v", err)
+	}
+	wakeRows, err := o.s.store.PendingWakes(ctx)
+	if err != nil {
+		o.s.logf("read wakes on their way: %v", err)
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, r := range owedRows {
+		o.owed[r.Child] = owed{parent: r.Parent, since: r.Since}
+	}
+	var parents []string
+	for _, r := range wakeRows {
+		b := &wakeBatch{queueID: r.QueueID, sent: min(max(r.Sent, 0), len(r.Entries)), restored: r.QueueID != ""}
+		for _, e := range r.Entries {
+			b.entries = append(b.entries, wakeEntry{id: e.ID, title: e.Title, status: e.Status, text: e.Text, gone: e.Gone})
+		}
+		if !b.restored {
+			// Never queued: all of it is still to send.
+			if b.entries, b.sent = b.entries[b.sent:], 0; len(b.entries) == 0 {
+				o.persistWake(r.Parent)
+				continue
+			}
+		}
+		o.batches[r.Parent] = b
+		parents = append(parents, r.Parent)
+	}
+	return parents
+}
+
+// persistOwed writes child's row as o.owed has it, under o.mu, so the store
+// changes in the order memory does. A failed write costs only a restart's
+// memory of it.
+func (o *orchestrator) persistOwed(child string) {
+	if o.s.store == nil {
+		return
+	}
+	ctx := context.Background()
+	var err error
+	if w, ok := o.owed[child]; ok {
+		err = o.s.store.SaveOwed(ctx, store.OwedResult{Child: child, Parent: w.parent, Since: w.since})
+	} else {
+		err = o.s.store.DeleteOwed(ctx, child)
+	}
+	if err != nil {
+		o.s.logf("record result owed by %s: %v", child, err)
+	}
+}
+
+// persistWake writes parent's row as o.batches has it, under o.mu.
+func (o *orchestrator) persistWake(parent string) {
+	if o.s.store == nil {
+		return
+	}
+	ctx := context.Background()
+	var err error
+	if b := o.batches[parent]; b != nil {
+		w := store.PendingWake{Parent: parent, QueueID: b.queueID, Sent: b.sent, Entries: make([]store.WakeEntry, 0, len(b.entries))}
+		for _, e := range b.entries {
+			w.Entries = append(w.Entries, store.WakeEntry{ID: e.id, Title: e.title, Status: e.status, Text: e.text, Gone: e.gone})
+		}
+		err = o.s.store.SaveWake(ctx, w)
+	} else {
+		err = o.s.store.DeleteWake(ctx, parent)
+	}
+	if err != nil {
+		o.s.logf("record wake for %s: %v", parent, err)
+	}
 }
 
 func (o *orchestrator) close() {
@@ -1410,6 +1559,7 @@ func (o *orchestrator) owe(child, parent string, since int) {
 	o.mu.Lock()
 	o.owed[child] = owed{parent: parent, since: since}
 	delete(o.abandoned, child)
+	o.persistOwed(child)
 	o.mu.Unlock()
 }
 
@@ -1418,8 +1568,12 @@ func (o *orchestrator) owe(child, parent string, since int) {
 // owed again by a wait that saw it before the stop.
 func (o *orchestrator) oweUnlessOwed(child, parent string, since int) {
 	o.mu.Lock()
-	if _, ok := o.owed[child]; !ok && !o.abandoned[child] {
-		o.owed[child] = owed{parent: parent, since: since}
+	if _, ok := o.owed[child]; !ok {
+		if !o.abandoned[child] {
+			o.owed[child] = owed{parent: parent, since: since}
+		}
+		// Either way the wait's provisional row goes (hold).
+		o.persistOwed(child)
 	}
 	o.mu.Unlock()
 }
@@ -1430,6 +1584,7 @@ func (o *orchestrator) claim(child, parent string, since int) {
 	o.mu.Lock()
 	if _, ok := o.owed[child]; !ok {
 		o.owed[child] = owed{parent: parent, since: since}
+		o.persistOwed(child)
 	}
 	delete(o.abandoned, child)
 	o.mu.Unlock()
@@ -1450,7 +1605,7 @@ func (o *orchestrator) abandon(child string) {
 func (o *orchestrator) busy(id string) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if b := o.batches[id]; b != nil && b.queueID == "" && len(b.entries) > b.sent {
+	if b := o.batches[id]; b != nil && (b.restored || b.queueID == "" && len(b.entries) > b.sent) {
 		return true
 	}
 	for child, w := range o.owed {
@@ -1473,11 +1628,16 @@ func (o *orchestrator) delivered(child string) {
 // drop is delivered under o.mu.
 func (o *orchestrator) drop(child string) {
 	delete(o.owed, child)
-	for _, b := range o.batches {
+	o.persistOwed(child)
+	for parent, b := range o.batches {
+		changed := false
 		for i := b.sent; i < len(b.entries); i++ {
-			if b.entries[i].id == child {
-				b.entries[i].gone = true
+			if b.entries[i].id == child && !b.entries[i].gone {
+				b.entries[i].gone, changed = true, true
 			}
+		}
+		if changed {
+			o.persistWake(parent)
 		}
 	}
 }
@@ -1488,15 +1648,39 @@ func (o *orchestrator) since(child string) int {
 	return o.owed[child].since
 }
 
-func (o *orchestrator) hold(ids []string, on bool) {
+// hold turns parent's wait on ids on or off. A wait owes its threads to the
+// caller only at its end, which a restart never reaches: so each one not owed
+// already is written to the store as owed to the caller from the start, and
+// a restart mid-wait leaves the result owed. Memory is left alone, where
+// owing it would change what the wait counts as its result. The end of the
+// wait settles the row: delivered, claimed, owed, or unheld.
+func (o *orchestrator) hold(parent string, ids []string, on bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for _, id := range ids {
-		if on {
-			o.held[id]++
-		} else if o.held[id]--; o.held[id] <= 0 {
-			delete(o.held, id)
+		if !on {
+			if o.held[id]--; o.held[id] <= 0 {
+				delete(o.held, id)
+			}
+			continue
 		}
+		o.held[id]++
+		if _, ok := o.owed[id]; ok || o.abandoned[id] || o.s.store == nil {
+			continue
+		}
+		if err := o.s.store.SaveOwed(context.Background(), store.OwedResult{Child: id, Parent: parent}); err != nil {
+			o.s.logf("record result owed by %s: %v", id, err)
+		}
+	}
+}
+
+// unheld drops the row hold wrote for a thread whose result a wait had but
+// its caller left before taking: not owed, as before.
+func (o *orchestrator) unheld(child string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if _, ok := o.owed[child]; !ok {
+		o.persistOwed(child)
 	}
 }
 
@@ -1585,6 +1769,7 @@ func (o *orchestrator) wakes(ctx context.Context, byID map[string]store.ThreadMe
 				continue
 			}
 			delete(o.owed, c.child)
+			o.persistOwed(c.child)
 			fresh, queued := o.enqueue(c.parent, wakeEntry{id: c.child, title: title, status: st, text: reply})
 			o.mu.Unlock()
 			o.sendAfter(c.parent, fresh, queued)
@@ -1638,6 +1823,7 @@ func (o *orchestrator) enqueue(parent string, e wakeEntry) (fresh, queued bool) 
 		o.batches[parent] = b
 	}
 	b.entries = append(b.entries, e)
+	o.persistWake(parent)
 	return fresh, b.queueID != ""
 }
 
@@ -1681,12 +1867,18 @@ func (o *orchestrator) flush(parent string) {
 	for {
 		o.mu.Lock()
 		b := o.batches[parent]
-		if b == nil || len(b.entries) == b.sent {
+		if b == nil || !b.restored && len(b.entries) == b.sent {
 			o.mu.Unlock()
 			return
 		}
-		entries, qid := slices.Clone(b.entries), b.queueID
+		entries, qid, restored := slices.Clone(b.entries), b.queueID, b.restored
 		o.mu.Unlock()
+		if restored {
+			if !o.settle(ctx, parent, b) {
+				return
+			}
+			continue
+		}
 		text, some := wakeText(entries)
 		if !some && qid == "" {
 			// Everything in it was delivered another way: unless more came
@@ -1695,6 +1887,7 @@ func (o *orchestrator) flush(parent string) {
 			more := len(b.entries) > len(entries)
 			if !more && o.batches[parent] == b {
 				delete(o.batches, parent)
+				o.persistWake(parent)
 			}
 			o.mu.Unlock()
 			if more {
@@ -1703,28 +1896,15 @@ func (o *orchestrator) flush(parent string) {
 			return
 		}
 
-		drop := func() {
-			o.mu.Lock()
-			if o.batches[parent] == b {
-				delete(o.batches, parent)
-			}
-			o.mu.Unlock()
-		}
-		meta, err := o.s.store.Thread(ctx, parent)
-		if err != nil || meta.Phase == "closed" {
-			drop()
-			return
-		}
-		actor, err := o.s.mgr.Get(ctx, parent)
-		if err != nil {
-			o.s.logf("wake %s: %v", parent, err)
-			drop()
+		actor, ok := o.reach(ctx, parent, b)
+		if !ok {
 			return
 		}
 		if qid != "" {
 			if actor.EditQueuedPrompt(ctx, qid, text, nil) == nil {
 				o.mu.Lock()
 				b.sent = len(entries)
+				o.persistWake(parent)
 				o.mu.Unlock()
 				continue
 			}
@@ -1732,15 +1912,21 @@ func (o *orchestrator) flush(parent string) {
 			o.mu.Lock()
 			if o.batches[parent] == b {
 				o.batches[parent] = &wakeBatch{entries: slices.Clone(b.entries[b.sent:])}
+				o.persistWake(parent)
 			}
 			o.mu.Unlock()
 			o.later(parent)
 			return
 		}
+		// A parent a restart cut off goes on with its own work first: a wake
+		// that started ahead of that continuation would take its place.
+		if err := actor.Recover(ctx); err != nil {
+			o.s.logf("continue %s before its wake: %v", parent, err)
+		}
 		res, err := actor.PromptWith(ctx, text, nil, proto.DeliveryQueue)
 		if err != nil {
 			o.s.logf("wake %s: %v", parent, err)
-			drop()
+			o.forget(parent, b)
 			return
 		}
 		o.s.mgr.NotifyList()
@@ -1756,6 +1942,7 @@ func (o *orchestrator) flush(parent string) {
 				defer o.later(parent)
 			}
 		}
+		o.persistWake(parent)
 		o.mu.Unlock()
 		if res.Queued() {
 			// Later news amends it while it waits; nothing to send now.
@@ -1763,6 +1950,65 @@ func (o *orchestrator) flush(parent string) {
 		}
 		return
 	}
+}
+
+// reach is the parent a wake goes to, with its harness up. One closed or
+// gone, or that will not start, has its wake forgotten.
+func (o *orchestrator) reach(ctx context.Context, parent string, b *wakeBatch) (*thread.Actor, bool) {
+	meta, err := o.s.store.Thread(ctx, parent)
+	if err != nil || meta.Phase == "closed" {
+		o.forget(parent, b)
+		return nil, false
+	}
+	actor, err := o.s.mgr.Get(ctx, parent)
+	if err != nil {
+		o.s.logf("wake %s: %v", parent, err)
+		o.forget(parent, b)
+		return nil, false
+	}
+	return actor, true
+}
+
+// forget drops a parent's batch b, unless another has taken its place.
+func (o *orchestrator) forget(parent string, b *wakeBatch) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.batches[parent] == b {
+		delete(o.batches, parent)
+		o.persistWake(parent)
+	}
+}
+
+// settle finds out what became of a wake the last process queued, and
+// reports whether there is more to do. Still in the parent's queue — held
+// there since the restart, waiting for a human — it is taken back, to go
+// again as a wake of this process's. Gone from it, it ran, or a stop dropped
+// it with the turn it waited behind, and what it held is done either way.
+// Getting the parent is what starts its harness and holds its queue, so
+// the queue is settled by the time the wake is looked for.
+func (o *orchestrator) settle(ctx context.Context, parent string, b *wakeBatch) bool {
+	actor, ok := o.reach(ctx, parent, b)
+	if !ok {
+		return false
+	}
+	o.mu.Lock()
+	qid := b.queueID
+	o.mu.Unlock()
+	taken := actor.DequeuePrompt(ctx, qid) == nil
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.batches[parent] != b {
+		return true
+	}
+	if !taken {
+		b.entries = slices.Clone(b.entries[b.sent:])
+	}
+	b.restored, b.queueID, b.sent = false, "", 0
+	if len(b.entries) == 0 {
+		delete(o.batches, parent)
+	}
+	o.persistWake(parent)
+	return true
 }
 
 // wakeText is the prompt that wakes a parent; some is false when every

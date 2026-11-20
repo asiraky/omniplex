@@ -67,6 +67,8 @@ CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_prompts(status, due_at);
 
 CREATE INDEX IF NOT EXISTS events_type_time ON events(type, created_at);
 
+` + delegationsDDL + `
+
 ` + toolCallIndexDDL + `
 `
 
